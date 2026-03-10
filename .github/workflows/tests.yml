@@ -1,0 +1,31 @@
+name: Tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: sqlite:///./audit.db
+      REDIS_LOCK_REQUIRED: "false"
+      LLM_HEALTHCHECK_REQUIRED: "false"
+      EMBEDDER_HEALTHCHECK_REQUIRED: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run tests
+        run: pytest -q

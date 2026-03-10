@@ -1,0 +1,16 @@
+provider: ollama
+
+providers:
+  ollama:
+    model: deepseek-coder-33b
+    endpoint: http://localhost:11434/api/generate
+    timeout_s: 90
+    temperature: 0.1
+    api_key_env: ""
+
+  openai-compatible:
+    model: gpt-4o-mini
+    endpoint: https://api.openai.com/v1/chat/completions
+    timeout_s: 90
+    temperature: 0.1
+    api_key_env: OPENAI_API_KEY

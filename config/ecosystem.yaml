@@ -1,0 +1,17 @@
+repos:
+  - name: ai-code-auditor
+    path: .
+    branch: main
+    enabled: true
+    provider: local
+    access_token_env: ""
+    local_cache_path: .cache/repos
+
+output_dir: reports
+graph_db_path: graph/ecosystem_graph.db
+embedding_index_path: index/code_embeddings.faiss
+architecture_memory_path: memory/architecture_memory.md
+auth_mode: false
+auth_code_env: AI_AUDIT_AUTH_CODE
+log_level: INFO
+log_file_path: pipeline.log

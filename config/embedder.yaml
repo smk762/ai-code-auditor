@@ -1,0 +1,14 @@
+provider: local-hash
+
+providers:
+  local-hash:
+    model: local-hash
+    dim: 64
+    endpoint: ""
+    api_key_env: ""
+
+  openai-compatible:
+    model: text-embedding-3-small
+    dim: 64
+    endpoint: https://api.openai.com/v1/embeddings
+    api_key_env: OPENAI_API_KEY

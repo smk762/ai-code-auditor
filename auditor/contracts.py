@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+
+SEVERITY_LEVELS = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass(slots=True)
+class CodeUnit:
+    id: str
+    repo: str
+    file_path: str
+    symbol: str
+    kind: str
+    language: str
+    start_line: int
+    end_line: int
+    ast_features: dict[str, Any] = field(default_factory=dict)
+    raw_text: str = ""
+    raw_text_hash: str = ""
+
+
+@dataclass(slots=True)
+class Finding:
+    id: str
+    type: str
+    severity: str
+    repo: str
+    file_path: str
+    line: int
+    title: str
+    description: str
+    evidence: str
+    recommendation: str
+    source: str
+    detected_at: str = field(default_factory=utc_now_iso)
+
+    def validate(self) -> None:
+        if self.severity not in SEVERITY_LEVELS:
+            raise ValueError(f"Invalid severity: {self.severity}")
+        if self.line < 0:
+            raise ValueError("line must be >= 0")
+
+
+@dataclass(slots=True)
+class RuleViolation:
+    rule_name: str
+    violating_path: str
+    entities: list[str]
+    evidence: str
+    severity: str = "HIGH"
+    detected_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class PatternProposal:
+    domain: str
+    candidates: list[str]
+    prevalence_by_repo: dict[str, int]
+    risk_assessment: str
+    recommendation: str
+    status: str = "pending"
+
+
+@dataclass(slots=True)
+class CopilotResponse:
+    answer: str
+    supporting_entities: list[str]
+    impacted_repos: list[str]
+    confidence: float
+    citations: list[str]

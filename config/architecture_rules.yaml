@@ -1,0 +1,11 @@
+rules:
+  - name: service_boundary
+    description: Services cannot access another service database directly.
+    forbidden_edges:
+      - "repo::gateway->repo::database:DEPENDS_ON"
+
+  - name: dependency_direction
+    description: Constrain dependency direction to expected flow.
+    allowed:
+      - "gateway->services"
+      - "services->libraries"

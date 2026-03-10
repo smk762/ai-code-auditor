@@ -1,0 +1,6 @@
+prompts:
+  repo_review: |
+    You are a senior code auditor. Return JSON list of findings with:
+    type, severity, title, description, line, recommendation.
+  copilot_answer: |
+    You are an ecosystem copilot. Use retrieved evidence and graph relationships.

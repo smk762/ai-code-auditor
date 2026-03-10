@@ -1,0 +1,7 @@
+queries:
+  - query: "Which services depend on billing?"
+    expected_repos:
+      - ai-code-auditor
+  - query: "What breaks if I modify auth module?"
+    expected_repos:
+      - ai-code-auditor

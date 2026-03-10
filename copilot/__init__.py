@@ -1,0 +1,1 @@
+"""Copilot query modules."""
