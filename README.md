@@ -103,7 +103,7 @@ Ecosystem audit completed.
 ### 4) Ask a cross-repo question (deep mode)
 
 ```bash
-ai-audit ask "If we rotate JWT signing keys and move to short-lived access tokens this sprint, which services, middleware contracts, and test suites will break first, and what is the safest migration order?" --deep --iterations 4
+ai-audit ask "If we rotate JWT signing keys and move to short-lived access tokens this sprint, which services, middleware contracts, and test suites will break first, and what is the safest migration order?" --deep --iterations 4 --context-profile deep --enable-subagents --agent-brief
 ```
 
 Representative output:
@@ -119,6 +119,8 @@ Recommended migration order:
 2) middleware contract update
 3) downstream service token refresh alignment
 4) test suite policy updates + audit rerun
+External Agent Brief:
+- objective, constraints, prioritized tasks, and verification checklist included
 ```
 
 ### 5) Run QA benchmark
@@ -167,6 +169,37 @@ Pipeline completed.
 - repo artifacts refreshed in reports/
 - graph rebuilt: graph/ecosystem_graph.db
 - embedding index refreshed: index/code_embeddings.faiss
+```
+
+### 8) Prepare a brief for an external/paid agent
+
+```bash
+ai-audit ask "We need an external agent to execute JWT key rotation safely across gateway, identity, and billing. Build a high-signal execution brief with migration order, risks, and verification gates." \
+  --context-profile deep \
+  --enable-subagents \
+  --agent-brief
+```
+
+Representative output:
+
+```text
+Potential blast radius touches repos: api-gateway, identity-service, billing-service.
+Context summary:
+- Semantic hits: 5
+- Report snippets: 3
+- Note snippets: 1
+- Context curated to prioritize direct evidence and avoid low-signal verbosity.
+
+External Agent Brief
+Objective: execute JWT key rotation safely across core services
+Primary repos in scope: api-gateway, identity-service, billing-service
+Constraints:
+- minimal high-signal context only
+- cite evidence for every critical claim
+Deliverables expected:
+- top risks with severity and blast radius
+- phased migration order and rollback points
+- PR checklist and verification plan
 ```
 
 ## Docker

@@ -62,6 +62,27 @@ def test_deep_research_response_shape(tmp_path: Path) -> None:
         graph.close()
 
 
+def test_ask_can_emit_external_agent_brief_and_persist_notes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    index = EmbeddingIndex(path=str(tmp_path / "idx.faiss"))
+    search = SemanticSearch(index)
+    graph = GraphBuilder(str(tmp_path / "graph.db"))
+    try:
+        engine = CopilotEngine(search=search, graph=graph)
+        response = engine.ask(
+            "Design the safest JWT key rotation rollout across services.",
+            enable_subagents=True,
+            external_agent_brief=True,
+            notes_path="memory/context_notes.md",
+        )
+        assert "External Agent Brief" in response.answer
+        assert Path("memory/context_notes.md").exists()
+        notes = Path("memory/context_notes.md").read_text(encoding="utf-8")
+        assert "jwt key rotation" in notes.lower()
+    finally:
+        graph.close()
+
+
 def test_require_auth_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AI_AUDIT_AUTH_CODE", "secret")
     require_auth(True, "AI_AUDIT_AUTH_CODE", "secret")

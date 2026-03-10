@@ -4,6 +4,7 @@ from pathlib import Path
 import yaml
 
 from auditor.contracts import CopilotResponse
+from copilot.context_orchestrator import ContextOptions, ContextOrchestrator
 from copilot.query_router import classify_query
 from ecosystem.graph_builder import GraphBuilder
 from semantic.semantic_search import SemanticSearch
@@ -14,7 +15,18 @@ class CopilotEngine:
         self.search = search
         self.graph = graph
 
-    def ask(self, query: str) -> CopilotResponse:
+    def ask(
+        self,
+        query: str,
+        *,
+        context_profile: str = "balanced",
+        max_context_tokens: int = 2200,
+        enable_compaction: bool = True,
+        enable_notes: bool = True,
+        enable_subagents: bool = False,
+        external_agent_brief: bool = False,
+        notes_path: str = "memory/context_notes.md",
+    ) -> CopilotResponse:
         lower_query = query.lower()
         if any(
             phrase in lower_query
@@ -30,18 +42,44 @@ class CopilotEngine:
 
         mode = classify_query(query)
         semantic_hits = self.search.query(query, top_k=5)
+        orchestrator = ContextOrchestrator(
+            ContextOptions(
+                profile=context_profile,
+                max_context_tokens=max_context_tokens,
+                enable_compaction=enable_compaction,
+                enable_notes=enable_notes,
+                enable_subagents=enable_subagents,
+                notes_path=notes_path,
+            )
+        )
+        context_payload = orchestrator.orchestrate(query=query, semantic_hits=semantic_hits)
         repos = sorted({hit.get("repo", "") for hit in semantic_hits if hit.get("repo")})
         supporting = [f"{hit.get('repo')}::{hit.get('symbol')}" for hit in semantic_hits]
+        supporting.extend(
+            [f"context::{chunk.get('citation', '')}" for chunk in context_payload.get("chunks", []) if chunk.get("citation")]
+        )
 
         answer = self._build_answer(mode, query, repos, supporting)
+        if context_payload.get("summary"):
+            answer = f"{answer}\n\nContext summary:\n{context_payload['summary']}"
+        if external_agent_brief:
+            brief = orchestrator.build_external_agent_brief(query=query, payload=context_payload, impacted_repos=repos)
+            answer = f"{answer}\n\n{brief}"
         confidence = 0.8 if semantic_hits else 0.35
         citations = [f"{hit.get('file_path')}::{hit.get('symbol')}" for hit in semantic_hits]
+        citations.extend(
+            [chunk.get("citation", "") for chunk in context_payload.get("chunks", []) if chunk.get("citation")]
+        )
+        deduped_citations: list[str] = []
+        for cite in citations:
+            if cite and cite not in deduped_citations:
+                deduped_citations.append(cite)
         return CopilotResponse(
             answer=answer,
             supporting_entities=supporting,
             impacted_repos=repos,
             confidence=confidence,
-            citations=citations,
+            citations=deduped_citations,
         )
 
     def deep_research(self, query: str, max_iterations: int = 3) -> dict:

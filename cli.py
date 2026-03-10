@@ -37,6 +37,27 @@ def _build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--json", action="store_true", help="Output as JSON")
     ask.add_argument("--deep", action="store_true", help="Run iterative deep research mode")
     ask.add_argument("--iterations", type=int, default=3, help="Deep research iterations")
+    ask.add_argument(
+        "--context-profile",
+        choices=("lean", "balanced", "deep"),
+        default="balanced",
+        help="Context budget profile for ask mode",
+    )
+    ask.add_argument(
+        "--max-context-tokens",
+        type=int,
+        default=2200,
+        help="Maximum tokens to keep in curated context window",
+    )
+    ask.add_argument("--disable-compaction", action="store_true", help="Disable context compaction step")
+    ask.add_argument("--disable-notes", action="store_true", help="Disable persistent context note-taking")
+    ask.add_argument("--enable-subagents", action="store_true", help="Enable specialist sub-agent summaries")
+    ask.add_argument(
+        "--agent-brief",
+        action="store_true",
+        help="Append an external/paid-agent briefing section to the answer",
+    )
+    ask.add_argument("--notes-path", default="memory/context_notes.md", help="Path to persistent context notes")
     ask.add_argument("--auth-code", default="", help="Auth code when auth mode is enabled")
     ask.add_argument("--auth-token", default="", help="JWT token with analyst role")
 
@@ -58,6 +79,13 @@ def _run_ask(
     as_json: bool = False,
     deep: bool = False,
     iterations: int = 3,
+    context_profile: str = "balanced",
+    max_context_tokens: int = 2200,
+    disable_compaction: bool = False,
+    disable_notes: bool = False,
+    enable_subagents: bool = False,
+    agent_brief: bool = False,
+    notes_path: str = "memory/context_notes.md",
     auth_code: str = "",
     auth_token: str = "",
 ) -> None:
@@ -89,7 +117,16 @@ def _run_ask(
                     for cite in deep_result["citations"][:10]:
                         print(f"- {cite}")
             return
-        response = engine.ask(query)
+        response = engine.ask(
+            query,
+            context_profile=context_profile,
+            max_context_tokens=max_context_tokens,
+            enable_compaction=not disable_compaction,
+            enable_notes=not disable_notes,
+            enable_subagents=enable_subagents,
+            external_agent_brief=agent_brief,
+            notes_path=notes_path,
+        )
     finally:
         graph.close()
 
@@ -123,6 +160,13 @@ def main() -> None:
             as_json=args.json,
             deep=args.deep,
             iterations=args.iterations,
+            context_profile=args.context_profile,
+            max_context_tokens=args.max_context_tokens,
+            disable_compaction=args.disable_compaction,
+            disable_notes=args.disable_notes,
+            enable_subagents=args.enable_subagents,
+            agent_brief=args.agent_brief,
+            notes_path=args.notes_path,
             auth_code=args.auth_code,
             auth_token=args.auth_token,
         )
