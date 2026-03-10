@@ -45,7 +45,26 @@ cd ai-code-auditor
 
 ## CLI Commands + Representative Responses
 
-### 1) Run a repo audit
+### 1) Show available commands
+
+```bash
+ai-audit --help
+```
+
+Representative output:
+
+```text
+Usage: ai-audit [OPTIONS] COMMAND [ARGS]...
+
+Commands:
+  repo-run
+  ecosystem-run
+  ask
+  qa-benchmark
+  approve-extraction
+```
+
+### 2) Run a repo audit
 
 ```bash
 ai-audit repo-run
@@ -55,14 +74,15 @@ Representative output:
 
 ```text
 Repo audit completed.
-- findings: 15
-- high severity: 11
+- findings: 24
+- critical: 2
+- high severity: 9
 - reports written:
   - reports/nightly_repo_report.md
   - reports/security_report.md
 ```
 
-### 2) Run an ecosystem audit
+### 3) Run an ecosystem audit
 
 ```bash
 ai-audit ecosystem-run
@@ -72,34 +92,81 @@ Representative output:
 
 ```text
 Ecosystem audit completed.
-- repositories scanned: 1
-- code units indexed: 164
-- architecture violations: 0
-- pattern proposals: 10
+- repositories scanned: 4
+- code units indexed: 2418
+- architecture violations: 3
+- pattern proposals: 12
+- extraction candidates: 2
 - report: reports/ecosystem_report.md
 ```
 
-### 3) Ask a cross-repo question
+### 4) Ask a cross-repo question (deep mode)
 
 ```bash
-ai-audit ask "What breaks if I modify /users/login?" --deep --iterations 3
+ai-audit ask "If we rotate JWT signing keys and move to short-lived access tokens this sprint, which services, middleware contracts, and test suites will break first, and what is the safest migration order?" --deep --iterations 4
 ```
 
 Representative output:
 
 ```text
-Likely impact areas:
-1) auth middleware contracts
-2) session/token validation paths
-3) integration tests touching login flows
-Suggested next step: run targeted repo audit after the change.
+High-risk impact map:
+1) api-gateway auth middleware (token verification assumptions)
+2) identity-service session refresh flow (expiry/rotation contract mismatch)
+3) billing-service service-to-service token cache (stale key risk)
+4) integration and e2e suites asserting legacy token lifetime behavior
+Recommended migration order:
+1) dual-sign/dual-verify key rollout
+2) middleware contract update
+3) downstream service token refresh alignment
+4) test suite policy updates + audit rerun
 ```
 
-### 4) Run benchmark and extraction flow
+### 5) Run QA benchmark
 
 ```bash
 ai-audit qa-benchmark --json
-ai-audit approve-extraction --candidate-id ext-auth-001
+```
+
+Representative output:
+
+```text
+{
+  "dataset": "qa/fixtures/benchmark.json",
+  "questions_total": 50,
+  "correct": 43,
+  "accuracy": 0.86,
+  "status": "pass"
+}
+```
+
+### 6) Approve an extraction candidate
+
+```bash
+ai-audit approve-extraction --candidate-id ext-retry-core-001
+```
+
+Representative output:
+
+```text
+Extraction candidate approved: ext-retry-core-001
+- architecture rule appended: config/architecture_rules.yaml
+- decision audit entry recorded
+```
+
+### 7) Run legacy pipeline scripts directly (optional)
+
+```bash
+python pipelines/nightly_repo_audit.py
+python pipelines/ecosystem_audit.py
+```
+
+Representative output:
+
+```text
+Pipeline completed.
+- repo artifacts refreshed in reports/
+- graph rebuilt: graph/ecosystem_graph.db
+- embedding index refreshed: index/code_embeddings.faiss
 ```
 
 ## Docker
