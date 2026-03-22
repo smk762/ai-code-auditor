@@ -11,6 +11,7 @@ from auditor.archive import archive_reports
 from auditor.auth import enforce_role
 from auditor.config import load_architecture_rules, load_ecosystem_config
 from auditor.contracts import CodeUnit
+from auditor.gpu_scheduler import GpuScheduler
 from auditor.locks import pipeline_lock
 from auditor.persistence import (
     completed_repos_for_run,
@@ -72,7 +73,19 @@ def run() -> None:
     cfg = load_ecosystem_config()
     setup_logging(level=cfg.log_level, log_file_path=cfg.log_file_path, output_dir=cfg.output_dir)
     rules = load_architecture_rules()
-    meta = RunMetadata.start("ecosystem-audit")
+
+    # Wait until GPU capacity is available before acquiring the pipeline lock.
+    # This may block for one or more 30-minute retry cycles.
+    scheduler = GpuScheduler()
+    gpu = scheduler.wait_for_capacity()
+
+    # AI_AUDIT_RUN_ID lets the audit API pre-assign the run_id so it can
+    # insert a DB record and return it to callers before the pipeline starts.
+    forced_run_id = os.getenv("AI_AUDIT_RUN_ID", "")
+    meta = RunMetadata.start("ecosystem-audit", run_id=forced_run_id)
+    meta.extra["gpu_offload_mode"] = gpu.offload_mode
+    meta.extra["gpu_num_layers"] = gpu.num_gpu_layers
+    meta.extra["gpu_vram_free_mb"] = gpu.vram_free_mb
 
     all_units: list[CodeUnit] = []
     repo_roots: dict[str, str] = {}

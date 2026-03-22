@@ -1,0 +1,25 @@
+# SSHFS mounts for ecosystem repos under /mnt/ai-audit (see config/ecosystem.yaml).
+# Used by scripts/mount_ecosystem_sshfs.py — one systemd user service can start/stop all.
+#
+# Edit `remote` for each repo; `local` must match ecosystem.yaml paths where applicable.
+# Options support env expansion (e.g. $HOME).
+
+sshfs_options: "ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,IdentityFile=${HOME}/.ssh/id_ed25519,uid=1000,gid=1000,default_permissions"
+
+mounts:
+  - remote: hound@192.168.1.128:/home/hound/kimini-api
+    local: /mnt/ai-audit/kimini-api
+  - remote: hound@192.168.1.128:/home/hound/somnus
+    local: /mnt/ai-audit/somnus
+  - remote: hound@192.168.1.128:/home/hound/gothmog
+    local: /mnt/ai-audit/gothmog
+  - remote: hound@192.168.1.128:/home/hound/test_dbs
+    local: /mnt/ai-audit/test_dbs
+  - remote: hound@192.168.1.128:/home/hound/sauron
+    local: /mnt/ai-audit/sauron
+  - remote: hound@192.168.1.128:/home/hound/mimiri
+    local: /mnt/ai-audit/mimiri
+  - remote: jasmine@192.168.1.138:/home/jasmine/tss-stack
+    local: /mnt/ai-audit/tss-stack
+  - remote: jasmine@192.168.1.138:/home/jasmine/agent-composer
+    local: /mnt/ai-audit/agent-composer

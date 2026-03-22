@@ -46,11 +46,13 @@ class RunMetadata:
     stage_timings_ms: dict[str, int] = field(default_factory=dict)
     stage_status: dict[str, str] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    extra: dict = field(default_factory=dict)
 
     @staticmethod
-    def start(prefix: str) -> "RunMetadata":
+    def start(prefix: str, run_id: str = "") -> "RunMetadata":
         now = datetime.now(timezone.utc).isoformat()
-        run_id = f"{prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+        if not run_id:
+            run_id = f"{prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
         return RunMetadata(run_id=run_id, started_at=now)
 
     def finish(self, status: str = "success") -> None:

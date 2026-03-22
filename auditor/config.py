@@ -16,11 +16,13 @@ load_env_file()
 class RepoConfig:
     name: str
     path: str
-    branch: str = "main"
+    branch: str = ""  # empty → auto-detect (dev → main → master)
     enabled: bool = True
     access_token_env: str = ""
     provider: str = "local"
     local_cache_path: str = ""
+    # Optional directory inside the repo root to scan (local path or post-clone). Empty = whole repo.
+    subpath: str = ""
 
 
 @dataclass(slots=True)
@@ -34,6 +36,9 @@ class EcosystemConfig:
     auth_code_env: str = "AI_AUDIT_AUTH_CODE"
     log_level: str = "INFO"
     log_file_path: str = ""
+    # Isolated Qdrant collection for audit knowledge — separate from the chat RAG.
+    rag_collection: str = "audit_docs"
+    rag_ingest_url: str = "http://192.168.1.128:9050/ingest"
 
 
 @dataclass(slots=True)
@@ -41,7 +46,8 @@ class ModelProviderConfig:
     provider: str
     model: str
     endpoint: str
-    timeout_s: int = 90
+    timeout_s: int = 300      # inference timeout; large local models need time
+    healthcheck_timeout_s: int = 10  # fast probe — connection refused or model-not-found, not a full generate
     api_key_env: str = ""
     temperature: float = 0.1
 
@@ -76,11 +82,12 @@ def load_ecosystem_config(path: str | Path = "config/ecosystem.yaml") -> Ecosyst
         RepoConfig(
             name=item["name"],
             path=item["path"],
-            branch=item.get("branch", "main"),
+            branch=item.get("branch", ""),
             enabled=item.get("enabled", True),
             access_token_env=item.get("access_token_env", ""),
             provider=item.get("provider", "local"),
             local_cache_path=item.get("local_cache_path", ""),
+            subpath=str(item.get("subpath", "") or ""),
         )
         for item in raw.get("repos", [])
     ]
@@ -99,6 +106,8 @@ def load_ecosystem_config(path: str | Path = "config/ecosystem.yaml") -> Ecosyst
         auth_code_env=os.getenv("AI_AUDIT_AUTH_CODE_ENV", raw.get("auth_code_env", "AI_AUDIT_AUTH_CODE")),
         log_level=str(os.getenv("AI_AUDIT_LOG_LEVEL", raw.get("log_level", "INFO"))).upper(),
         log_file_path=str(os.getenv("AI_AUDIT_LOG_FILE_PATH", raw.get("log_file_path", ""))),
+        rag_collection=str(os.getenv("AI_AUDIT_RAG_COLLECTION", raw.get("rag_collection", "audit_docs"))),
+        rag_ingest_url=str(os.getenv("AI_AUDIT_RAG_INGEST_URL", raw.get("rag_ingest_url", "http://192.168.1.128:9050/ingest"))),
     )
 
 

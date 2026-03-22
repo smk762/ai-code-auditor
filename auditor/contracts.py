@@ -70,6 +70,22 @@ class PatternProposal:
 
 
 @dataclass(slots=True)
+class BranchDiff:
+    """Files that differ between two branches in a local repository."""
+    base: str               # e.g. "main" or "dev"
+    head: str               # e.g. "dev" or "feature/x"
+    changed_files: frozenset[str]  # repo-relative paths
+
+
+@dataclass(slots=True)
+class ScanContext:
+    """Result of a branch-aware repository scan."""
+    files: list           # list[Path] — all scannable source files
+    checked_out_branch: str
+    diffs: list           # list[BranchDiff], ordered: feature→dev first, then dev→main/master
+
+
+@dataclass(slots=True)
 class CopilotResponse:
     answer: str
     supporting_entities: list[str]

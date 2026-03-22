@@ -1,10 +1,31 @@
+# Active provider — override with env var AI_AUDIT_LLM_PROVIDER.
 provider: ollama
 
 providers:
+  # ── Primary: 24 GB GPU (3090 / 4090 / etc.) ────────────────────────────────
+  # qwen2.5-coder:32b  Q4_K_M ~19.8 GB  128K context  best open code model
   ollama:
-    model: deepseek-coder-33b
+    model: qwen2.5-coder:32b
     endpoint: http://localhost:11434/api/generate
-    timeout_s: 90
+    timeout_s: 300      # large model; allow time for deep analysis
+    temperature: 0.1
+    api_key_env: ""
+
+  # ── Fallback: 11 GB GPU (1080 Ti — no tensor cores required) ───────────────
+  # qwen2.5-coder:14b  Q4_K_M ~9 GB  128K context  same family, consistent output
+  ollama-11gb:
+    model: qwen2.5-coder:14b
+    endpoint: http://localhost:11434/api/generate
+    timeout_s: 300
+    temperature: 0.1
+    api_key_env: ""
+
+  # ── Fallback: 8 GB GPU (1070 — no tensor cores required) ───────────────────
+  # qwen2.5-coder:7b   Q4_K_M ~4.7 GB  128K context
+  ollama-8gb:
+    model: qwen2.5-coder:7b
+    endpoint: http://localhost:11434/api/generate
+    timeout_s: 180
     temperature: 0.1
     api_key_env: ""
 

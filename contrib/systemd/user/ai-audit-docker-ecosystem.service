@@ -1,0 +1,16 @@
+[Unit]
+Description=AI Code Auditor — ecosystem audit (Docker batch, once)
+Documentation=https://github.com/smk762/ai-code-auditor
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Path to your clone (must match .env and compose file location).
+WorkingDirectory=%h/GITHUB/smk762/ai-code-auditor
+# User must be in the `docker` group (or use root — not recommended).
+# --no-deps: do not start audit-api; only run the auditor container.
+ExecStart=/usr/bin/docker compose run --rm --no-deps auditor
+
+[Install]
+WantedBy=default.target

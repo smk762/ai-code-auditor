@@ -1,11 +1,72 @@
+# Mirrors `ecosystem/ecosystem.md` (Repos table). Each repo is expected at `/mnt/ai-audit/<name>` (bind-mount, NFS, etc.).
+# Optional `subpath` limits scanning to a folder inside each repo (empty = entire repository).
+# Optional `branch` pins the branch to track. Omit (or leave blank) to auto-detect: dev → main → master.
 repos:
-  - name: ai-code-auditor
-    path: .
-    branch: main
+  - name: kimini-api
+    path: /mnt/ai-audit/kimini-api
     enabled: true
     provider: local
-    access_token_env: ""
-    local_cache_path: .cache/repos
+    subpath: ""
+
+  - name: somnus
+    path: /mnt/ai-audit/somnus
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: imogen
+    path: /home/smk/GITHUB/smk762/imogen
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: vidita
+    path: /home/smk/GITHUB/smk762/vidita
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: tss-stack
+    path: /mnt/ai-audit/tss-stack
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: loraline
+    path: /home/smk/GITHUB/smk762/loraline
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: agent-composer
+    path: /mnt/ai-audit/agent-composer
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: mimiri
+    path: /mnt/ai-audit/mimiri
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: gothmog
+    path: /mnt/ai-audit/gothmog
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: test_dbs
+    path: /mnt/ai-audit/test_dbs
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: sauron
+    path: /mnt/ai-audit/sauron
+    enabled: true
+    provider: local
+    subpath: ""
 
 output_dir: reports
 graph_db_path: graph/ecosystem_graph.db
@@ -15,3 +76,8 @@ auth_mode: false
 auth_code_env: AI_AUDIT_AUTH_CODE
 log_level: INFO
 log_file_path: pipeline.log
+
+# RAG isolation — keep audit knowledge in its own Qdrant collection so it does
+# not pollute the general-purpose chat RAG in agent-composer (project_docs).
+rag_collection: audit_docs
+rag_ingest_url: http://192.168.1.128:9050/ingest

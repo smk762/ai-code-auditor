@@ -1,0 +1,25 @@
+[Unit]
+Description=AI Code Auditor — all ecosystem SSHFS mounts (read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# oneshot: ExecStart exits after spawning sshfs (sshfs detaches). RemainAfterExit keeps
+# the unit "active" until stop — avoids Type=simple exiting and spurious ExecStop teardown.
+Type=oneshot
+RemainAfterExit=yes
+# User units get a tiny PATH; sshfs is often in /usr/bin or /usr/local/bin.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Optional: full path if sshfs is elsewhere
+# Environment=SSHFS_BIN=/opt/homebrew/bin/sshfs
+# TODO: set WorkingDirectory to your clone path (or use absolute paths in Exec*)
+WorkingDirectory=%h/GITHUB/smk762/ai-code-auditor
+ExecStart=/usr/bin/python3 %h/GITHUB/smk762/ai-code-auditor/scripts/mount_ecosystem_sshfs.py start
+ExecStop=/usr/bin/python3 %h/GITHUB/smk762/ai-code-auditor/scripts/mount_ecosystem_sshfs.py stop
+# If any mount fails, ExecStart exits 1. With Restart=on-failure, systemd retries
+# (usually harmless: ok mounts are skipped). Use Restart=no while fixing bad paths.
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

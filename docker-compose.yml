@@ -1,29 +1,68 @@
+x-auditor-base: &auditor-base
+  build: .
+  user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+  env_file:
+    - .env
+  volumes:
+    - ./reports:/app/reports
+    - ./graph:/app/graph
+    - ./index:/app/index
+    - ./memory:/app/memory
+    - ./:/repos/ai-code-auditor
+    # Match repo `path:` entries in config/ecosystem.yaml (host paths → same path in container).
+    # Adjust left-hand side on machines where these differ. Host dirs must exist or Docker creates empty dirs.
+    - /mnt/ai-audit:/mnt/ai-audit:ro
+    - /home/smk/GITHUB/smk762:/home/smk/GITHUB/smk762/:ro
+    - /home/smk/GITHUB/smk762/imogen:/home/smk/GITHUB/smk762/imogen:ro
+    - /home/smk/GITHUB/smk762/vidita:/home/smk/GITHUB/smk762/vidita:ro
+    - /home/smk/GITHUB/smk762/loraline:/home/smk/GITHUB/smk762/loraline:ro
+  environment:
+    - DATABASE_URL=${DATABASE_URL}
+    - DB_POOL_SIZE=${DB_POOL_SIZE}
+    - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW}
+    - DB_POOL_TIMEOUT=${DB_POOL_TIMEOUT}
+    - REDIS_URL=${REDIS_URL}
+    - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
+    - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID}
+    - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}
+    - S3_BUCKET=${S3_BUCKET}
+    - S3_REGION=${S3_REGION}
+    - JWT_ISSUER=${JWT_ISSUER}
+    - JWT_AUDIENCE=${JWT_AUDIENCE}
+    - JWT_SECRET=${JWT_SECRET}
+    - JWT_ALGORITHM=${JWT_ALGORITHM}
+    - AI_AUDIT_LLM_ENDPOINT=${AI_AUDIT_LLM_ENDPOINT}
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
 services:
+  # Batch / scheduled job: runs ecosystem audit once then exits. For daily runs use host cron or
+  # systemd timer with: docker compose run --rm --no-deps auditor (see contrib/systemd/user).
+  # `docker compose up` also starts this once for dev/smoke; production often runs only audit-api
+  # continuously and triggers auditor on a schedule.
   auditor:
-    build: .
+    <<: *auditor-base
     container_name: ai-code-auditor
-    env_file:
-      - .env
-    volumes:
-      - ./reports:/app/reports
-      - ./graph:/app/graph
-      - ./index:/app/index
-      - ./memory:/app/memory
-      - ./:/repos/ai-code-auditor
-    environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - DB_POOL_SIZE=${DB_POOL_SIZE}
-      - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW}
-      - DB_POOL_TIMEOUT=${DB_POOL_TIMEOUT}
-      - REDIS_URL=${REDIS_URL}
-      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
-      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID}
-      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}
-      - S3_BUCKET=${S3_BUCKET}
-      - S3_REGION=${S3_REGION}
-      - JWT_ISSUER=${JWT_ISSUER}
-      - JWT_AUDIENCE=${JWT_AUDIENCE}
-      - JWT_SECRET=${JWT_SECRET}
-      - JWT_ALGORITHM=${JWT_ALGORITHM}
-      - AI_AUDIT_LLM_ENDPOINT=${AI_AUDIT_LLM_ENDPOINT}
     command: sh -lc "alembic upgrade head && python pipelines/ecosystem_audit.py"
+
+  # Long-running HTTP API — POST /audit/run, GET /audit/runs/{id}, GET /audit/health, POST /audit/ingest
+  audit-api:
+    <<: *auditor-base
+    container_name: audit-api
+    ports:
+      - "${AUDIT_API_BIND_IP:-0.0.0.0}:${AUDIT_API_PORT:-8765}:8765"
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "wget -qO- http://127.0.0.1:8765/audit/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    command: >
+      sh -lc '
+        alembic upgrade head &&
+        exec uvicorn auditor.audit_api:app --host 0.0.0.0 --port 8765
+      '

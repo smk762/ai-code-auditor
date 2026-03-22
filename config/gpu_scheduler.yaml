@@ -1,0 +1,41 @@
+# GPU scheduling policy for the audit pipeline.
+# The scheduler checks VRAM and downstream service load before starting.
+# If conditions are not met it retries every `retry_interval_s` seconds.
+
+retry_interval_s: 1800   # 30 minutes between rechecks
+
+# Minimum free VRAM (MB) required to start the audit at all (with CPU offload).
+# Below this the pipeline defers entirely and keeps retrying.
+vram_min_mb: 6000
+
+# Free VRAM (MB) above which all model layers are placed on GPU (no CPU offload).
+# Between vram_min_mb and vram_full_gpu_mb the scheduler computes a partial offload.
+vram_full_gpu_mb: 20000
+
+# Per-model layer geometry used to compute how many layers fit in available VRAM.
+# Values below are for qwen2.5-coder:32b Q4_K_M.  Adjust if you switch models.
+model_layers:
+  num_layers: 64        # total transformer layers
+  layer_size_mb: 310    # approximate VRAM per layer at Q4_K_M
+  overhead_mb: 2500     # non-layer footprint (embeddings, KV cache base, etc.)
+
+# Downstream services to check before starting.
+# Set enabled: false to skip a service entirely.
+services:
+  imogen:
+    enabled: true
+    # Model-server health — returns vram_free_mb, vram_used_mb
+    health_url: http://localhost:9080/health
+    # Model-server state — returns busy: true/false (inference lock)
+    state_url: http://localhost:9080/state
+    # POST to unload the pipeline from GPU when queue is empty and we need VRAM
+    unload_url: http://localhost:9080/unload
+    # Only proceed (or unload) when queue depth is at or below this value
+    max_queue_depth: 0
+
+  vidita:
+    enabled: true
+    # Gateway health — returns queue_depth
+    health_url: http://localhost:9180/health
+    # No unload endpoint: the scheduler waits for the queue to drain
+    max_queue_depth: 0

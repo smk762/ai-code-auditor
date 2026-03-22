@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from auditor.config import load_embedder_provider_config, load_model_provider_config, RepoConfig
-from auditor.repo_resolver import resolve_repo_path
+from auditor.repo_resolver import resolve_repo_path, resolve_scan_root
 from auditor.runtime import require_auth
 from copilot.copilot_engine import CopilotEngine
 from ecosystem.graph_builder import GraphBuilder
@@ -46,6 +46,18 @@ def test_remote_repo_resolution_uses_cache_path(tmp_path: Path, monkeypatch: pyt
     joined = " ".join(calls[0][0])
     assert "dummy-token" not in joined
     assert "env" in calls[0][1]
+
+
+def test_resolve_scan_root_subpath(tmp_path: Path) -> None:
+    (tmp_path / "pkg" / "nested").mkdir(parents=True)
+    repo = RepoConfig(name="local", path=str(tmp_path), subpath="pkg/nested")
+    assert resolve_scan_root(repo) == (tmp_path / "pkg" / "nested").resolve()
+
+
+def test_resolve_scan_root_rejects_path_traversal(tmp_path: Path) -> None:
+    repo = RepoConfig(name="local", path=str(tmp_path), subpath="../outside")
+    with pytest.raises(ValueError, match="escapes"):
+        resolve_scan_root(repo)
 
 
 def test_deep_research_response_shape(tmp_path: Path) -> None:
