@@ -1,8 +1,12 @@
 # GPU scheduling policy for the audit pipeline.
-# The scheduler checks VRAM and downstream service load before starting.
-# If conditions are not met it retries every `retry_interval_s` seconds.
+#
+# Primary path: delegate capacity gating to gothmog's GPU pool API.
+# Set gothmog_url to enable; leave blank to fall back to direct polling.
+#
+gothmog_url: ""         # e.g. http://192.168.1.128:8030
+gothmog_api_key: ""     # Bearer token for gothmog API
 
-retry_interval_s: 1800   # 30 minutes between rechecks
+retry_interval_s: 1800   # 30 minutes between rechecks (direct-poll fallback only)
 
 # Minimum free VRAM (MB) required to start the audit at all (with CPU offload).
 # Below this the pipeline defers entirely and keeps retrying.

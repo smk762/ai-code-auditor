@@ -203,21 +203,30 @@ class GpuScheduler:
         self.vram_full_gpu_mb: int = int(self._cfg.get("vram_full_gpu_mb", 20000))
         self.layer_cfg: dict[str, Any] = self._cfg.get("model_layers", {})
         self.services_cfg: dict[str, Any] = self._cfg.get("services", {})
+        self.gothmog_url: str = self._cfg.get("gothmog_url", "").strip()
+        self.gothmog_api_key: str = self._cfg.get("gothmog_api_key", "").strip()
+        self._capacity_token_id: str | None = None
 
     # ------------------------------------------------------------------
     def wait_for_capacity(self) -> GpuCapacity:
         """Block until GPU capacity is available, then return the offload config.
 
-        Polls in a loop, sleeping ``retry_interval_s`` between attempts.
+        If ``gothmog_url`` is configured, delegates to gothmog's
+        ``POST /v1/gpu/capacity/acquire`` and blocks there.
+        Otherwise falls back to direct nvidia-smi / service polling.
 
-        Set env var ``AI_AUDIT_SKIP_GPU_SCHEDULER=1`` to bypass all checks and
-        proceed immediately (useful in CI or on CPU-only machines).
+        Set env var ``AI_AUDIT_SKIP_GPU_SCHEDULER=1`` to bypass all checks
+        (useful in CI or on CPU-only machines).
         """
         import os
         if os.getenv("AI_AUDIT_SKIP_GPU_SCHEDULER", "").strip() in {"1", "true", "yes"}:
             logger.info("GPU scheduler bypassed via AI_AUDIT_SKIP_GPU_SCHEDULER.")
             return GpuCapacity(vram_free_mb=0, num_gpu_layers=0, offload_mode="bypassed")
 
+        if self.gothmog_url:
+            return self._acquire_via_gothmog()
+
+        # Direct-poll fallback (no gothmog).
         attempt = 0
         while True:
             attempt += 1
@@ -230,6 +239,63 @@ class GpuScheduler:
                 self.retry_interval_s // 60,
             )
             time.sleep(self.retry_interval_s)
+
+    # ------------------------------------------------------------------
+    def _acquire_via_gothmog(self) -> GpuCapacity:
+        """POST to gothmog /v1/gpu/capacity/acquire and block until granted."""
+        url = self.gothmog_url.rstrip("/") + "/v1/gpu/capacity/acquire"
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self.gothmog_api_key:
+            headers["Authorization"] = f"Bearer {self.gothmog_api_key}"
+        payload = {
+            "caller": "ai-auditor",
+            "min_vram_mb": self.vram_min_mb,
+            "timeout_s": 28800,  # 8 h — gothmog blocks internally until capacity is free
+        }
+        logger.info(
+            "Requesting GPU capacity from gothmog at %s (min_vram_mb=%d) …",
+            self.gothmog_url,
+            self.vram_min_mb,
+        )
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=28830)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logger.error("gothmog capacity acquire failed: %s", exc)
+            raise
+
+        self._capacity_token_id = data.get("token")
+        vram_free = int(data.get("vram_free_mb", 0))
+        logger.info(
+            "GPU capacity granted by gothmog — token=%s vram_free_mb=%d",
+            self._capacity_token_id,
+            vram_free,
+        )
+        return GpuCapacity(
+            vram_free_mb=vram_free,
+            num_gpu_layers=-1,   # gothmog asserts GPU is idle; run all layers on GPU
+            offload_mode="gothmog_managed",
+        )
+
+    def release_capacity(self) -> None:
+        """Release the gothmog capacity token (best-effort; call in finally)."""
+        if not self._capacity_token_id or not self.gothmog_url:
+            return
+        url = (
+            self.gothmog_url.rstrip("/")
+            + f"/v1/gpu/capacity/tokens/{self._capacity_token_id}"
+        )
+        headers: dict[str, str] = {}
+        if self.gothmog_api_key:
+            headers["Authorization"] = f"Bearer {self.gothmog_api_key}"
+        try:
+            requests.delete(url, headers=headers, timeout=10)
+            logger.info("GPU capacity token %s released.", self._capacity_token_id)
+        except Exception as exc:
+            logger.warning("Failed to release GPU capacity token: %s", exc)
+        finally:
+            self._capacity_token_id = None
 
     # ------------------------------------------------------------------
     def _check_once(self, attempt: int) -> GpuCapacity | None:

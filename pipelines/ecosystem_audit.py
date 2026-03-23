@@ -181,6 +181,7 @@ def run() -> None:
         meta.finish("failed")
         raise
     finally:
+        scheduler.release_capacity()
         record_run_finish(meta, "ecosystem-audit")
         write_run_metadata(meta, output_dir=cfg.output_dir)
         graph.close()
