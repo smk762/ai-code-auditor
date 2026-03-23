@@ -11,16 +11,21 @@ from auditor.runtime import RunMetadata
 
 def record_run_start(run_id: str, pipeline: str) -> None:
     with db_session() as session:
-        session.add(
-            AuditRun(
-                run_id=run_id,
-                pipeline=pipeline,
-                started_at=utcnow(),
-                finished_at=None,
-                status="running",
-                metadata_json={},
+        row = session.execute(select(AuditRun).where(AuditRun.run_id == run_id)).scalar_one_or_none()
+        if row is None:
+            session.add(
+                AuditRun(
+                    run_id=run_id,
+                    pipeline=pipeline,
+                    started_at=utcnow(),
+                    finished_at=None,
+                    status="running",
+                    metadata_json={},
+                )
             )
-        )
+        else:
+            row.status = "running"
+            row.started_at = utcnow()
 
 
 def record_run_finish(metadata: RunMetadata, pipeline: str) -> None:
