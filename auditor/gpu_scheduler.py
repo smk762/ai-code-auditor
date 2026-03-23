@@ -242,7 +242,12 @@ class GpuScheduler:
 
     # ------------------------------------------------------------------
     def _acquire_via_gothmog(self) -> GpuCapacity:
-        """POST to gothmog /v1/gpu/capacity/acquire and block until granted."""
+        """POST to gothmog /v1/gpu/capacity/acquire, retrying on 503.
+
+        Gothmog returns 503 when capacity is not yet available.  We sleep
+        ``retry_interval_s`` between attempts so the audit pipeline never
+        races with imogen/vidita for the GPU.
+        """
         url = self.gothmog_url.rstrip("/") + "/v1/gpu/capacity/acquire"
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self.gothmog_api_key:
@@ -250,33 +255,47 @@ class GpuScheduler:
         payload = {
             "caller": "ai-auditor",
             "min_vram_mb": self.vram_min_mb,
-            "timeout_s": 28800,  # 8 h — gothmog blocks internally until capacity is free
+            "timeout_s": self.retry_interval_s,
         }
-        logger.info(
-            "Requesting GPU capacity from gothmog at %s (min_vram_mb=%d) …",
-            self.gothmog_url,
-            self.vram_min_mb,
-        )
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=28830)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
-            logger.error("gothmog capacity acquire failed: %s", exc)
-            raise
 
-        self._capacity_token_id = data.get("token")
-        vram_free = int(data.get("vram_free_mb", 0))
-        logger.info(
-            "GPU capacity granted by gothmog — token=%s vram_free_mb=%d",
-            self._capacity_token_id,
-            vram_free,
-        )
-        return GpuCapacity(
-            vram_free_mb=vram_free,
-            num_gpu_layers=-1,   # gothmog asserts GPU is idle; run all layers on GPU
-            offload_mode="gothmog_managed",
-        )
+        attempt = 0
+        while True:
+            attempt += 1
+            logger.info(
+                "Requesting GPU capacity from gothmog at %s (attempt %d, min_vram_mb=%d) …",
+                self.gothmog_url,
+                attempt,
+                self.vram_min_mb,
+            )
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=self.retry_interval_s + 30)
+                if resp.status_code == 503:
+                    logger.info(
+                        "gothmog: capacity unavailable (503). Retrying in %d min …",
+                        self.retry_interval_s // 60,
+                    )
+                    time.sleep(self.retry_interval_s)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+            except requests.exceptions.HTTPError:
+                raise
+            except Exception as exc:
+                logger.error("gothmog capacity acquire failed: %s", exc)
+                raise
+
+            self._capacity_token_id = data.get("token")
+            vram_free = int(data.get("vram_free_mb", 0))
+            logger.info(
+                "GPU capacity granted by gothmog — token=%s vram_free_mb=%d",
+                self._capacity_token_id,
+                vram_free,
+            )
+            return GpuCapacity(
+                vram_free_mb=vram_free,
+                num_gpu_layers=-1,   # gothmog asserts GPU is idle; run all layers on GPU
+                offload_mode="gothmog_managed",
+            )
 
     def release_capacity(self) -> None:
         """Release the gothmog capacity token (best-effort; call in finally)."""
