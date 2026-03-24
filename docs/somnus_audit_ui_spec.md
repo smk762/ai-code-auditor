@@ -30,6 +30,10 @@ AUDIT_CHAT_URL=http://192.168.1.109:9250
 Catch-all proxy to the audit API.  Preserves method, body, and headers.
 If `AUDIT_API_KEY` is set, inject as `Authorization: Bearer`.
 
+**Important:** Forward **Server-Sent Events** from `GET …/audit/runs/{id}/stream` the same way as the
+audit-chat proxy (see C-2).  If you buffer the body with `arrayBuffer()`, live run pages will never
+receive events.
+
 ```typescript
 import { NextRequest, NextResponse } from "next/server";
 
@@ -57,11 +61,22 @@ async function handler(
     duplex: "half",
   });
 
-  const ct = upstream.headers.get("content-type") ?? "application/json";
+  const ct = upstream.headers.get("content-type") ?? "";
+  if (ct.includes("text/event-stream")) {
+    return new NextResponse(upstream.body, {
+      status: upstream.status,
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        "x-accel-buffering": "no",
+      },
+    });
+  }
+
   const body = await upstream.arrayBuffer();
   return new NextResponse(body, {
     status: upstream.status,
-    headers: { "content-type": ct },
+    headers: { "content-type": ct || "application/json" },
   });
 }
 
@@ -141,17 +156,35 @@ const BASE = "/api/audit";
 
 export interface AuditRun {
   run_id:          string;
-  status:          "pending" | "running" | "completed" | "failed" | "partial_success";
+  status:          "pending" | "running" | "completed" | "failed" | "partial_success" | "cancelled";
   started_at:      string | null;
   finished_at:     string | null;
   scanned_repos:   string[];
   scanned_files:   number;
+  /** Code units extracted so far (increases during scan_and_extract). */
+  code_units:      number;
   findings:        number;
   violations:      number;
   errors:          string[];
+  /** Wall-clock elapsed: stored when the run finishes; computed server-side while pending/running. */
   duration_ms:     number | null;
+  /** Pipeline phase label (e.g. awaiting_gpu_capacity, scan_and_extract, pattern_mining). */
+  current_stage:   string;
+  /** Configured repo count (denominator for progress). */
+  repos_total:     number;
+  /** Convenience: len(scanned_repos); matches completed repo rows when scan is sequential. */
+  repos_completed: number;
   stage_timings_ms: Record<string, number>;
+  stage_status:     Record<string, string>;
   extra:           Record<string, unknown>;
+}
+
+export interface AuditRepoRunRow {
+  repo_name:     string;
+  status:        string;
+  attempts:      number;
+  error_message: string;
+  updated_at:    string | null;
 }
 
 export interface AuditHealth {
@@ -172,6 +205,29 @@ export const getRuns     = (limit = 20): Promise<AuditRun[]> =>
 export const getRun      = (id: string): Promise<AuditRun> =>
   fetch(`${BASE}/audit/runs/${id}`).then(r => r.json());
 
+/** Per-repo status, updated during the run (failed repos include error_message). */
+export const getRunRepos = (id: string): Promise<AuditRepoRunRow[]> =>
+  fetch(`${BASE}/audit/runs/${id}/repos`).then(r => {
+    if (!r.ok) throw new Error(`Repos list failed (${r.status})`);
+    return r.json();
+  });
+
+/** Stop a pending/running ecosystem audit. Idempotent if already ``cancelled``. */
+export const cancelAuditRun = (id: string): Promise<AuditRun> =>
+  fetch(`${BASE}/audit/runs/${id}/cancel`, { method: "POST" }).then(async (r) => {
+    if (!r.ok) throw new Error(`Cancel failed (${r.status})`);
+    return r.json();
+  });
+
+/** Remove a **finished** run from the audit DB (and related child rows). Responds **204 No Content**. */
+export const deleteAuditRun = (id: string): Promise<void> =>
+  fetch(`${BASE}/audit/runs/${id}`, { method: "DELETE" }).then((r) => {
+    if (r.status === 204) return;
+    if (r.status === 404) throw new Error("Run not found");
+    if (r.status === 409) throw new Error("Run is still active");
+    throw new Error(`Delete failed (${r.status})`);
+  });
+
 export const startRun    = (): Promise<{ run_id: string }> =>
   fetch(`${BASE}/audit/run`, { method: "POST" }).then(r => {
     if (r.status === 409) throw new Error("A run is already active.");
@@ -187,6 +243,82 @@ export const getReport   = (runId: string): Promise<string> =>
 export const triggerIngest = (): Promise<{ status: string; output: string }> =>
   fetch(`${BASE}/audit/ingest`, { method: "POST" }).then(r => r.json());
 ```
+
+### C-3a  Cancel & delete (ai-code-auditor)
+
+These routes match what Somnus bulk actions expect:
+
+| Method | Path | Success | Notes |
+|--------|------|---------|--------|
+| `POST` | `/audit/runs/{run_id}/cancel` | **200** + `AuditRun` JSON | Only `pending` or `running`. Idempotent if already `cancelled`. **404** if unknown id or not `ecosystem-audit`. **409** if already terminal (`completed` / `failed` / …). Sends **SIGTERM** to the pipeline subprocess when this API instance holds the active slot. |
+| `DELETE` | `/audit/runs/{run_id}` | **204** no body | Removes `audit_runs` plus `repo_runs`, `findings`, `pipeline_checkpoints` for that id. **409** while `pending`/`running` or while the id still matches the in-memory active slot (cancel first and wait for teardown). **404** if missing / wrong pipeline. |
+
+**Client caveat:** `DELETE /audit/runs/{id}` is **purge**, not cancel. If an older Somnus fallback called `DELETE` when `POST …/cancel` returned **404**, update that logic for this service so a missing-cancel route does not wipe history.
+
+### C-3b  Live run progress (Somnus)
+
+**Backend (this repo):** While a run is `pending` or `running`, `GET /audit/runs/{id}` now returns
+non-empty `metadata_json` fields as the pipeline advances: `current_stage`, `repos_total`,
+`repos_completed`, `scanned_files`, `code_units`, `stage_status`, and a **live** `duration_ms`
+(elapsed since `started_at`).  After completion, `duration_ms` is also stored in metadata.
+
+During **`current_stage === "awaiting_gpu_capacity"`** (and while the scheduler is blocked), the
+pipeline periodically persists **`extra`** fields aligned with Somnus `auditResourceWaitSummary()`:
+`gpu_vram_required_mb`, `vram_required_mb`, `required_vram_mb`, `gpu_memory_required_mb`,
+`vram_free_mb`, `available_vram_mb`, `gpu_vram_free_mb`, plus queue hints `queue_jobs_ahead`,
+`jobs_ahead`, `ahead_in_queue`, and when depth > 0 also `queue_position` / `position_in_queue`.
+`gpu_wait_reason` explains the gate (`imogen_queue`, `vram_below_minimum`, `gothmog_capacity_unavailable`, …).
+The same snapshot is mirrored as JSON in **`stage_status.awaiting_gpu_capacity`** (string value) so
+clients that parse structured `stage_status` entries can show “awaiting” + GPU + queue copy.
+Those keys are **removed from `extra`** once capacity is granted so finished runs stay tidy.
+
+**`GET /audit/reports/{run_id}`:** `409` responses use explicit wording — *still in progress* only when
+status is `pending`/`running`; `failed`/`cancelled` return a *finished but no report* message so the
+report page can avoid implying the run is still running. `410` still means on-disk reports were rotated away.
+
+**New endpoints**
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/audit/runs/{run_id}/repos` | Array of `{ repo_name, status, attempts, error_message, updated_at }` |
+| GET | `/audit/runs/{run_id}/stream` | SSE: `event: snapshot` + JSON body (same shape as `getRun`), then `event: terminal` |
+
+Optional query on the stream: `interval` (seconds, 0.25–5, default 1) — server poll period between DB reads.
+
+**Somnus — audit proxy:** Update C-1 so `text/event-stream` responses stream through (see C-1 snippet above).
+
+**Somnus — run detail page (`audit/runs/[runId]`):**
+
+1. **Subscribe to SSE** while `status` is `pending` or `running` (same-origin URL so the proxy can attach `AUDIT_API_KEY`):
+
+   ```typescript
+   const streamUrl = `/api/audit/audit/runs/${encodeURIComponent(runId)}/stream`;
+   const es = new EventSource(streamUrl);
+   es.addEventListener("snapshot", (ev) => {
+     const run = JSON.parse((ev as MessageEvent).data) as AuditRun;
+     setRun(run);
+   });
+   es.addEventListener("terminal", () => { es.close(); });
+   es.addEventListener("error", () => { es.close(); });
+   // cleanup on unmount / when leaving the page
+   ```
+
+2. **Fallback:** If `EventSource` fails (proxies, HTTP/2 quirks), poll `getRun(runId)` every 2–3 s until
+   status is terminal.
+
+3. **UI affordances while running:**
+   - **Stage:** Humanise `current_stage` (e.g. `scan_and_extract` → “Scanning repositories”).
+   - **Progress:** `repos_total > 0` → show `repos_completed / repos_total` and a thin progress bar;
+     optional subtitle “Last: {last repo in scanned_repos}” when the list is non-empty.
+   - **Duration:** Format `duration_ms` (no more placeholder `--` while running).
+   - **Repo table:** On each snapshot (or alongside polling), call `getRunRepos(runId)` and render
+     status badges per repo (`completed` / `failed` / `skipped`); show `error_message` on failures.
+
+4. **Run history table:** `duration_ms` is now reliable for finished rows as well; keep using
+   `getRuns()` or refresh a single row after SSE `terminal` on the detail view.
+
+5. **Types:** Extend `AuditRun` with `code_units`, `current_stage`, `repos_total`, `repos_completed`,
+   and `stage_status` (see C-3).  Add `AuditRepoRunRow` and `getRunRepos`.
 
 ### `src/lib/audit-chat-api.ts`
 
@@ -420,7 +552,7 @@ export function useAuditChatStream() {
 | Files | `scanned_files` |
 | Findings | `findings` |
 | Violations | `violations` with red badge if `> 0` |
-| Status | Coloured badge: pending/running/completed/failed/partial_success |
+| Status | Coloured badge: pending/running/completed/failed/partial_success/cancelled |
 
 Click any row → `audit/runs/[runId]`.
 
@@ -428,21 +560,27 @@ Click any row → `audit/runs/[runId]`.
 
 ### `audit/runs/[runId]/page.tsx` — Run Detail
 
-**Data:** `useAuditRun(runId)` (live-polls while running).
+**Data:** `useAuditRun(runId)` — prefer **SSE** (`/audit/runs/{id}/stream` via the proxy) while
+`pending`/`running`; fall back to polling `getRun`.  Call `getRunRepos` on each snapshot (or every few
+seconds) for per-repo rows.
 
 **Layout:**
 
 ```
-Status badge   Run ID   Started → Finished   Duration
+Status badge   Run ID   Started → Finished   Duration (live elapsed while running)
 
-Stage timings (horizontal bar chart)
+Current stage: <current_stage humanised>   Repos: repos_completed / repos_total  [progress bar]
+
+Stage timings (horizontal bar chart) — partial stage_status while running, full when done
   scan_and_extract         ████████░░░░  4m 12s
   graph_and_embedding      ██░░░░░░░░░░    48s
   pattern_mining           ███░░░░░░░░░  1m 05s
   governance_and_reports   █░░░░░░░░░░░    22s
 
+Table: repo_name | status | error_message   (from getRunRepos)
+
 Scanned repos: [pill list]
-Findings: 12   Violations: 3   Files: 847
+Code units: …   Files: …   Findings: …   Violations: …
 
 Errors: (collapsible accordion — hidden if empty)
   • repo-name: error text
@@ -470,7 +608,8 @@ Render with a Markdown component (e.g. `react-markdown` + `remark-gfm`).
 - "← Back to run" — link to `audit/runs/[runId]`.
 
 **Error states:**
-- `409` (run not yet complete) → "Report not available yet — run is still in progress."
+- Load **`getRun`** in parallel with **`getReport`** (`Promise.allSettled`).  Parse the **`409`** response body text from the API: if the run is **terminal** (`completed`, `failed`, `cancelled`, …) but the report call still failed, show that the report is unavailable from this endpoint (missing files, rotation, etc.) — **not** “still in progress.”
+- `409` while the run is **active** (`pending` / `running`) → still-in-progress copy is correct.
 - `410` (overwritten) → "Reports for this run have been overwritten by a later run. If S3 archiving is configured, retrieve from `ai-audit/{runId}/`."
 
 ---

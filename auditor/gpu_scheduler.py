@@ -19,6 +19,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import requests
@@ -207,8 +208,47 @@ class GpuScheduler:
         self.gothmog_api_key: str = self._cfg.get("gothmog_api_key", "").strip()
         self._capacity_token_id: str | None = None
 
+    def wait_progress_payload(
+        self,
+        *,
+        vram: VramInfo | None,
+        services: list[ServiceStatus],
+        reason: str,
+        queue_ahead: int | None = None,
+    ) -> dict[str, Any]:
+        """Flat fields for UIs such as Somnus ``auditResourceWaitSummary`` (``run.extra`` / polling).
+
+        Aliases match common client ``pickMb`` / queue keys: ``gpu_vram_required_mb``,
+        ``vram_free_mb``, ``queue_jobs_ahead``, ``position_in_queue``, etc.
+        """
+        free_mb = vram.free_mb if vram is not None else None
+        req = self.vram_min_mb
+        q = int(queue_ahead) if queue_ahead is not None else sum(s.queue_depth for s in services)
+        q = max(0, q)
+        out: dict[str, Any] = {
+            "gpu_vram_required_mb": req,
+            "vram_required_mb": req,
+            "required_vram_mb": req,
+            "gpu_memory_required_mb": req,
+            "vram_free_mb": free_mb,
+            "available_vram_mb": free_mb,
+            "gpu_vram_free_mb": free_mb,
+            "queue_jobs_ahead": q,
+            "jobs_ahead": q,
+            "ahead_in_queue": q,
+            "gpu_wait_reason": reason,
+        }
+        if q > 0:
+            pos = q + 1
+            out["queue_position"] = pos
+            out["position_in_queue"] = pos
+        return out
+
     # ------------------------------------------------------------------
-    def wait_for_capacity(self) -> GpuCapacity:
+    def wait_for_capacity(
+        self,
+        on_wait_update: Callable[[dict[str, Any]], None] | None = None,
+    ) -> GpuCapacity:
         """Block until GPU capacity is available, then return the offload config.
 
         If ``gothmog_url`` is configured, delegates to gothmog's
@@ -224,15 +264,17 @@ class GpuScheduler:
             return GpuCapacity(vram_free_mb=0, num_gpu_layers=0, offload_mode="bypassed")
 
         if self.gothmog_url:
-            return self._acquire_via_gothmog()
+            return self._acquire_via_gothmog(on_wait_update=on_wait_update)
 
         # Direct-poll fallback (no gothmog).
         attempt = 0
         while True:
             attempt += 1
-            capacity = self._check_once(attempt)
+            capacity, snap = self._check_once(attempt)
             if capacity is not None:
                 return capacity
+            if on_wait_update is not None and snap:
+                on_wait_update(snap)
             logger.info(
                 "Conditions not met (attempt %d). Retrying in %d min …",
                 attempt,
@@ -241,7 +283,11 @@ class GpuScheduler:
             time.sleep(self.retry_interval_s)
 
     # ------------------------------------------------------------------
-    def _acquire_via_gothmog(self) -> GpuCapacity:
+    def _acquire_via_gothmog(
+        self,
+        *,
+        on_wait_update: Callable[[dict[str, Any]], None] | None = None,
+    ) -> GpuCapacity:
         """POST to gothmog /v1/gpu/capacity/acquire, retrying on 503.
 
         Gothmog returns 503 when capacity is not yet available.  We sleep
@@ -269,11 +315,27 @@ class GpuScheduler:
             )
             try:
                 resp = requests.post(url, json=payload, headers=headers, timeout=self.retry_interval_s + 30)
+                logger.info(
+                    "Gothmog POST %s → HTTP %d",
+                    url,
+                    resp.status_code,
+                )
                 if resp.status_code == 503:
                     logger.info(
                         "gothmog: capacity unavailable (503). Retrying in %d min …",
                         self.retry_interval_s // 60,
                     )
+                    if on_wait_update is not None:
+                        gv = get_vram_info()
+                        snap = self.wait_progress_payload(
+                            vram=gv,
+                            services=[],
+                            reason="gothmog_capacity_unavailable",
+                            queue_ahead=0,
+                        )
+                        snap["gothmog_last_http_status"] = 503
+                        snap["gothmog_capacity_acquire_url"] = url
+                        on_wait_update(snap)
                     time.sleep(self.retry_interval_s)
                     continue
                 resp.raise_for_status()
@@ -317,13 +379,16 @@ class GpuScheduler:
             self._capacity_token_id = None
 
     # ------------------------------------------------------------------
-    def _check_once(self, attempt: int) -> GpuCapacity | None:
+    def _check_once(self, attempt: int) -> tuple[GpuCapacity | None, dict[str, Any]]:
         # 1. Read VRAM ──────────────────────────────────────────────────
         vram = get_vram_info()
         if vram is None:
             # No nvidia-smi / no GPU — proceed in CPU-only mode rather than looping forever.
             logger.warning("No GPU detected — proceeding with CPU-only offload mode.")
-            return GpuCapacity(vram_free_mb=0, num_gpu_layers=0, offload_mode="cpu_only")
+            return (
+                GpuCapacity(vram_free_mb=0, num_gpu_layers=0, offload_mode="cpu_only"),
+                {},
+            )
         logger.info(
             "Attempt %d — VRAM: %d MB free / %d MB total",
             attempt, vram.free_mb, vram.total_mb,
@@ -359,7 +424,13 @@ class GpuScheduler:
                     "%s has %d job(s) in queue (max allowed: %d) — deferring.",
                     s.name, s.queue_depth, max_q,
                 )
-                return None
+                snap = self.wait_progress_payload(
+                    vram=vram,
+                    services=statuses,
+                    reason=f"{s.name}_queue",
+                    queue_ahead=s.queue_depth,
+                )
+                return None, snap
 
         # 4. Try to recover VRAM from imogen if we're short ─────────────
         if vram.free_mb < self.vram_min_mb:
@@ -381,7 +452,13 @@ class GpuScheduler:
                 "VRAM still insufficient: %d MB free (need %d MB minimum).",
                 vram.free_mb, self.vram_min_mb,
             )
-            return None
+            snap = self.wait_progress_payload(
+                vram=vram,
+                services=statuses,
+                reason="vram_below_minimum",
+                queue_ahead=0,
+            )
+            return None, snap
 
         # 6. Compute offload ────────────────────────────────────────────
         num_gpu, mode = compute_num_gpu_layers(vram.free_mb, self.layer_cfg)
@@ -389,9 +466,12 @@ class GpuScheduler:
             "GPU capacity OK — mode=%s num_gpu_layers=%s (%d MB free)",
             mode, num_gpu if num_gpu >= 0 else "all", vram.free_mb,
         )
-        return GpuCapacity(
-            vram_free_mb=vram.free_mb,
-            num_gpu_layers=num_gpu,
-            offload_mode=mode,
-            services=statuses,
+        return (
+            GpuCapacity(
+                vram_free_mb=vram.free_mb,
+                num_gpu_layers=num_gpu,
+                offload_mode=mode,
+                services=statuses,
+            ),
+            {},
         )

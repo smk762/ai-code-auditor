@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import json
 import os
+import sys
 import time
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -11,12 +12,13 @@ from auditor.archive import archive_reports
 from auditor.auth import enforce_role
 from auditor.config import load_architecture_rules, load_ecosystem_config
 from auditor.contracts import CodeUnit
-from auditor.gpu_scheduler import GpuScheduler
+from auditor.gpu_scheduler import GpuScheduler, get_vram_info
 from auditor.locks import pipeline_lock
 from auditor.persistence import (
     completed_repos_for_run,
     recent_findings,
     record_run_finish,
+    record_run_progress,
     record_run_start,
     upsert_repo_run,
     write_checkpoint,
@@ -40,6 +42,44 @@ from patterns.pattern_miner import mine_patterns
 from patterns.pattern_proposer import propose_extraction_candidates, propose_patterns
 from patterns.pattern_scorer import score_pattern_prevalence
 from semantic.embedding_index import EmbeddingIndex
+
+# Keys merged into ``run.extra`` only while waiting on GPU / queue (stripped after capacity).
+_WAIT_PROGRESS_EXTRA_KEYS = frozenset({
+    "gpu_vram_required_mb",
+    "vram_required_mb",
+    "required_vram_mb",
+    "gpu_memory_required_mb",
+    "vram_free_mb",
+    "available_vram_mb",
+    "gpu_vram_free_mb",
+    "queue_jobs_ahead",
+    "jobs_ahead",
+    "ahead_in_queue",
+    "queue_position",
+    "position_in_queue",
+    "gpu_wait_reason",
+    "gothmog_last_http_status",
+    "gothmog_capacity_acquire_url",
+})
+
+
+def _apply_gpu_wait_progress(meta: RunMetadata, snap: dict[str, object]) -> None:
+    for k, v in snap.items():
+        if v is not None:
+            meta.extra[k] = v
+    meta.stage_status["awaiting_gpu_capacity"] = json.dumps(
+        {
+            "awaiting": True,
+            "gpu": True,
+            "queue_jobs_ahead": snap.get("queue_jobs_ahead"),
+            "jobs_ahead": snap.get("jobs_ahead"),
+            "vram_required_mb": snap.get("vram_required_mb"),
+            "vram_free_mb": snap.get("vram_free_mb"),
+            "reason": snap.get("gpu_wait_reason"),
+        },
+        separators=(",", ":"),
+    )
+    record_run_progress(meta)
 
 
 def _write_ecosystem_report(
@@ -77,15 +117,35 @@ def run() -> None:
     # Wait until GPU capacity is available before acquiring the pipeline lock.
     # This may block for one or more 30-minute retry cycles.
     scheduler = GpuScheduler()
-    gpu = scheduler.wait_for_capacity()
 
     # AI_AUDIT_RUN_ID lets the audit API pre-assign the run_id so it can
     # insert a DB record and return it to callers before the pipeline starts.
     forced_run_id = os.getenv("AI_AUDIT_RUN_ID", "")
     meta = RunMetadata.start("ecosystem-audit", run_id=forced_run_id)
+    meta.repos_total = len(cfg.repos)
+    meta.current_stage = "awaiting_gpu_capacity"
+    record_run_progress(meta)
+
+    _apply_gpu_wait_progress(
+        meta,
+        scheduler.wait_progress_payload(
+            vram=get_vram_info(),
+            services=[],
+            reason="awaiting_gpu_capacity",
+            queue_ahead=None,
+        ),
+    )
+    gpu = scheduler.wait_for_capacity(
+        on_wait_update=lambda s: _apply_gpu_wait_progress(meta, s),
+    )
+    for k in _WAIT_PROGRESS_EXTRA_KEYS:
+        meta.extra.pop(k, None)
+    meta.stage_status.pop("awaiting_gpu_capacity", None)
+
     meta.extra["gpu_offload_mode"] = gpu.offload_mode
     meta.extra["gpu_num_layers"] = gpu.num_gpu_layers
     meta.extra["gpu_vram_free_mb"] = gpu.vram_free_mb
+    record_run_progress(meta)
 
     all_units: list[CodeUnit] = []
     repo_roots: dict[str, str] = {}
@@ -97,6 +157,8 @@ def run() -> None:
         if auth_token:
             enforce_role(auth_token, "admin", "pipeline:ecosystem-run")
         record_run_start(meta.run_id, "ecosystem-audit")
+        meta.current_stage = "scan_and_extract"
+        record_run_progress(meta)
         with pipeline_lock("ecosystem-audit", ttl_s=7200):
             resume_run_id = os.getenv("AI_AUDIT_RESUME_RUN_ID", "")
             completed = completed_repos_for_run("ecosystem-audit", resume_run_id) if resume_run_id else set()
@@ -104,6 +166,7 @@ def run() -> None:
             for repo in cfg.repos:
                 if repo.name in completed:
                     upsert_repo_run(meta.run_id, repo.name, "skipped", attempts=0, error_message="resumed-skip")
+                    record_run_progress(meta)
                     continue
                 try:
                     files = with_retries(lambda: scan_repo(repo), retries=3, base_delay_s=1.0)
@@ -121,11 +184,15 @@ def run() -> None:
                     meta.code_units += len(all_units)
                     upsert_repo_run(meta.run_id, repo.name, "completed", attempts=1)
                     write_checkpoint("ecosystem-audit", meta.run_id, repo.name, "completed", {"files": len(files)})
+                    record_run_progress(meta)
                 except Exception as repo_exc:
                     upsert_repo_run(meta.run_id, repo.name, "failed", attempts=1, error_message=str(repo_exc))
                     write_checkpoint("ecosystem-audit", meta.run_id, repo.name, "failed", {"error": str(repo_exc)})
                     meta.add_error(f"{repo.name}: {repo_exc}")
+                    record_run_progress(meta)
             meta.mark_stage("scan_and_extract", int((time.monotonic() - t0) * 1000), status="partial_success" if meta.errors else "success")
+            meta.current_stage = "graph_and_embedding_index"
+            record_run_progress(meta)
 
             t1 = time.monotonic()
             graph.upsert_code_units(all_units)
@@ -135,6 +202,8 @@ def run() -> None:
                 raise RuntimeError(f"Embedding provider health check failed: {reason}")
             embedding_index.rebuild(all_units)
             meta.mark_stage("graph_and_embedding_index", int((time.monotonic() - t1) * 1000))
+            meta.current_stage = "pattern_mining"
+            record_run_progress(meta)
 
             t2 = time.monotonic()
             mined = mine_patterns(all_units)
@@ -158,6 +227,8 @@ def run() -> None:
             write_extraction_candidates_yaml(extraction_candidates, output_dir=cfg.output_dir, ecosystem_name="smk-stack")
             write_extraction_candidates_markdown(extraction_candidates, output_dir=cfg.output_dir)
             meta.mark_stage("pattern_mining", int((time.monotonic() - t2) * 1000))
+            meta.current_stage = "governance_and_reports"
+            record_run_progress(meta)
 
             t3 = time.monotonic()
             engine = ArchitectureEngine(graph=graph, rules=rules)

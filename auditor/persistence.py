@@ -28,6 +28,15 @@ def record_run_start(run_id: str, pipeline: str) -> None:
             row.started_at = utcnow()
 
 
+def record_run_progress(metadata: RunMetadata) -> None:
+    """Merge live progress into ``audit_runs.metadata_json`` without finishing the run."""
+    with db_session() as session:
+        row = session.execute(select(AuditRun).where(AuditRun.run_id == metadata.run_id)).scalar_one_or_none()
+        if row is None:
+            return
+        row.metadata_json = asdict(metadata)
+
+
 def record_run_finish(metadata: RunMetadata, pipeline: str) -> None:
     with db_session() as session:
         row = session.execute(select(AuditRun).where(AuditRun.run_id == metadata.run_id)).scalar_one_or_none()
@@ -42,7 +51,10 @@ def record_run_finish(metadata: RunMetadata, pipeline: str) -> None:
             session.add(row)
         row.finished_at = utcnow()
         row.status = metadata.status
-        row.metadata_json = asdict(metadata)
+        payload = asdict(metadata)
+        if row.started_at and row.finished_at:
+            payload["duration_ms"] = int((row.finished_at - row.started_at).total_seconds() * 1000)
+        row.metadata_json = payload
 
 
 def upsert_repo_run(run_id: str, repo_name: str, status: str, attempts: int = 1, error_message: str = "") -> None:

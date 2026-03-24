@@ -38,6 +38,9 @@ class RunMetadata:
     started_at: str
     finished_at: str = ""
     status: str = "running"
+    # Live progress (persisted mid-run via record_run_progress)
+    current_stage: str = ""
+    repos_total: int = 0  # len(cfg.repos) for ecosystem runs; UI progress denominator
     scanned_repos: list[str] = field(default_factory=list)
     scanned_files: int = 0
     code_units: int = 0
