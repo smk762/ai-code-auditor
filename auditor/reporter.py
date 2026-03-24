@@ -64,19 +64,110 @@ def write_architecture_violations(violations: list[RuleViolation], output_dir: s
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     report = out / "architecture_violations.md"
-    lines = ["# Architecture Violations", "", f"- Violations: {len(violations)}", ""]
+
+    by_rule: dict[str, list] = {}
     for v in violations:
-        lines.extend(
-            [
-                f"## {v.rule_name}",
+        by_rule.setdefault(v.rule_name, []).append(v)
+
+    graph_violations = by_rule.get("service_boundary", []) + by_rule.get("dependency_direction", [])
+    boundary_violations = by_rule.get("domain_boundary_violation", [])
+    call_graph_violations = by_rule.get("call_graph_violation", [])
+    ui_violations = by_rule.get("ui_in_worker", [])
+    competing_violations = by_rule.get("competing_providers", [])
+
+    lines = [
+        "# Architecture Violations",
+        "",
+        f"- Total violations: {len(violations)}",
+        f"  - Graph rule violations: {len(graph_violations)}",
+        f"  - Call graph violations (direct inter-service calls): {len(call_graph_violations)}",
+        f"  - Domain boundary violations (misplaced logic): {len(boundary_violations)}",
+        f"  - UI in worker violations: {len(ui_violations)}",
+        f"  - Competing provider paths: {len(competing_violations)}",
+        "",
+    ]
+
+    if call_graph_violations:
+        lines += [
+            "## Call Graph Violations",
+            "",
+            "These services make direct HTTP calls to a target they should not reach. "
+            "All inter-service calls should flow through the canonical gateway/orchestrator.",
+            "",
+        ]
+        for v in call_graph_violations:
+            lines += [
+                f"### {v.violating_path}",
+                f"- Severity: {v.severity}",
+                f"- Entities: {', '.join(v.entities)}",
+                f"- Evidence: {v.evidence}",
+                "",
+            ]
+
+    if boundary_violations:
+        lines += [
+            "## Domain Boundary Violations",
+            "",
+            "The following duplicate-code clusters contain logic outside its designated "
+            "domain owner. Remove from the offending service and route through the canonical owner.",
+            "",
+        ]
+        for v in boundary_violations:
+            lines += [
+                f"### {v.violating_path}",
+                f"- Severity: {v.severity}",
+                f"- Entities: {', '.join(v.entities)}",
+                f"- Evidence: {v.evidence}",
+                "",
+            ]
+
+    if ui_violations:
+        lines += [
+            "## UI in Worker Violations",
+            "",
+            "HTML/template response patterns found inside worker or orchestrator services. "
+            "UI code belongs in the ui-role service (Somnus).",
+            "",
+        ]
+        for v in ui_violations:
+            lines += [
+                f"### {v.violating_path}",
+                f"- Severity: {v.severity}",
+                f"- Evidence: {v.evidence}",
+                "",
+            ]
+
+    if competing_violations:
+        lines += [
+            "## Competing Provider Paths",
+            "",
+            "Multiple provider implementations for the same interface exist in one repo. "
+            "The active call path depends on deployment config, reducing observability.",
+            "",
+        ]
+        for v in competing_violations:
+            lines += [
+                f"### {v.violating_path}",
+                f"- Severity: {v.severity}",
+                f"- Evidence: {v.evidence}",
+                "",
+            ]
+
+    if graph_violations:
+        lines += ["## Graph Rule Violations", ""]
+        for v in graph_violations:
+            lines += [
+                f"### {v.rule_name}",
+                f"- Severity: {v.severity}",
                 f"- Path: {v.violating_path}",
                 f"- Entities: {', '.join(v.entities)}",
                 f"- Evidence: {v.evidence}",
                 "",
             ]
-        )
+
     if not violations:
         lines.append("- No architecture violations detected.")
+
     report.write_text("\n".join(lines), encoding="utf-8")
     return report
 

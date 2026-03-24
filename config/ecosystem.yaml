@@ -62,6 +62,12 @@ repos:
     provider: local
     subpath: ""
 
+  - name: rubedo
+    path: /mnt/ai-audit/rubedo
+    enabled: true
+    provider: local
+    subpath: ""
+
   - name: sauron
     path: /mnt/ai-audit/sauron
     enabled: true

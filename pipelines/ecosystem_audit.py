@@ -35,8 +35,11 @@ from auditor.retry import with_retries
 from auditor.settings import get_settings
 from ecosystem.architecture_engine import ArchitectureEngine
 from ecosystem.graph_builder import GraphBuilder
+from ecosystem.call_graph_analyzer import detect_call_graph_violations
+from patterns.boundary_violation_detector import detect_boundary_violations
 from patterns.extraction_candidate_builder import collect_git_metrics, detect_duplicate_clusters
 from patterns.pattern_clusterer import cluster_patterns
+from patterns.service_role_violations import detect_competing_providers, detect_ui_in_worker
 from patterns.pattern_feedback import write_pattern_report
 from patterns.pattern_miner import mine_patterns
 from patterns.pattern_proposer import propose_extraction_candidates, propose_patterns
@@ -149,6 +152,7 @@ def run() -> None:
 
     all_units: list[CodeUnit] = []
     repo_roots: dict[str, str] = {}
+    repo_files: dict[str, list] = {}
     graph = GraphBuilder(cfg.graph_db_path)
     settings = get_settings()
     try:
@@ -176,6 +180,7 @@ def run() -> None:
                             if (parent / ".git").exists():
                                 repo_roots[repo.name] = str(parent)
                                 break
+                        repo_files[repo.name] = files
                     for file_path in files:
                         units = extract_code_units(repo.name, file_path)
                         all_units.extend(units)
@@ -233,6 +238,22 @@ def run() -> None:
             t3 = time.monotonic()
             engine = ArchitectureEngine(graph=graph, rules=rules)
             violations = engine.evaluate()
+            boundary_violations = detect_boundary_violations(
+                duplicate_clusters=duplicate_clusters,
+                domain_ownership=rules.get("domain_ownership", []),
+            )
+            call_graph_violations = detect_call_graph_violations(
+                repo_files=repo_files,
+                call_graph_rules=rules.get("call_graph_rules", {}),
+            )
+            service_role_violations = detect_ui_in_worker(
+                repo_files=repo_files,
+                service_roles=rules.get("service_roles", []),
+            ) + detect_competing_providers(
+                repo_files=repo_files,
+                service_roles=rules.get("service_roles", []),
+            )
+            violations = violations + boundary_violations + call_graph_violations + service_role_violations
             meta.violations = len(violations)
             write_architecture_violations(violations, output_dir=cfg.output_dir)
 

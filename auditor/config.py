@@ -116,7 +116,17 @@ def load_architecture_rules(path: str | Path = "config/architecture_rules.yaml")
     rules = raw.get("rules", [])
     if not isinstance(rules, list):
         raise ValueError("architecture_rules.yaml must contain rules as a list")
-    return {"rules": rules}
+    domain_ownership = raw.get("domain_ownership", [])
+    if not isinstance(domain_ownership, list):
+        raise ValueError("architecture_rules.yaml domain_ownership must be a list")
+    service_roles = raw.get("service_roles", [])
+    call_graph_rules = raw.get("call_graph_rules", {})
+    return {
+        "rules": rules,
+        "domain_ownership": domain_ownership,
+        "service_roles": service_roles,
+        "call_graph_rules": call_graph_rules,
+    }
 
 
 def load_prompts(path: str | Path = "config/prompts.yaml") -> dict[str, str]:
