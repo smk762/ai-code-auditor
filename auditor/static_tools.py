@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from pathlib import Path
 
 from auditor.contracts import Finding
 
@@ -12,7 +11,6 @@ def run_static_checks(repo_name: str, repo_path: str) -> list[Finding]:
     findings: list[Finding] = []
     findings.extend(_run_bandit(repo_name, repo_path))
     findings.extend(_run_semgrep(repo_name, repo_path))
-    findings.extend(_run_trivy_fs(repo_name, repo_path))
     return findings
 
 
@@ -78,39 +76,6 @@ def _run_semgrep(repo_name: str, repo_path: str) -> list[Finding]:
     return findings
 
 
-def _run_trivy_fs(repo_name: str, repo_path: str) -> list[Finding]:
-    if shutil.which("trivy") is None:
-        return []
-    cmd = ["trivy", "fs", "--scanners", "vuln,secret", "--format", "json", repo_path]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if result.returncode not in (0, 1):
-        return []
-    try:
-        payload = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
-        return []
-    findings: list[Finding] = []
-    for res in payload.get("Results", []):
-        target = res.get("Target", "")
-        for vuln in res.get("Vulnerabilities", []) or []:
-            findings.append(
-                Finding(
-                    id=f"trivy:{target}:{vuln.get('VulnerabilityID')}",
-                    type="security",
-                    severity=_trivy_to_severity(vuln.get("Severity", "LOW")),
-                    repo=repo_name,
-                    file_path=target,
-                    line=0,
-                    title=vuln.get("Title", vuln.get("VulnerabilityID", "Trivy finding")),
-                    description=vuln.get("Description", ""),
-                    evidence=vuln.get("PkgName", ""),
-                    recommendation=f"Upgrade package {vuln.get('PkgName', 'unknown')}.",
-                    source="trivy",
-                )
-            )
-    return findings
-
-
 def _bandit_to_severity(value: str) -> str:
     mapping = {"HIGH": "HIGH", "MEDIUM": "MEDIUM", "LOW": "LOW"}
     return mapping.get(value.upper(), "LOW")
@@ -118,9 +83,4 @@ def _bandit_to_severity(value: str) -> str:
 
 def _semgrep_to_severity(value: str) -> str:
     mapping = {"ERROR": "HIGH", "WARNING": "MEDIUM", "INFO": "LOW"}
-    return mapping.get(value.upper(), "LOW")
-
-
-def _trivy_to_severity(value: str) -> str:
-    mapping = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MEDIUM": "MEDIUM", "LOW": "LOW"}
     return mapping.get(value.upper(), "LOW")
