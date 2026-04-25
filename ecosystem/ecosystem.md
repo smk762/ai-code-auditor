@@ -4,14 +4,12 @@
 |-------|------|------|
 | Core API | [kimini](https://github.com/smk762/kimini-api) | FastAPI platform backend — auth, chat, companions, economy, marketplace, generation proxies, WebSocket |
 | Familiar UI | [somnus](https://github.com/smk762/somnus) | Frontend/operator app for familiar workflows, HITL review/rating, and training/evaluation operations |
-| Image | [imogen](https://github.com/smk762/imogen) | Self-hosted GPU image generation (FLUX.1-dev + SDXL) behind async gateway |
+| Image | [imogen](https://github.com/smk762/imogen) | Self-hosted GPU image generation (FLUX.1-dev + SDXL) + LoRA training and post-processing (absorbed from loraline/rubedo) |
 | Video | [vidita](https://github.com/smk762/vidita) | Self-hosted GPU video generation (Wan 2.2) behind async gateway |
 | Voice | [tss-stack](https://github.com/smk762/tss-stack) | TTS (XTTS) + STT (Whisper) voice gateway with async job API, presigned audio URLs |
-| LoRA | [loraline](https://github.com/smk762/loraline) | LoRA fine-tuning control plane + proxy for image/video/chat/voice jobs |
-| Ollama Chat | [agent-composer](https://github.com/smk762/agent-composer) | Ollama-backed chat service (RAG chat endpoint) behind Cloudflare Zero Trust |
-| RAG Ingest | [mimiri](https://github.com/smk762/mimiri) | Standalone `rag-ingest` service with signed ingestion API (`/ingest`) for Qdrant upserts via external Ollama embeddings |
+| Ollama Chat | [agent-composer](https://github.com/smk762/agent-composer) | Ollama-backed chat + RAG ingest service, ModernBERT classifier sidecar, behind Cloudflare Zero Trust |
 | Orchestrator | [gothmog](https://github.com/smk762/gothmog) | LangGraph/LangChain workflow orchestrator — multi-step pipelines across stacks |
-| Infra | [test_dbs](https://github.com/smk762/test_dbs) | PostgreSQL, Redis, MinIO, Qdrant — shared data layer |
+| ComfyUI | [voluptas](https://github.com/smk762/voluptas) | ComfyUI inference node — docker-compose wrapper with GPU passthrough, workflow API at :8188 |
 | Observability | [sauron](https://github.com/smk762/sauron) | Prometheus + Grafana + Loki + Promtail + Alertmanager for cross-stack metrics, logs, and alerting |
 
 ---
@@ -37,70 +35,70 @@
                          │  │ Personas │ Stories  │ Subs     │ Discover    │  │
                          │  ├──────────┴──────────┴──────────┴─────────────┤  │
                          │  │           Generation Domains                 │  │
-                         │  │  imagegen │ videogen │ voicegen │ loragen    │  │
+                         │  │  imagegen │ videogen │ voicegen              │  │
                          │  ├──────────────────────────────────────────────┤  │
                          │  │  Orchestrate proxy  │  WebSocket (realtime)  │  │
                          │  ├──────────────────────────────────────────────┤  │
                          │  │  TaskIQ workers (high / default / low)       │  │
                          │  └──────────────────────────────────────────────┘  │
                          │                                                    │
-                         └──┬──────┬──────┬──────┬──────┬──────┬──────┬───────┘
-                            │      │      │      │      │      │      │
-            ┌───────────────┘      │      │      │      │      │      └──────────────────┐
-            │                ┌─────┘      │      │      └─────┐│                         │
-            ▼                ▼            ▼      ▼            ▼▼                         ▼
+                         └──┬──────┬──────┬──────┬──────┬──────┬─────────────┘
+                            │      │      │      │      │      │
+            ┌───────────────┘      │      │      │      │      └──────────────────┐
+            │                ┌─────┘      │      └─────┐│                         │
+            ▼                ▼            ▼            ▼▼                         ▼
   ┌─────────────────┐ ┌──────────┐ ┌──────────────┐ ┌────────────────┐ ┌──────────────────┐
   │  GOTHMOG :8030  │ │ IMOGEN   │ │  VIDITA      │ │ TSS-STACK      │ │ AGENT-COMPOSER   │
   │  Orchestrator   │ │ :8003    │ │  :8000       │ │ :9001 gateway  │ │ Ollama chat      │
   │                 │ │ img-gw   │ │  vid-gw      │ │                │ │                  │
   │ LangGraph       │ │          │ │              │ │ TTS (XTTS)     │ │ rag-chat  :9150  │
-  │ workflows:      │ │ POST     │ │ POST         │ │ STT (Whisper)  │ │ mimiri    :9050* │
+  │ workflows:      │ │ POST     │ │ POST         │ │ STT (Whisper)  │ │ rag-ingest :9050 │
   │ • img_generate  │ │ /images/ │ │ /videos/     │ │                │ │                  │
-  │ • img_to_video  │ │ generate │ │ generate     │ │ /voices        │ │ Ollama (remote)  │
-  │ • char_create   │ │          │ │              │ │ /tts/jobs      │ │ :11434 @ .138    │
+  │ • img_to_video  │ │ generate │ │ generate     │ │ /voices        │ │ Ollama :11434    │
+  │ • char_create   │ │          │ │              │ │ /tts/jobs      │ │ (container-local)│
   │ • style_xfer    │ │ GET      │ │ GET          │ │ /stt/jobs      │ │                  │
   │ • batch_gen     │ │ /images/ │ │ /videos/     │ │ /tts/jobs/{id} │ │ Cloudflare       │
   │                 │ │ jobs/{id}│ │ jobs/{id}    │ │ /stt/jobs/{id} │ │ Zero Trust       │
   │ LLM calls:      │ │          │ │              │ │                │ └──────────────────┘
   │ prompt expand,  │ │ GPU:     │ │ GPU:         │ │ Services:      │
-  │ style analysis  │ │ flux     │ │ wan22 :8010  │ │ xtts (engine)  │ ┌─────────────────┐
-  │                 │ │ :8001    │ │ (internal)   │ │ tts-worker     │ │ LORALINE :8010  │
-  │ Tools call ─────┤►│ sdxl     │ │              │ │ whisper-worker │ │ LoRA + Proxy    │
-  │ img/vid/voice   │ │ :8002    │ │              │ │ redis, minio   │ │                 │
-  └────────┬────────┘ └──────────┘ └──────────────┘ └───────┬────────┘ │ LoRA training   │
-           │               ▲             ▲              ▲   │          │ Image proxy ──►─┤─► imogen
-           │               │             │              │   │          │ Video proxy ──►─┤─► vidita
-           │               │             │              │   │          │ Chat  (Ollama)  │
-           └───────────────┴─────────────┴──────────────┘   │          │ Voice (tss) ──►─┤─► tss-stack
-             gothmog also calls img/vid/voice stacks        │          │                 │
-             directly via LangChain tools                   │          │ POST/GET        │
-                                                            │          │ /v1/lora/jobs   │
-           kimini voicegen calls tss-stack ─────────────────┘          │ /v1/image/jobs  │
-                                                                       │ /v1/video/jobs  │
-                                                                       │ /v1/chat/jobs   │
-                                                                       └─────────────────┘
+  │ style analysis  │ │ flux     │ │ wan22 :8010  │ │ xtts (engine)  │ ┌──────────────────┐
+  │                 │ │ :8001    │ │ (internal)   │ │ tts-worker     │ │ VOLUPTAS :8188   │
+  │ Tools call ─────┤►│ sdxl     │ │              │ │ whisper-worker │ │ ComfyUI          │
+  │ img/vid/voice   │ │ :8002    │ │              │ │ redis, minio   │ │                  │
+  └────────┬────────┘ │          │ │              │ │                │ │ somnus → direct  │
+           │          │ LoRA /   │ │              │ │                │ │ WS + proxy       │
+           │          │ train    │ │              │ │                │ └──────────────────┘
+           │          │ :8004    │ │              │ │                │
+           │          └──────────┘ └──────────────┘ └───────┬────────┘
+           │               ▲             ▲              ▲   │
+           │               │             │              │   │
+           └───────────────┴─────────────┴──────────────┘   │
+             gothmog calls img/vid/voice stacks              │
+             directly via LangChain tools                    │
+           kimini voicegen calls tss-stack ──────────────────┘
 
   ────────────────────────────────────────────────────────────────────────────
-                         SHARED DATA LAYER  (test_dbs)
+                         SHARED DATA LAYER
   ────────────────────────────────────────────────────────────────────────────
 
-  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────────┐  ┌──────────────────┐
-  │  PostgreSQL :5432│  │  Redis :6379     │  │  MinIO (S3) :9000/:9001  │  │  Qdrant :6333    │
-  │                  │  │                  │  │                          │  │                  │
-  │  kimini tables   │  │  rate limits     │  │  uploads bucket          │  │  project_docs    │
-  │  gothmog.runs    │  │  TaskIQ broker   │  │  generated/images/       │  │  RAG vectors     │
-  │  loraline jobs   │  │  WS pub/sub      │  │  generated/videos/       │  │  mimiri upserts  │
-  │                  │  │  imgq:*, vidq:*  │  │  generated/audio/        │  │  rag-chat reads  │
-  │                  │  │  orcq:*, orcr:*  │  │  lora artifacts          │  │                  │
-  │                  │  │  tss job queues  │  │  tts/stt audio artifacts │  │                  │
-  └──────────────────┘  └──────────────────┘  └──────────────────────────┘  └──────────────────┘
+  ┌──────────────────────┐  ┌──────────────────┐  ┌──────────────────────────┐  ┌──────────────────┐
+  │ PostgreSQL :5433     │  │ Redis :6380      │  │ MinIO (S3) :9000/:9001   │  │ Qdrant :6333     │
+  │ NAS (.121)           │  │ NAS (.121)       │  │ NAS (.121)               │  │ .198 (agent-     │
+  │                      │  │                  │  │                          │  │  composer)       │
+  │  kimini tables       │  │  rate limits     │  │  uploads bucket          │  │  project_docs    │
+  │  gothmog.runs        │  │  TaskIQ broker   │  │  generated/images/       │  │  RAG vectors     │
+  │                      │  │  WS pub/sub      │  │  generated/videos/       │  │  code_audit      │
+  │                      │  │  imgq:*, vidq:*  │  │  generated/audio/        │  │  audit_docs      │
+  │                      │  │  orcq:*, orcr:*  │  │  comfyui/workflows/      │  │                  │
+  │                      │  │  tss job queues  │  │  tts/stt audio artifacts │  │                  │
+  └──────────────────────┘  └──────────────────┘  └──────────────────────────┘  └──────────────────┘
 
   ────────────────────────────────────────────────────────────────────────────
                            OBSERVABILITY  (sauron)
   ────────────────────────────────────────────────────────────────────────────
 
   ┌──────────────────────────────────────────────────────────────────────────┐
-  │ SAURON                                                                   │
+  │ SAURON  (migrating to .198)                                              │
   │ prometheus:9090  grafana:3001  loki:3100  alertmanager:9093              │
   │ promtail ships Docker logs -> Loki                                       │
   │ Prometheus scrapes primary host services + remote GPU exporters          │
@@ -108,98 +106,105 @@
   └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-RAG ingestion is served by `mimiri` (`rag-ingest`) on `192.168.1.128:9050`, colocated with Qdrant on `192.168.1.128:6333`, and using Ollama on `192.168.1.138:11434` (`/ui/ingest` only when `INGEST_REQUIRE_ENCRYPTION=0`).
+RAG ingestion is served by `rag-ingest` on `192.168.1.198:9050` (inside `agent-composer`), colocated with Qdrant on `192.168.1.198:6333`, using Ollama container-locally at `http://ollama:11434`.
 
 ---
 
 ## Deployment Topology
 
-### Recommended Host Allocation (homelab test/QA, no failover)
+### Host Allocation
 
-| Host | Profile | Recommended services | Why this fit is optimal |
-|------|---------|----------------------|--------------------------|
-| `192.168.1.109` | Linux desktop, RTX 3090 24 GB, 64 GB RAM, Ryzen 5 7600 | `imogen`, `vidita`, `loraline` | Best single-job GPU capacity. Keep the heaviest CUDA workloads and LoRA training on the strongest GPU host for predictable latency in test runs. |
-| `192.168.1.138` | VM, RTX 4060 8 GB (passthrough), 16 GB RAM, 8 vCPU | `tss-stack`, `agent-composer` (Ollama runtime/chat) | Good fit for moderate GPU services (Whisper/XTTS + small/medium Ollama). Keeps conversational workloads off the control-plane host. |
-| `192.168.1.128` | VM, RTX 4060 8 GB (passthrough), 64 GB RAM, 4 vCPU | `kimini`, `somnus`, `gothmog`, `test_dbs` (PostgreSQL/Redis/MinIO/Qdrant), `sauron`, `mimiri` (`rag-ingest`) | Central control/data/observability node. Colocating `somnus` with `kimini` keeps operator UI calls low-latency, and colocating `mimiri` with Qdrant reduces ingest path complexity and cross-host vector write latency. |
+| Host | Hardware | Services |
+|------|----------|----------|
+| `192.168.1.109` | Linux desktop, RTX 3090 24 GB, 64 GB RAM, Ryzen 5 7600 | `kimini-api`, `imogen` (+ LoRA/post-process absorbed), `vidita`, `voluptas` |
+| `192.168.1.86` | — | `gothmog`, `somnus` |
+| `192.168.1.198` | VM, RTX 4060 8 GB (passthrough), 16 GB RAM, 8 vCPU | `agent-composer` (Ollama + Qdrant + rag-ingest + ModernBERT), `tss-stack` *(pending)*, `sauron` *(pending)* |
+| `192.168.1.121` | DS923+ NAS | PostgreSQL (`:5433`), Redis (`:6380`), MinIO (`:9000`) |
 
-### Repo-to-Host Quick Matrix (target state)
+### Repo-to-Host Quick Matrix
 
-| Repo | Primary host |
-|------|--------------|
-| `kimini-api` | `192.168.1.128` |
-| `somnus` | `192.168.1.128` |
-| `gothmog` | `192.168.1.128` |
-| `test_dbs` | `192.168.1.128` |
-| `sauron` | `192.168.1.128` |
-| `mimiri` | `192.168.1.128` |
+| Repo | Host |
+|------|------|
+| `kimini-api` | `192.168.1.109` |
 | `imogen` | `192.168.1.109` |
 | `vidita` | `192.168.1.109` |
-| `loraline` | `192.168.1.109` |
-| `tss-stack` | `192.168.1.138` |
-| `agent-composer` | `192.168.1.138` |
+| `voluptas` | `192.168.1.109` |
+| `gothmog` | `192.168.1.86` |
+| `somnus` | `192.168.1.86` |
+| `agent-composer` (+ Qdrant + rag-ingest) | `192.168.1.198` |
+| `tss-stack` | `192.168.1.198` *(pending migration)* |
+| `sauron` | `192.168.1.198` *(pending migration)* |
+| PostgreSQL / Redis / MinIO | `192.168.1.121` (NAS) |
+| ~~`mimiri`~~ | retired — `rag-ingest` lives in `agent-composer` |
+| ~~`loraline`~~ | retired — absorbed into `imogen` |
+| ~~`rubedo`~~ | retired — absorbed into `imogen` |
+| ~~`test_dbs`~~ | retired — data layer split: NAS (.121) + Qdrant in agent-composer |
 
 ### Validation Commands (2-3 minute smoke check)
 
-Run these from any host with LAN reachability:
-
 ```bash
-# Control plane + data + observability (.128)
-curl -fsS http://192.168.1.128:8000/health || echo "kimini down"
-curl -fsS http://192.168.1.128:8030/health || echo "gothmog down"
-curl -fsS http://192.168.1.128:6333/collections >/dev/null || echo "qdrant down"
-curl -fsS http://192.168.1.128:9050/health || echo "mimiri down"
-curl -fsS http://192.168.1.128:9090/-/healthy || echo "prometheus down"
+# NAS data layer (.121)
+docker run --rm -e PGPASSWORD=testpass postgres:16 \
+  psql -h 192.168.1.121 -p 5433 -U testuser -d testdb -c "SELECT 1" >/dev/null || echo "postgres (NAS) down"
+redis-cli -h 192.168.1.121 -p 6380 -a testpass ping || echo "redis (NAS) down"
+curl -fsS http://192.168.1.121:9000/minio/health/live || echo "minio (NAS) down"
 
-# GPU generation node (.109)
+# GPU + core API node (.109)
+curl -fsS http://192.168.1.109:8000/health || echo "kimini down"
 curl -fsS http://192.168.1.109:8003/health || echo "imogen down"
 curl -fsS http://192.168.1.109:8000/videos/health || echo "vidita down"
-curl -fsS http://192.168.1.109:8010/health || echo "loraline down"
+curl -fsS http://192.168.1.109:8188/system_stats || echo "voluptas (comfyui) down"
 
-# Voice/chat node (.138)
-curl -fsS http://192.168.1.138:9001/health || echo "tss-stack down"
-curl -fsS http://192.168.1.138:9150/health || echo "agent-composer-rag down"
-curl -fsS http://192.168.1.138:11434/api/tags >/dev/null || echo "ollama down"
+# Orchestrator / UI node (.86)
+curl -fsS http://192.168.1.86:8030/health || echo "gothmog down"
+# somnus: check on its configured frontend port
 
-# Optional observability targets (expected to fail if intentionally not deployed)
-curl -fsS http://192.168.1.138:9100/metrics >/dev/null || echo "node-host-b exporter down"
+# Voice/chat/RAG node (.198)
+curl -fsS http://192.168.1.198:9001/health || echo "tss-stack down"
+curl -fsS http://192.168.1.198:9150/health || echo "agent-composer-rag down"
+curl -fsS http://192.168.1.198:9050/health || echo "rag-ingest down"
+curl -fsS http://192.168.1.198:6333/collections >/dev/null || echo "qdrant down"
+curl -fsS http://192.168.1.198:11434/api/tags >/dev/null || echo "ollama down"
+
+# Optional observability (expected to fail until sauron migrated to .138)
+curl -fsS http://192.168.1.198:9090/-/healthy || echo "prometheus down"
+curl -fsS http://192.168.1.198:9100/metrics >/dev/null || echo "node exporter down"
 curl -fsS http://192.168.1.109:9091/-/ready || echo "pushgateway down"
 ```
 
-Expected baseline for this homelab profile:
+Expected baseline:
+- Core checks (`kimini`, `gothmog`, `imogen`, `vidita`, `voluptas`, `agent-composer-rag`, `rag-ingest`, `qdrant`, `ollama`, NAS data layer) should pass.
+- `tss-stack` and `sauron` expected to fail until migration to `.198` is complete.
 
-- Core checks (`kimini`, `gothmog`, `qdrant`, `mimiri`, `imogen`, `vidita`, `loraline`, `tss-stack`, `agent-composer-rag`, `ollama`) should pass.
-- `node-host-b exporter` and `pushgateway` may fail if not intentionally deployed yet.
-- `somnus` should be reachable on its configured frontend route on `192.168.1.128` when the familiar UI is deployed.
+### Practical notes
 
-### Practical notes (single-job capacity first)
-
-- Keep `kimini` workers (`imagegen`, `videogen`, `voicegen`, `loragen`) on `192.168.1.128`; call GPU services remotely over LAN.
-- Run `somnus` on `192.168.1.128` alongside `kimini` for low-latency operator UI/API interactions.
-- Use `192.168.1.109` as the primary inference/training target for `imogen`, `vidita`, and `loraline`.
-- Use `192.168.1.138` as the default voice/chat node (`tss-stack`, `agent-composer`) with local Ollama.
-- No automatic failover needed in this profile; optimize for deterministic single-job behavior and simpler operations.
-- Keep Postgres/Redis/MinIO/Qdrant and observability (`sauron`) on `192.168.1.128` to avoid coupling stateful infra with GPU runtime churn.
-- Run `mimiri` on `192.168.1.128` with `QDRANT_URL=http://192.168.1.128:6333` and `OLLAMA_URL=http://192.168.1.138:11434`.
+- `kimini-api`, `imogen`, `vidita`, `voluptas` run on `.109` (RTX 3090 — heaviest GPU workloads).
+- `gothmog` and `somnus` run on `.86` (orchestration + operator UI).
+- `agent-composer` with local Ollama, Qdrant, and `rag-ingest` runs on `.198`.
+- `tss-stack` and `sauron` will migrate to `.198` when ready.
+- PostgreSQL (`:5433`), Redis (`:6380`), and MinIO (`:9000`) run on the DS923+ NAS (`.121`) — stateful infra decoupled from compute nodes.
+- Qdrant is container-local inside `agent-composer` on `.198`; `rag-ingest` uses `QDRANT_URL=http://qdrant:6333`.
+- No automatic failover; optimize for deterministic single-job behavior.
 
 ---
 
-### Cutover Checklist (status-aware)
+### Cutover Checklist
 
 Status legend: `[x] done`, `[ ] remaining`, `[~] partial`.
 
-Based on latest probe report from this host:
-
-- [ ] Confirm all ingest callers/scrape targets now point to `mimiri` at `192.168.1.128:9050` after host move.
-- [x] Core control-plane/data services are reachable with metrics (`kimini`, `gothmog`, `redis-exporter`, `postgres-exporter`, `node-host-a`, `node-host-c`).
-- [x] `tss-stack` and `loraline` are reachable with metrics.
-- [x] `mimiri` live placement is aligned to `192.168.1.128:9050`.
-- [~] `imogen` and `vidita` are reachable but do not expose `/metrics` (health only).
-- [ ] `node-host-b` exporter (`192.168.1.138:9100`) is still unreachable.
-- [ ] `pushgateway` scrape target is still unreachable from this vantage point.
-- [ ] Ensure `kimini` production env routes image/video/lora calls to `192.168.1.109` and orchestrator calls to `192.168.1.128` (current local `.env` does not yet reflect this ideal).
-- [ ] Ensure Prometheus jobs use scrape paths that match reality (`/metrics` where available; health-only checks where metrics are not exposed).
-
-For this homelab profile, no failover setup is required; close the remaining items only to improve observability and endpoint correctness.
+- [x] `.128` decommissioned.
+- [x] `rag-ingest` and Qdrant colocated in `agent-composer` on `192.168.1.198` — `mimiri` retired.
+- [x] `loraline` and `rubedo` functionality absorbed into `imogen`.
+- [x] Stateful data layer (PostgreSQL, Redis) moved to NAS (`.121`, non-standard ports).
+- [x] `gothmog` and `somnus` running on `192.168.1.86`.
+- [x] `kimini-api` running on `192.168.1.109`.
+- [~] `imogen` and `vidita` reachable but do not expose `/metrics` (health only).
+- [ ] `tss-stack` migration to `.138` not yet complete.
+- [ ] `sauron` migration to `.138` not yet complete.
+- [ ] Update Prometheus scrape config in `sauron` — Qdrant target `.138:6333`; gothmog target `.86:8030`; Redis port `6380`.
+- [ ] Confirm all ingest callers/scrape targets point to `192.168.1.198:9050`.
+- [ ] `node exporter` (`.138:9100`) unreachable until sauron is deployed.
+- [ ] Ensure `kimini` env routes image/video calls to `.109` and orchestrator calls to `.86:8030`.
 
 ---
 
@@ -212,7 +217,7 @@ Client
   │                                                                 │
   │                                               flux/sdxl ◄───────┘
   │                                                  │
-  │                                            GPU inference
+  │                                            GPU inference + post-process
   │                                                  │
   │                                            MinIO upload
   │                                                  │
@@ -231,14 +236,43 @@ Client
   │                                                  │
   │                                            MinIO upload (presigned URL)
   │
-  ├─► POST /v1/voice/stt ──► Kimini ──► TaskIQ worker ──► tss-stack gateway :9001
-  │                                                           │
-  │                                          whisper-worker ◄─┘──► Whisper model
-  │                                                  │
-  │                                            MinIO upload (transcript)
-  │
-  └─► POST /v1/loras ──► Kimini ──► TaskIQ worker ──► LoraLine ──► trainer subprocess
+  └─► POST /v1/voice/stt ──► Kimini ──► TaskIQ worker ──► tss-stack gateway :9001
+                                                           │
+                                         whisper-worker ◄─┘──► Whisper model
+                                                  │
+                                            MinIO upload (transcript)
 ```
+
+---
+
+## Request Flow: ComfyUI (somnus → voluptas direct)
+
+```
+Operator (browser)
+  │
+  │  WebSocket ws://NEXT_PUBLIC_COMFYUI_WS_URL/ws?clientId=X
+  │  ───────────────────────────────────────────────────────► Voluptas :8188 (direct, LAN-only)
+  │                                                            (WEB_ENABLE_AUTH=false)
+  │
+  ├─► POST /api/comfyui/prompt ──► somnus (server) ──proxy──► Voluptas :8188
+  │         (submit workflow)                                   │
+  │                                                             │  GPU inference (ComfyUI)
+  │                                                             │
+  │  WS message: executing / progress ◄──────────────────────────┘
+  │  WS message: node=null → run complete
+  │
+  ├─► GET /api/comfyui/history/{prompt_id} ──proxy──► Voluptas /history/{id}
+  │
+  ├─► GET /api/comfyui/view?filename=...&type=output ──proxy──► Voluptas /view
+  │
+  └─► GET/POST/PUT/DELETE /api/comfyui-workflows[/{id}]
+            (workflow CRUD — reads/writes MinIO uploads/comfyui/workflows/{id}.json)
+            No Kimini in this path — somnus owns the workflow library directly.
+```
+
+Note: `COMFYUI_API_URL` (server-side proxy target) and `NEXT_PUBLIC_COMFYUI_WS_URL` (browser WS) are
+separate env vars. The HTTP proxy uses the server-side var; the WebSocket connects directly from the
+browser (no server-side WS proxy needed since ComfyUI is LAN-gated).
 
 ---
 
@@ -302,7 +336,7 @@ Every generation domain follows the same contract:
     │  ◄── {completed}    │                          │
 ```
 
-Domains using this pattern: `imagegen`, `videogen`, `voicegen`, `loragen`
+Domains using this pattern: `imagegen`, `videogen`, `voicegen`
 
 ---
 
