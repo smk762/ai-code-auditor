@@ -128,6 +128,17 @@ class ImpactResult:
 
 
 @dataclass(slots=True)
+class ValidationResult:
+    """Outcome of running the validation suite (tests/lint) for a repository."""
+    passed: bool
+    tool: str            # "pytest" | "npm_test" | "go_test" | "cargo_test" | "lint_only" | "skipped"
+    duration_ms: int
+    errors: list[str]
+    raw_output: str      # truncated stdout + stderr
+    skipped_reason: str = ""
+
+
+@dataclass(slots=True)
 class DiffAuditResult:
     repo: str
     file_diffs: list[FileDiff]

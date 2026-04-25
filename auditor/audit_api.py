@@ -542,6 +542,45 @@ def get_report(run_id: str) -> str:
     return "\n\n---\n\n".join(sections)
 
 
+class _ValidateRequest(BaseModel):
+    repo: str
+    timeout_s: int = 120
+
+
+@app.post("/audit/validate")
+def validate_repo(request: _ValidateRequest) -> JSONResponse:
+    """Run the test/lint suite for a configured repository.
+
+    Returns immediately with skipped=true when the repo path is read-only
+    (e.g. SSHFS mount) or when no test runner is found.
+    """
+    from auditor.validator import validate_repo as _validate
+
+    cfg = load_ecosystem_config()
+    repo = next((r for r in cfg.repos if r.name == request.repo), None)
+    if repo is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Repo {request.repo!r} not found in ecosystem config.",
+        )
+
+    try:
+        result = _validate(repo, timeout_s=max(10, min(request.timeout_s, 600)))
+    except Exception as exc:
+        logger.exception("validate failed for repo %r", request.repo)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return JSONResponse({
+        "repo": request.repo,
+        "passed": result.passed,
+        "tool": result.tool,
+        "duration_ms": result.duration_ms,
+        "errors": result.errors,
+        "raw_output": result.raw_output[-4000:],
+        "skipped_reason": result.skipped_reason,
+    })
+
+
 class _DiffAuditRequest(BaseModel):
     repo: str
     diff: str = ""
