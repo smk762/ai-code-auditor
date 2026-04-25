@@ -45,7 +45,7 @@ services:
   auditor:
     <<: *auditor-base
     container_name: ai-code-auditor
-    command: sh -lc "alembic upgrade head && python pipelines/ecosystem_audit.py"
+    command: sh -lc "python -m auditor.bootstrap_db && alembic upgrade head && python pipelines/ecosystem_audit.py"
 
   # Long-running HTTP API — POST /audit/run, GET /audit/runs/{id}, GET /audit/health, POST /audit/ingest
   audit-api:
@@ -60,6 +60,7 @@ services:
       retries: 5
     command: >
       sh -lc '
+        python -m auditor.bootstrap_db &&
         alembic upgrade head &&
         exec uvicorn auditor.audit_api:app --host 0.0.0.0 --port 8765
       '

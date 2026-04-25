@@ -9,7 +9,7 @@ Usage:
     python scripts/ingest_ecosystem_to_rag.py [--dry-run]
 
 Environment variables:
-    MIMIRI_URL              Ingest endpoint (default: http://192.168.1.128:9050/ingest)
+    MIMIRI_URL              Ingest endpoint (default: http://127.0.0.1:9050/ingest)
     INGEST_SHARED_SECRET    HMAC secret matching mimiri's config
     QDRANT_COLLECTION       Collection to upsert into (default: project_docs)
 """
@@ -37,7 +37,7 @@ from ecosystem.api_mapper import discover_api_endpoints
 from ecosystem.graph_builder import GraphBuilder
 from auditor.repo_resolver import resolve_repo_path
 
-_DEFAULT_MIMIRI_URL = "http://192.168.1.128:9050/ingest"
+_DEFAULT_MIMIRI_URL = "http://127.0.0.1:9050/ingest"
 _DEFAULT_COLLECTION = "project_docs"
 
 

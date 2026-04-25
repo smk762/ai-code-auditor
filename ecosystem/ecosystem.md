@@ -145,7 +145,7 @@ RAG ingestion is served by `rag-ingest` on `192.168.1.198:9050` (inside `agent-c
 ```bash
 # NAS data layer (.121)
 docker run --rm -e PGPASSWORD=testpass postgres:16 \
-  psql -h 192.168.1.121 -p 5433 -U testuser -d testdb -c "SELECT 1" >/dev/null || echo "postgres (NAS) down"
+  psql -h 192.168.1.121 -p 5433 -U testuser -d ai_audit -c "SELECT 1" >/dev/null || echo "postgres (NAS) down"
 redis-cli -h 192.168.1.121 -p 6380 -a testpass ping || echo "redis (NAS) down"
 curl -fsS http://192.168.1.121:9000/minio/health/live || echo "minio (NAS) down"
 
