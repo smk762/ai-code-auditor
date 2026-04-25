@@ -8,14 +8,12 @@
 sshfs_options: "ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,IdentityFile=${HOME}/.ssh/id_ed25519,uid=1000,gid=1000,default_permissions"
 
 mounts:
-  # ── .128 — control plane / observability ─────────────────────────────────────
-  - remote: hound@192.168.1.128:/home/hound/somnus
-    local: /home/smk/tmp/mnt/somnus
-
-  # ── .86 — gothmog (moved from .128) ─────────────────────────────────────────
+  # ── .86 — gothmog + somnus ───────────────────────────────────────────────────
   # Update username below if different from hound.
   - remote: hound@192.168.1.86:/home/hound/gothmog
     local: /home/smk/tmp/mnt/gothmog
+  - remote: hound@192.168.1.86:/home/hound/somnus
+    local: /home/smk/tmp/mnt/somnus
 
   # ── .109 — GPU generation node ──────────────────────────────────────────────
   # Update username below to match the account on .109.
