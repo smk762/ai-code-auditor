@@ -29,8 +29,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from dataclasses import asdict
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import delete, select
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -537,6 +540,70 @@ def get_report(run_id: str) -> str:
         sections.append(f"<!-- {f.name} -->\n\n{f.read_text(encoding='utf-8')}")
 
     return "\n\n---\n\n".join(sections)
+
+
+class _DiffAuditRequest(BaseModel):
+    repo: str
+    diff: str = ""
+    compare_branch: str = ""
+
+
+@app.post("/audit/diff")
+def audit_diff(request: _DiffAuditRequest) -> JSONResponse:
+    """Audit the files touched by a unified diff.
+
+    Supply either ``diff`` (raw unified diff text) or ``compare_branch``
+    (generates ``git diff <branch>...HEAD`` from the configured repo path).
+    """
+    from auditor.diff_auditor import get_diff_from_branch, run_diff_audit
+    from auditor.repo_resolver import resolve_repo_path
+
+    cfg = load_ecosystem_config()
+    repo = next((r for r in cfg.repos if r.name == request.repo), None)
+    if repo is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Repo {request.repo!r} not found in ecosystem config.",
+        )
+
+    if request.compare_branch:
+        try:
+            repo_path = resolve_repo_path(repo)
+            diff_text = get_diff_from_branch(repo_path, request.compare_branch)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    elif request.diff:
+        diff_text = request.diff
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide 'diff' (unified diff text) or 'compare_branch'.",
+        )
+
+    if not diff_text.strip():
+        return JSONResponse({
+            "repo": request.repo,
+            "files_changed": 0,
+            "files_affected": 0,
+            "units_analyzed": 0,
+            "findings": [],
+            "message": "Diff is empty — nothing to audit.",
+        })
+
+    try:
+        result = run_diff_audit(repo, diff_text)
+    except Exception as exc:
+        logger.exception("diff-audit failed for repo %r", request.repo)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return JSONResponse({
+        "repo": result.repo,
+        "files_changed": len(result.impact.directly_changed),
+        "files_affected": len(result.impact.transitively_affected),
+        "units_analyzed": len(result.units_analyzed),
+        "findings": [asdict(f) for f in result.findings],
+        "generated_at": result.generated_at,
+    })
 
 
 @app.post("/audit/ingest")

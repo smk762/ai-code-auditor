@@ -92,3 +92,46 @@ class CopilotResponse:
     impacted_repos: list[str]
     confidence: float
     citations: list[str]
+
+
+# ── Diff-audit contracts ─────────────────────────────────────────────────────
+
+@dataclass(slots=True)
+class DiffHunk:
+    """A single @@ hunk within a unified diff."""
+    file_path: str            # repo-relative canonical path (b-side)
+    old_start: int
+    old_count: int
+    new_start: int
+    new_count: int
+    raw_hunk: str             # hunk text (header + body lines joined by \n)
+    added_lines: list[int]    # 1-indexed new-file line numbers that were added
+    removed_lines: list[int]  # 1-indexed old-file line numbers that were removed
+
+
+@dataclass(slots=True)
+class FileDiff:
+    """Diff for a single file (all hunks collected)."""
+    old_path: str
+    new_path: str
+    hunks: list[DiffHunk]
+    is_new_file: bool = False
+    is_deleted: bool = False
+    is_rename: bool = False
+
+
+@dataclass(slots=True)
+class ImpactResult:
+    """Files directly changed plus those that transitively import them."""
+    directly_changed: frozenset[str]
+    transitively_affected: frozenset[str]
+
+
+@dataclass(slots=True)
+class DiffAuditResult:
+    repo: str
+    file_diffs: list[FileDiff]
+    impact: ImpactResult
+    units_analyzed: list[CodeUnit]
+    findings: list[Finding]
+    generated_at: str = field(default_factory=utc_now_iso)
