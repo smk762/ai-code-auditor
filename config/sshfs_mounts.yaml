@@ -10,9 +10,9 @@ sshfs_options: "ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,Identi
 mounts:
   # ── .86 — gothmog + somnus ───────────────────────────────────────────────────
   # Update username below if different from hound.
-  - remote: hound@192.168.1.86:/home/hound/gothmog
+  - remote: smk@192.168.1.86:/home/smk/gothmog
     local: /home/smk/tmp/mnt/gothmog
-  - remote: hound@192.168.1.86:/home/hound/somnus
+  - remote: smk@192.168.1.86:/home/smk/somnus
     local: /home/smk/tmp/mnt/somnus
 
   # ── .109 — GPU generation node ──────────────────────────────────────────────
