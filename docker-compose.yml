@@ -10,12 +10,9 @@ x-auditor-base: &auditor-base
     - ./memory:/app/memory
     - ./:/repos/ai-code-auditor
     # Match repo `path:` entries in config/ecosystem.yaml (host paths → same path in container).
-    # Adjust left-hand side on machines where these differ. Host dirs must exist or Docker creates empty dirs.
-    - /mnt/ai-audit:/mnt/ai-audit:ro
-    - /home/smk/GITHUB/smk762:/home/smk/GITHUB/smk762/:ro
-    - /home/smk/GITHUB/smk762/imogen:/home/smk/GITHUB/smk762/imogen:ro
-    - /home/smk/GITHUB/smk762/vidita:/home/smk/GITHUB/smk762/vidita:ro
-    - /home/smk/GITHUB/smk762/loraline:/home/smk/GITHUB/smk762/loraline:ro
+    # All mounted repos now live under ~/tmp/mnt/; agent-composer is local.
+    - /home/smk/tmp/mnt:/home/smk/tmp/mnt:ro
+    - /home/smk/agent-composer:/home/smk/agent-composer:ro
   environment:
     - DATABASE_URL=${DATABASE_URL}
     - DB_POOL_SIZE=${DB_POOL_SIZE}

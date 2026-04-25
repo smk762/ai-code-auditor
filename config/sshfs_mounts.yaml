@@ -1,25 +1,37 @@
-# SSHFS mounts for ecosystem repos under /mnt/ai-audit (see config/ecosystem.yaml).
-# Used by scripts/mount_ecosystem_sshfs.py — one systemd user service can start/stop all.
+# SSHFS mounts for ecosystem repos into ~/tmp/mnt/ (see config/ecosystem.yaml).
+# Used by scripts/mount_ecosystem_sshfs.py or ~/mount_ecosystem.sh.
 #
-# Edit `remote` for each repo; `local` must match ecosystem.yaml paths where applicable.
+# `local` paths must match ecosystem.yaml `path:` entries.
+# Fill in the correct username for each host if it differs from the default.
 # Options support env expansion (e.g. $HOME).
 
 sshfs_options: "ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,IdentityFile=${HOME}/.ssh/id_ed25519,uid=1000,gid=1000,default_permissions"
 
 mounts:
-  - remote: hound@192.168.1.128:/home/hound/kimini-api
-    local: /mnt/ai-audit/kimini-api
+  # ── .128 — control plane / observability ─────────────────────────────────────
   - remote: hound@192.168.1.128:/home/hound/somnus
-    local: /mnt/ai-audit/somnus
-  - remote: hound@192.168.1.128:/home/hound/gothmog
-    local: /mnt/ai-audit/gothmog
-  - remote: hound@192.168.1.128:/home/hound/test_dbs
-    local: /mnt/ai-audit/test_dbs
-  - remote: hound@192.168.1.128:/home/hound/sauron
-    local: /mnt/ai-audit/sauron
-  - remote: hound@192.168.1.128:/home/hound/mimiri
-    local: /mnt/ai-audit/mimiri
-  - remote: jasmine@192.168.1.138:/home/jasmine/tss-stack
-    local: /mnt/ai-audit/tss-stack
-  - remote: jasmine@192.168.1.138:/home/jasmine/agent-composer
-    local: /mnt/ai-audit/agent-composer
+    local: /home/smk/tmp/mnt/somnus
+
+  # ── .86 — gothmog (moved from .128) ─────────────────────────────────────────
+  # Update username below if different from hound.
+  - remote: hound@192.168.1.86:/home/hound/gothmog
+    local: /home/smk/tmp/mnt/gothmog
+
+  # ── .109 — GPU generation node ──────────────────────────────────────────────
+  # Update username below to match the account on .109.
+  - remote: smk@192.168.1.109:/home/smk/kimini-api
+    local: /home/smk/tmp/mnt/kimini-api
+  - remote: smk@192.168.1.109:/home/smk/imogen
+    local: /home/smk/tmp/mnt/imogen
+  - remote: smk@192.168.1.109:/home/smk/vidita
+    local: /home/smk/tmp/mnt/vidita
+  - remote: smk@192.168.1.109:/home/smk/voluptas
+    local: /home/smk/tmp/mnt/voluptas
+  - remote: smk@192.168.1.109:/home/smk/playact-engine
+    local: /home/smk/tmp/mnt/playact-engine
+  - remote: smk@192.168.1.109:/home/smk/playact-frontend
+    local: /home/smk/tmp/mnt/playact-frontend
+
+  # ── This host — not needed via SSHFS once migrated ──────────────────────────
+  # tss-stack and sauron: will live here; enable in ecosystem.yaml once up.
+  # agent-composer: local path (/home/smk/agent-composer), no mount needed.

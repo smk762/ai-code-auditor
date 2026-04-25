@@ -38,7 +38,7 @@ class EcosystemConfig:
     log_file_path: str = ""
     # Isolated Qdrant collection for audit knowledge — separate from the chat RAG.
     rag_collection: str = "audit_docs"
-    rag_ingest_url: str = "http://192.168.1.128:9050/ingest"
+    rag_ingest_url: str = "http://127.0.0.1:9050/ingest"
 
 
 @dataclass(slots=True)
@@ -107,7 +107,7 @@ def load_ecosystem_config(path: str | Path = "config/ecosystem.yaml") -> Ecosyst
         log_level=str(os.getenv("AI_AUDIT_LOG_LEVEL", raw.get("log_level", "INFO"))).upper(),
         log_file_path=str(os.getenv("AI_AUDIT_LOG_FILE_PATH", raw.get("log_file_path", ""))),
         rag_collection=str(os.getenv("AI_AUDIT_RAG_COLLECTION", raw.get("rag_collection", "audit_docs"))),
-        rag_ingest_url=str(os.getenv("AI_AUDIT_RAG_INGEST_URL", raw.get("rag_ingest_url", "http://192.168.1.128:9050/ingest"))),
+        rag_ingest_url=str(os.getenv("AI_AUDIT_RAG_INGEST_URL", raw.get("rag_ingest_url", "http://127.0.0.1:9050/ingest"))),
     )
 
 
