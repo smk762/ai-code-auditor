@@ -72,6 +72,22 @@ def _build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--rules-path", default="config/architecture_rules.yaml", help="Architecture rules file to append")
     approve.add_argument("--auth-token", default="", help="JWT token with admin role")
 
+    repair_cmd = sub.add_parser("repair", help="Run agentic repair loop via rag-chat repair API")
+    repair_cmd.add_argument("--repo", required=True, help="Repo name from ecosystem config")
+    _repair_src = repair_cmd.add_mutually_exclusive_group(required=True)
+    _repair_src.add_argument("--diff", dest="repair_diff_file", metavar="FILE", help="Path to a unified diff file")
+    _repair_src.add_argument("--stdin", dest="repair_stdin", action="store_true", help="Read unified diff from stdin")
+    _repair_src.add_argument("--compare-branch", dest="repair_compare_branch", metavar="BRANCH", help="Compare HEAD against BRANCH")
+    repair_cmd.add_argument("--mode", choices=("auto_fix", "review", "suggest"), default="review")
+    repair_cmd.add_argument("--fix-model", default="", help="Override fixer model")
+    repair_cmd.add_argument("--critique-model", default="", help="Enable critic with this model")
+    repair_cmd.add_argument("--adversarial-model", default="", help="Enable adversary with this model")
+    repair_cmd.add_argument("--max-iterations", type=int, default=3)
+    repair_cmd.add_argument("--apply", action="store_true", help="Apply final patch in-place")
+    repair_cmd.add_argument("--repair-api-url", default="", help="rag-chat base URL (default: RAG_CHAT_URL env or http://127.0.0.1:9150)")
+    repair_cmd.add_argument("--auth-code", default="")
+    repair_cmd.add_argument("--auth-token", default="")
+
     diff_cmd = sub.add_parser("diff-audit", help="Audit only files touched by a diff")
     diff_cmd.add_argument("--repo", required=True, help="Repo name from ecosystem config")
     _diff_src = diff_cmd.add_mutually_exclusive_group(required=True)
@@ -150,6 +166,79 @@ def _run_ask(
         print("\nCitations:")
         for cite in response.citations:
             print(f"- {cite}")
+
+
+def _run_repair(
+    repo_name: str,
+    repair_diff_file: str = "",
+    repair_stdin: bool = False,
+    repair_compare_branch: str = "",
+    mode: str = "review",
+    fix_model: str = "",
+    critique_model: str = "",
+    adversarial_model: str = "",
+    max_iterations: int = 3,
+    apply: bool = False,
+    repair_api_url: str = "",
+    auth_code: str = "",
+    auth_token: str = "",
+) -> None:
+    """Forward a repair request to the rag-chat repair API and stream SSE output."""
+    import sys
+    import requests as _req
+
+    cfg = load_ecosystem_config()
+    provided_auth = auth_code or os.getenv("AI_AUDIT_AUTH_CODE_INPUT", "")
+    require_auth(cfg.auth_mode, cfg.auth_code_env, provided_code=provided_auth)
+
+    # Acquire diff text
+    if repair_compare_branch:
+        diff_text = ""  # the repair API will generate this from compare_branch
+    elif repair_diff_file:
+        diff_text = Path(repair_diff_file).read_text(encoding="utf-8")
+    else:
+        diff_text = sys.stdin.read()
+
+    base_url = repair_api_url or os.getenv("RAG_CHAT_URL", "http://127.0.0.1:9150")
+    payload = {
+        "repo": repo_name,
+        "diff": diff_text,
+        "compare_branch": repair_compare_branch,
+        "mode": mode,
+        "fix_model": fix_model,
+        "critique_model": critique_model,
+        "adversarial_model": adversarial_model,
+        "max_iterations": max_iterations,
+        "apply": apply,
+    }
+
+    try:
+        with _req.post(f"{base_url}/api/repair/run", json=payload, stream=True, timeout=600) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                if line.startswith("event:"):
+                    print(f"\n[{line[7:].strip()}]")
+                elif line.startswith("data:"):
+                    try:
+                        data = json.loads(line[5:].strip())
+                        if "fixer_response" in data:
+                            it = data.get("iteration", "?")
+                            print(f"  Iteration {it} — patch extracted: {bool(data.get('patch'))}")
+                            if data.get("validation_passed") is not None:
+                                print(f"  Validation: {'PASS' if data['validation_passed'] else 'FAIL'}")
+                        elif "final_patch" in data:
+                            print(f"  Applied: {data.get('applied')}")
+                            if data.get("final_patch"):
+                                print("\n--- Final patch ---")
+                                print(data["final_patch"][:4000])
+                        elif "message" in data:
+                            print(f"  Error: {data['message']}")
+                    except json.JSONDecodeError:
+                        print(line)
+    except _req.exceptions.ConnectionError:
+        raise SystemExit(f"Could not connect to repair API at {base_url}. Is rag-chat running?")
 
 
 def _run_diff_audit(
@@ -254,6 +343,22 @@ def main() -> None:
             print(f"Precision: {result.precision:.3f}")
             print(f"Recall: {result.recall:.3f}")
             print(f"Total queries: {result.total_queries}")
+    elif args.command == "repair":
+        _run_repair(
+            repo_name=args.repo,
+            repair_diff_file=args.repair_diff_file or "",
+            repair_stdin=args.repair_stdin,
+            repair_compare_branch=args.repair_compare_branch or "",
+            mode=args.mode,
+            fix_model=args.fix_model,
+            critique_model=args.critique_model,
+            adversarial_model=args.adversarial_model,
+            max_iterations=args.max_iterations,
+            apply=args.apply,
+            repair_api_url=args.repair_api_url,
+            auth_code=args.auth_code,
+            auth_token=args.auth_token,
+        )
     elif args.command == "diff-audit":
         _run_diff_audit(
             repo_name=args.repo,
