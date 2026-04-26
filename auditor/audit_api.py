@@ -39,7 +39,7 @@ from sqlalchemy import delete, select
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from auditor.config import load_ecosystem_config
-from auditor.db import AuditRun, FindingRecord, PipelineCheckpoint, RepoRun, db_session, utcnow
+from auditor.db import AuditRun, FindingRecord, PipelineCheckpoint, RepoRun, as_utc, db_session, utcnow
 from auditor.gpu_scheduler import get_vram_info
 
 logger = logging.getLogger(__name__)
@@ -183,10 +183,11 @@ def _db_list_runs(limit: int) -> list[dict[str, Any]]:
 
 
 def _elapsed_ms(row: AuditRun) -> int | None:
-    if row.started_at is None:
+    started = as_utc(row.started_at)
+    if started is None:
         return None
-    end = row.finished_at if row.finished_at is not None else utcnow()
-    return int((end - row.started_at).total_seconds() * 1000)
+    end = as_utc(row.finished_at) or utcnow()
+    return int((end - started).total_seconds() * 1000)
 
 
 def _row_to_dict(row: AuditRun) -> dict[str, Any]:

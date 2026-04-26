@@ -5,7 +5,7 @@ from dataclasses import asdict
 from sqlalchemy import delete, select
 
 from auditor.contracts import Finding
-from auditor.db import AuditRun, AuthAuditEvent, FindingRecord, PipelineCheckpoint, RepoRun, db_session, utcnow
+from auditor.db import AuditRun, AuthAuditEvent, FindingRecord, PipelineCheckpoint, RepoRun, as_utc, db_session, utcnow
 from auditor.runtime import RunMetadata
 
 
@@ -52,8 +52,10 @@ def record_run_finish(metadata: RunMetadata, pipeline: str) -> None:
         row.finished_at = utcnow()
         row.status = metadata.status
         payload = asdict(metadata)
-        if row.started_at and row.finished_at:
-            payload["duration_ms"] = int((row.finished_at - row.started_at).total_seconds() * 1000)
+        started = as_utc(row.started_at)
+        finished = as_utc(row.finished_at)
+        if started and finished:
+            payload["duration_ms"] = int((finished - started).total_seconds() * 1000)
         row.metadata_json = payload
 
 
