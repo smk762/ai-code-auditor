@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -145,6 +148,14 @@ def run() -> None:
         meta.extra.pop(k, None)
     meta.stage_status.pop("awaiting_gpu_capacity", None)
 
+    logger.info(
+        "Ecosystem run %s — GPU offload: %s (vram_free_mb=%s). Repos to scan: %d.",
+        meta.run_id,
+        gpu.offload_mode,
+        gpu.vram_free_mb,
+        len(cfg.repos),
+    )
+
     meta.extra["gpu_offload_mode"] = gpu.offload_mode
     meta.extra["gpu_num_layers"] = gpu.num_gpu_layers
     meta.extra["gpu_vram_free_mb"] = gpu.vram_free_mb
@@ -160,18 +171,25 @@ def run() -> None:
         auth_token = os.getenv("AI_AUDIT_AUTH_TOKEN", "")
         if auth_token:
             enforce_role(auth_token, "admin", "pipeline:ecosystem-run")
+        logger.info("Recording run %s in database …", meta.run_id)
         record_run_start(meta.run_id, "ecosystem-audit")
         meta.current_stage = "scan_and_extract"
         record_run_progress(meta)
+        logger.info(
+            "Acquiring distributed pipeline lock (set REDIS_URL to a reachable host; "
+            "or rely on no-lock fallback if REDIS_LOCK_REQUIRED is not set) …"
+        )
         with pipeline_lock("ecosystem-audit", ttl_s=7200):
+            logger.info("Pipeline lock step complete — starting scan of %d repo(s) …", len(cfg.repos))
             resume_run_id = os.getenv("AI_AUDIT_RESUME_RUN_ID", "")
             completed = completed_repos_for_run("ecosystem-audit", resume_run_id) if resume_run_id else set()
             t0 = time.monotonic()
-            for repo in cfg.repos:
+            for i, repo in enumerate(cfg.repos, start=1):
                 if repo.name in completed:
                     upsert_repo_run(meta.run_id, repo.name, "skipped", attempts=0, error_message="resumed-skip")
                     record_run_progress(meta)
                     continue
+                logger.info("Scanning repo %s (%d / %d) …", repo.name, i, len(cfg.repos))
                 try:
                     files = with_retries(lambda: scan_repo(repo), retries=3, base_delay_s=1.0)
                     if files:
@@ -198,6 +216,10 @@ def run() -> None:
             meta.mark_stage("scan_and_extract", int((time.monotonic() - t0) * 1000), status="partial_success" if meta.errors else "success")
             meta.current_stage = "graph_and_embedding_index"
             record_run_progress(meta)
+            logger.info(
+                "Building graph and embedding index (%d code units) …",
+                len(all_units),
+            )
 
             t1 = time.monotonic()
             graph.upsert_code_units(all_units)
@@ -209,6 +231,7 @@ def run() -> None:
             meta.mark_stage("graph_and_embedding_index", int((time.monotonic() - t1) * 1000))
             meta.current_stage = "pattern_mining"
             record_run_progress(meta)
+            logger.info("Pattern mining and duplicate detection …")
 
             t2 = time.monotonic()
             mined = mine_patterns(all_units)
@@ -234,6 +257,7 @@ def run() -> None:
             meta.mark_stage("pattern_mining", int((time.monotonic() - t2) * 1000))
             meta.current_stage = "governance_and_reports"
             record_run_progress(meta)
+            logger.info("Architecture / governance and report generation …")
 
             t3 = time.monotonic()
             engine = ArchitectureEngine(graph=graph, rules=rules)
@@ -275,8 +299,23 @@ def run() -> None:
     finally:
         scheduler.release_capacity()
         record_run_finish(meta, "ecosystem-audit")
-        write_run_metadata(meta, output_dir=cfg.output_dir)
+        run_json_path = write_run_metadata(meta, output_dir=cfg.output_dir)
         graph.close()
+        report_dir = Path(cfg.output_dir).resolve()
+        if meta.status in ("success", "partial_success"):
+            logger.info(
+                "Ecosystem audit finished (%s). Reports: %s (e.g. ecosystem_report.md) — run record: %s",
+                meta.status,
+                report_dir,
+                run_json_path,
+            )
+        else:
+            logger.error(
+                "Ecosystem audit finished with status=%s. See %s and run metadata: %s",
+                meta.status,
+                report_dir,
+                run_json_path,
+            )
 
 
 if __name__ == "__main__":

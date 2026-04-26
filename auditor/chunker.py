@@ -42,7 +42,7 @@ def _extract_python_units(repo_name: str, file_path: Path, text: str) -> list[Co
     line_count = text.count("\n") + 1
     units: list[CodeUnit] = []
     try:
-        tree = ast.parse(text)
+        tree = ast.parse(text, filename=str(file_path))
     except SyntaxError:
         return [_whole_file_unit(repo_name, file_path, text, "python")]
 

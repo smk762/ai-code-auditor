@@ -1,75 +1,74 @@
-# Mirrors `ecosystem/ecosystem.md` (Repos table). Each repo is expected at `/mnt/ai-audit/<name>` (bind-mount, NFS, etc.).
-# Optional `subpath` limits scanning to a folder inside each repo (empty = entire repository).
-# Optional `branch` pins the branch to track. Omit (or leave blank) to auto-detect: dev → main → master.
+# Repo scanner config. Each repo needs a `name` and a `path` (local dir or mountpoint).
+# Optional `subpath` limits scanning to a subdirectory. `branch` is informational only for
+# local paths — the current checkout is scanned as-is.
 repos:
+  # ── Core stack (mounted from remote hosts) ──────────────────────────────────
   - name: kimini-api
-    path: /mnt/ai-audit/kimini-api
+    path: /home/smk/tmp/mnt/kimini-api
     enabled: true
     provider: local
     subpath: ""
 
   - name: somnus
-    path: /mnt/ai-audit/somnus
-    enabled: true
-    provider: local
-    subpath: ""
-
-  - name: imogen
-    path: /home/smk/GITHUB/smk762/imogen
-    enabled: true
-    provider: local
-    subpath: ""
-
-  - name: vidita
-    path: /home/smk/GITHUB/smk762/vidita
-    enabled: true
-    provider: local
-    subpath: ""
-
-  - name: tss-stack
-    path: /mnt/ai-audit/tss-stack
-    enabled: true
-    provider: local
-    subpath: ""
-
-  - name: loraline
-    path: /home/smk/GITHUB/smk762/loraline
-    enabled: true
-    provider: local
-    subpath: ""
-
-  - name: agent-composer
-    path: /mnt/ai-audit/agent-composer
-    enabled: true
-    provider: local
-    subpath: ""
-
-  - name: mimiri
-    path: /mnt/ai-audit/mimiri
+    path: /home/smk/tmp/mnt/somnus
     enabled: true
     provider: local
     subpath: ""
 
   - name: gothmog
-    path: /mnt/ai-audit/gothmog
+    path: /home/smk/tmp/mnt/gothmog
     enabled: true
     provider: local
     subpath: ""
 
-  - name: test_dbs
-    path: /mnt/ai-audit/test_dbs
+  - name: imogen
+    path: /home/smk/tmp/mnt/imogen
     enabled: true
     provider: local
     subpath: ""
 
-  - name: rubedo
-    path: /mnt/ai-audit/rubedo
+  - name: vidita
+    path: /home/smk/tmp/mnt/vidita
     enabled: true
+    provider: local
+    subpath: ""
+
+  - name: voluptas
+    path: /home/smk/tmp/mnt/voluptas
+    enabled: true
+    provider: local
+    subpath: ""
+
+  # ── Local (same host) ────────────────────────────────────────────────────────
+  - name: agent-composer
+    path: /home/smk/agent-composer
+    enabled: true
+    provider: local
+    subpath: ""
+
+  # ── Not yet migrated to this host — enable once up ──────────────────────────
+  - name: tss-stack
+    path: /home/smk/tmp/mnt/tss-stack
+    enabled: false
     provider: local
     subpath: ""
 
   - name: sauron
-    path: /mnt/ai-audit/sauron
+    path: /home/smk/tmp/mnt/sauron
+    enabled: false
+    provider: local
+    subpath: ""
+
+  # ── Playact (scanned in isolation — separate public/group project) ───────────
+  # Not part of the main ecosystem; service_roles and call_graph_rules do not apply.
+  - name: playact-engine
+    path: /home/smk/tmp/mnt/playact-engine
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: playact-frontend
+    path: /home/smk/tmp/mnt/playact-frontend
     enabled: true
     provider: local
     subpath: ""
@@ -86,4 +85,4 @@ log_file_path: pipeline.log
 # RAG isolation — keep audit knowledge in its own Qdrant collection so it does
 # not pollute the general-purpose chat RAG in agent-composer (project_docs).
 rag_collection: audit_docs
-rag_ingest_url: http://192.168.1.128:9050/ingest
+rag_ingest_url: http://127.0.0.1:9050/ingest

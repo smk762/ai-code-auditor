@@ -114,7 +114,7 @@ def detect_competing_providers(
                 continue
             try:
                 source = file_path.read_text(encoding="utf-8", errors="ignore")
-                tree = ast.parse(source)
+                tree = ast.parse(source, filename=str(file_path))
             except (OSError, SyntaxError):
                 continue
 

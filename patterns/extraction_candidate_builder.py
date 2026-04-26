@@ -212,7 +212,7 @@ def _normalized_ast_repr(unit: CodeUnit) -> str:
     if unit.language != "python":
         return ""
     try:
-        tree = ast.parse(unit.raw_text)
+        tree = ast.parse(unit.raw_text, filename=unit.file_path)
     except SyntaxError:
         return ""
 
@@ -265,7 +265,7 @@ def _signature_compatibility(left: CodeUnit, right: CodeUnit) -> float:
 def _extract_signature(text: str, language: str) -> dict:
     if language == "python":
         try:
-            tree = ast.parse(text)
+            tree = ast.parse(text, filename="<extract-signature>")
             node = tree.body[0] if tree.body else None
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 arg_count = len(node.args.args) + len(node.args.kwonlyargs)

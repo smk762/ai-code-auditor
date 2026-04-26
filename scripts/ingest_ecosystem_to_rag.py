@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Push ecosystem architectural knowledge into the mimiri RAG ingest service.
+"""Push ecosystem architectural knowledge into the RAG ingest service.
 
 This feeds the agent-composer copilot with structured knowledge about the stack
 so it can answer cross-repo questions without hallucinating.  Run this once after
@@ -9,9 +9,10 @@ Usage:
     python scripts/ingest_ecosystem_to_rag.py [--dry-run]
 
 Environment variables:
-    MIMIRI_URL              Ingest endpoint (default: http://192.168.1.128:9050/ingest)
-    INGEST_SHARED_SECRET    HMAC secret matching mimiri's config
-    QDRANT_COLLECTION       Collection to upsert into (default: project_docs)
+    RAG_INGEST_URL          Ingest endpoint (default: http://127.0.0.1:9050/ingest).
+                            ``MIMIRI_URL`` is honoured as a deprecated alias.
+    INGEST_SHARED_SECRET    HMAC secret matching the ingest service config.
+    QDRANT_COLLECTION       Collection to upsert into (default: project_docs).
 """
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ from ecosystem.api_mapper import discover_api_endpoints
 from ecosystem.graph_builder import GraphBuilder
 from auditor.repo_resolver import resolve_repo_path
 
-_DEFAULT_MIMIRI_URL = "http://192.168.1.128:9050/ingest"
+_DEFAULT_INGEST_URL = "http://127.0.0.1:9050/ingest"
 _DEFAULT_COLLECTION = "project_docs"
 
 
@@ -88,15 +89,15 @@ def _ingest_document(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ingest ecosystem docs into mimiri RAG.")
+    parser = argparse.ArgumentParser(description="Ingest ecosystem docs into the RAG ingest service.")
     parser.add_argument("--dry-run", action="store_true", help="Print what would be sent without posting.")
     args = parser.parse_args()
 
     cfg = load_ecosystem_config()
 
     # Config-first: ecosystem.yaml defines the isolated collection and URL.
-    # Env vars override if explicitly set.
-    url = os.getenv("MIMIRI_URL", cfg.rag_ingest_url)
+    # Env vars override if explicitly set.  MIMIRI_URL is the deprecated name.
+    url = os.getenv("RAG_INGEST_URL") or os.getenv("MIMIRI_URL") or cfg.rag_ingest_url
     secret = os.getenv("INGEST_SHARED_SECRET", "")
     collection = os.getenv("QDRANT_COLLECTION", cfg.rag_collection)
 

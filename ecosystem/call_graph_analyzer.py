@@ -112,7 +112,7 @@ def _find_service_calls(
     recognised service URL env var fragment.
     """
     try:
-        tree = ast.parse(source)
+        tree = ast.parse(source, filename=str(file_path))
     except SyntaxError:
         return []
 

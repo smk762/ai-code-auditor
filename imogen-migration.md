@@ -31,7 +31,7 @@ Three scheduling/UI concerns have grown beyond imogen's scope:
 
 ## Workstream A: gothmog — GPU Job Pool
 
-**Repo:** `gothmog` (currently `192.168.1.128`)
+**Repo:** `gothmog` (currently `192.168.1.121`)
 **Files to create:** `server/gpu_pool.py`, `server/gpu_pool_api.py`
 **Files to modify:** `server/config.py`, `server/main.py`, `compose.yaml`
 
@@ -637,7 +637,7 @@ the auditor config loader.
 
 ## Workstream B: somnus — Gallery UI
 
-**Repo:** `somnus` (currently `192.168.1.128`)
+**Repo:** `somnus` (currently `192.168.1.121`)
 **Prereq:** None — can be built while gothmog workstream A is in progress.
 **Imogen gallery stays fully active throughout — somnus is additive.**
 

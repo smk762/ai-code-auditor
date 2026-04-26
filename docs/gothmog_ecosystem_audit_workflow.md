@@ -54,7 +54,7 @@ Gothmog worker
 # Gothmog's capacity check exits immediately if GPU is busy;
 # the next cron slot retries automatically.
 */30 1-6 * * * smk \
-  curl -sf -X POST http://192.168.1.128:8030/orchestrate/run \
+  curl -sf -X POST http://192.168.1.121:8030/orchestrate/run \
     -H "Authorization: Bearer $GOTHMOG_API_KEY" \
     -H "Content-Type: application/json" \
     -d '{"workflow":"ecosystem_audit","input":{}}' \

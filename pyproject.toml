@@ -35,5 +35,9 @@ build-backend = "setuptools.build_meta"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 
+[tool.setuptools]
+# Root-level `cli.py` is the console entry; it is not under an included package dir.
+py-modules = ["cli"]
+
 [tool.setuptools.packages.find]
 include = ["auditor*", "ecosystem*", "patterns*", "semantic*", "copilot*", "pipelines*", "qa*"]
