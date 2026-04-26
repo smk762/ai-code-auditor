@@ -206,8 +206,13 @@ def _is_writable(path: Path) -> bool:
 
 
 def _skipped(reason: str) -> ValidationResult:
+    """A skipped run is *not* a passed run — callers must treat
+    ``skipped_reason`` as a third state distinct from pass/fail.
+    Returning ``passed=True`` previously caused the repair loop to accept
+    unvalidated patches whenever pytest was missing or the mount was read-only.
+    """
     return ValidationResult(
-        passed=True,
+        passed=False,
         tool="skipped",
         duration_ms=0,
         errors=[],

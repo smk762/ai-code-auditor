@@ -74,8 +74,8 @@ def build_ecosystem_overview(max_chars: int = 2000) -> str:
         lines.append(f"- **{repo}** ({info['label']}): {info['role']}")
     lines += [
         "",
-        "Architecture: clients → kimini-api (core) → TaskIQ workers → GPU services (imogen/vidita/tss-stack/loraline).",
-        "Shared data layer: PostgreSQL, Redis, MinIO, Qdrant (test_dbs).",
+        "Architecture: clients → kimini-api (core) → TaskIQ workers → GPU services (imogen/vidita/tss-stack).",
+        "Shared data layer: PostgreSQL, Redis, MinIO, Qdrant.",
         "Orchestration: gothmog (LangGraph). Observability: sauron (Prometheus/Grafana/Loki).",
         "Auth boundary: all external traffic through kimini-api. GPU services are LAN-only.",
     ]
@@ -167,21 +167,14 @@ _SECURITY_NOTES: dict[str, list[str]] = {
         "LAN-only GPU service. Redis queue keys (vidq:*) must not be accessible externally.",
         "MinIO presigned URLs must have short TTLs; check for URL exposure in logs or responses.",
     ],
-    "loraline": [
-        "LoRA training jobs execute subprocesses. Input validation on model paths and hyperparameters is critical.",
-        "Proxies to imogen/vidita/tss-stack — ensure it does not bypass downstream auth.",
-    ],
     "gothmog": [
         "Orchestrator with LLM tool calls. Prompt injection via user-controlled inputs could redirect tool calls.",
         "Executes multi-step workflows — check for TOCTOU races in state transitions.",
     ],
     "agent-composer": [
-        "RAG chat service. User queries reach the LLM — sanitise inputs that feed into retrieval or generation.",
+        "RAG chat + ingest service. User queries reach the LLM — sanitise inputs that feed into retrieval or generation.",
+        "Signed ingest endpoint — HMAC validation must be applied before any Qdrant writes; replay window (nonce DB) must be checked on every request.",
         "Cloudflare Zero Trust is the auth layer; do not add routes that bypass it.",
-    ],
-    "mimiri": [
-        "Signed ingest API — HMAC validation must be applied before any Qdrant writes.",
-        "Replay protection window (nonce DB) must be checked on every ingest request.",
     ],
 }
 

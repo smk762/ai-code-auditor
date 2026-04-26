@@ -24,11 +24,18 @@ def get_diff_from_branch(repo_path: Path, compare_branch: str) -> str:
     Three-dot finds the merge base between the branch and HEAD, then diffs from
     there — showing only what this branch added, ignoring unrelated upstream changes.
     """
-    result = subprocess.run(
-        ["git", "-C", str(repo_path), "diff", f"{compare_branch}...HEAD"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "diff", f"{compare_branch}...HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"git diff {compare_branch!r}...HEAD timed out after 30s "
+            f"(stuck SSHFS, broken smudge filter, or hanging credential helper?)"
+        ) from exc
     if result.returncode != 0:
         raise RuntimeError(
             f"git diff {compare_branch!r}...HEAD failed: {result.stderr.strip()[:400]}"

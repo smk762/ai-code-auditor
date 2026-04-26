@@ -213,6 +213,14 @@ def _run_repair(
     provided_auth = auth_code or os.getenv("AI_AUDIT_AUTH_CODE_INPUT", "")
     require_auth(cfg.auth_mode, cfg.auth_code_env, provided_code=provided_auth)
 
+    # Repair can apply patches, create branches, commit, and push — gate it the
+    # same way as the other write-capable commands.  ``analyst`` is sufficient
+    # for read-only review/suggest; write paths require ``admin``.
+    write_ops = bool(apply or commit or push)
+    token = auth_token or os.getenv("AI_AUDIT_AUTH_TOKEN", "")
+    if token:
+        enforce_role(token, "admin" if write_ops else "analyst", "cli:repair")
+
     # Acquire diff text
     if repair_compare_branch:
         diff_text = ""  # the repair API will generate this from compare_branch
@@ -249,8 +257,15 @@ def _run_repair(
         **({"git_ops": git_ops} if git_ops else {}),
     }
 
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
-        with _req.post(f"{base_url}/api/repair/run", json=payload, stream=True, timeout=600) as resp:
+        with _req.post(
+            f"{base_url}/api/repair/run",
+            json=payload,
+            headers=headers,
+            stream=True,
+            timeout=600,
+        ) as resp:
             resp.raise_for_status()
             for line in resp.iter_lines(decode_unicode=True):
                 if not line:

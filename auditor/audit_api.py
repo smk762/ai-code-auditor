@@ -11,7 +11,7 @@ GET  /audit/runs/{run_id}/stream      SSE: snapshot events until the run leaves 
 POST /audit/runs/{run_id}/cancel      Stop an in-flight run (pending/running); idempotent if cancelled
 DELETE /audit/runs/{run_id}           Remove a finished run and related DB rows (not while active)
 GET  /audit/reports/{run_id}          Return combined markdown report for a completed run
-POST /audit/ingest                    Trigger RAG briefing ingest to mimiri/audit_docs
+POST /audit/ingest                    Trigger RAG briefing ingest to the audit_docs collection
 
 Start:
     .venv/bin/uvicorn auditor.audit_api:app --host 0.0.0.0 --port 8765
@@ -574,6 +574,7 @@ def validate_repo(request: _ValidateRequest) -> JSONResponse:
     return JSONResponse({
         "repo": request.repo,
         "passed": result.passed,
+        "skipped": bool(result.skipped_reason),
         "tool": result.tool,
         "duration_ms": result.duration_ms,
         "errors": result.errors,
@@ -711,29 +712,43 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
             text=True,
         )
         if apply_result.returncode != 0:
-            patch_error = apply_result.stderr.strip()[:600]
-        else:
-            patch_applied = True
+            # Don't run the validator against the unmodified repo — the resulting
+            # raw_output / failure_summary would describe code unrelated to the
+            # patch under review.
+            return JSONResponse({
+                "repo":            request.repo,
+                "patch_applied":   False,
+                "patch_error":     apply_result.stderr.strip()[:600],
+                "passed":          False,
+                "skipped":         True,
+                "tool":            "skipped",
+                "duration_ms":     0,
+                "errors":          [],
+                "failure_summary": [],
+                "raw_output":      "",
+                "skipped_reason":  "patch did not apply",
+            })
+        patch_applied = True
 
         val_result = _validate(
             repo_cfg,
-            path_override=repo_copy if patch_applied else None,
+            path_override=repo_copy,
             timeout_s=timeout_s,
         )
 
         summary = extract_failure_summary(val_result.raw_output, val_result.tool)
-        passed = patch_applied and val_result.passed
+        skipped = bool(val_result.skipped_reason)
+        passed = val_result.passed and not skipped
 
         # Infrastructure errors: runner failed but produced no actionable failure lines.
         # Log as warning so container logs surface the problem (broken venv, missing
         # binary, bad shebang after copytree from SSHFS, etc.).
-        if not passed and not summary and val_result.errors and not val_result.skipped_reason:
+        if not passed and not summary and val_result.errors and not skipped:
             logger.warning(
                 "validate_patch: runner %r reported failure with no actionable output "
-                "(repo=%s, patch_applied=%s). Infra errors: %s",
+                "(repo=%s). Infra errors: %s",
                 val_result.tool,
                 request.repo,
-                patch_applied,
                 val_result.errors[:3],
             )
 
@@ -742,6 +757,7 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
             "patch_applied":   patch_applied,
             "patch_error":     patch_error,
             "passed":          passed,
+            "skipped":         skipped,
             "tool":            val_result.tool,
             "duration_ms":     val_result.duration_ms,
             "errors":          val_result.errors,
@@ -1082,7 +1098,7 @@ def git_push(request: _GitPushRequest) -> JSONResponse:
 
 @app.post("/audit/ingest")
 def trigger_ingest() -> JSONResponse:
-    """Push the latest audit briefings to the mimiri RAG collection (audit_docs)."""
+    """Push the latest audit briefings to the RAG ingest service (audit_docs collection)."""
     script = Path(__file__).resolve().parents[1] / "scripts" / "ingest_ecosystem_to_rag.py"
     if not script.exists():
         raise HTTPException(status_code=500, detail="ingest_ecosystem_to_rag.py not found.")

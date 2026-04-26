@@ -88,10 +88,20 @@ def _git_head_hash(repo_path: Path) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+_SKIP_DIRS = {
+    ".git", ".venv", "venv", "env", "__pycache__",
+    "node_modules", ".tox", ".mypy_cache", ".pytest_cache",
+    "site-packages", "build", "dist", ".eggs",
+}
+
+
 def _build_import_graph(repo_path: Path) -> dict[str, set[str]]:
     """Walk all .py files and build {file_rel → set[file_rel]} import graph."""
     graph: dict[str, set[str]] = {}
     for py_file in repo_path.rglob("*.py"):
+        rel_parts = py_file.relative_to(repo_path).parts
+        if any(part in _SKIP_DIRS for part in rel_parts):
+            continue
         file_rel = str(py_file.relative_to(repo_path))
         try:
             text = py_file.read_text(encoding="utf-8", errors="ignore")
@@ -106,16 +116,60 @@ def _build_import_graph(repo_path: Path) -> dict[str, set[str]]:
                     resolved = _module_to_file(repo_path, alias.name)
                     if resolved:
                         imports.add(resolved)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                resolved = _module_to_file(repo_path, node.module)
-                if resolved:
-                    imports.add(resolved)
+            elif isinstance(node, ast.ImportFrom):
+                imports.update(_resolve_import_from(repo_path, file_rel, node))
         graph[file_rel] = imports
     return graph
 
 
+def _resolve_import_from(
+    repo_path: Path,
+    importer_rel: str,
+    node: ast.ImportFrom,
+) -> set[str]:
+    """Resolve ``from X import a, b`` (absolute or relative) to repo-relative files.
+
+    Covers three cases the previous implementation missed:
+    - ``from pkg import submodule`` — ``submodule`` may be a file/package, not a symbol.
+      We must try ``pkg.submodule`` for each alias, in addition to ``pkg``.
+    - ``from . import foo`` / ``from .pkg import bar`` — relative imports
+      (``node.level > 0``). Reconstruct the importer's package and prepend.
+    """
+    found: set[str] = set()
+    importer_dir = importer_rel.replace("\\", "/").rsplit("/", 1)
+    pkg_parts = importer_dir[0].split("/") if len(importer_dir) == 2 else []
+
+    if node.level > 0:
+        climb = node.level - 1
+        if climb > len(pkg_parts):
+            return found  # nonsense relative import
+        base_parts = pkg_parts[: len(pkg_parts) - climb] if climb else list(pkg_parts)
+    else:
+        base_parts = []
+
+    module_parts = list(node.module.split(".")) if node.module else []
+    target_parts = base_parts + module_parts
+
+    if target_parts:
+        resolved = _module_to_file(repo_path, ".".join(target_parts))
+        if resolved:
+            found.add(resolved)
+
+    # Each alias may be a submodule rather than a symbol.
+    for alias in node.names:
+        if alias.name == "*":
+            continue
+        sub = _module_to_file(repo_path, ".".join(target_parts + [alias.name]))
+        if sub:
+            found.add(sub)
+
+    return found
+
+
 def _module_to_file(repo_path: Path, module_name: str) -> str | None:
     """Map a dotted module name to a repo-relative file path, or None if not found."""
+    if not module_name:
+        return None
     parts = module_name.split(".")
     # Try foo/bar/baz.py
     candidate = repo_path.joinpath(*parts).with_suffix(".py")
