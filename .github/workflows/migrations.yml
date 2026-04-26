@@ -23,7 +23,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/audit_ci
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5433/audit_ci
     steps:
       - name: Checkout
         uses: actions/checkout@v4

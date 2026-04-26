@@ -15,6 +15,7 @@ VRAM is read via ``nvidia-smi`` so no ``pynvml`` install is required.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -204,8 +205,15 @@ class GpuScheduler:
         self.vram_full_gpu_mb: int = int(self._cfg.get("vram_full_gpu_mb", 20000))
         self.layer_cfg: dict[str, Any] = self._cfg.get("model_layers", {})
         self.services_cfg: dict[str, Any] = self._cfg.get("services", {})
-        self.gothmog_url: str = self._cfg.get("gothmog_url", "").strip()
-        self.gothmog_api_key: str = self._cfg.get("gothmog_api_key", "").strip()
+        # Env matches .env.example: GOTHMOG_URL= empty → skip gothmog (local nvidia-smi path).
+        if "GOTHMOG_URL" in os.environ:
+            self.gothmog_url = os.environ.get("GOTHMOG_URL", "").strip()
+        else:
+            self.gothmog_url = str(self._cfg.get("gothmog_url", "")).strip()
+        if "GOTHMOG_API_KEY" in os.environ:
+            self.gothmog_api_key = os.environ.get("GOTHMOG_API_KEY", "").strip()
+        else:
+            self.gothmog_api_key = str(self._cfg.get("gothmog_api_key", "")).strip()
         self._capacity_token_id: str | None = None
 
     def wait_progress_payload(
@@ -258,7 +266,6 @@ class GpuScheduler:
         Set env var ``AI_AUDIT_SKIP_GPU_SCHEDULER=1`` to bypass all checks
         (useful in CI or on CPU-only machines).
         """
-        import os
         if os.getenv("AI_AUDIT_SKIP_GPU_SCHEDULER", "").strip() in {"1", "true", "yes"}:
             logger.info("GPU scheduler bypassed via AI_AUDIT_SKIP_GPU_SCHEDULER.")
             return GpuCapacity(vram_free_mb=0, num_gpu_layers=0, offload_mode="bypassed")

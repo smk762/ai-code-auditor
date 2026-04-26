@@ -274,7 +274,7 @@ docker compose logs -f --tail 200
 
 If every repo still logs **`path not found, skipping`**, the host paths are missing (e.g. SSHFS not mounted) or you need an extra volume for a new `path:` prefix.
 
-**Redis / DB from the container:** `REDIS_URL` / `DATABASE_URL` must point at an address the **container** can open (often your LAN host IP, e.g. `192.168.1.128`, not `127.0.0.1` on the host unless you use host networking).
+**Redis / DB from the container:** `REDIS_URL` / `DATABASE_URL` must point at an address the **container** can open (often your LAN host IP, e.g. `192.168.1.121`, not `127.0.0.1` on the host unless you use host networking).
 
 ### Daily schedule (example)
 

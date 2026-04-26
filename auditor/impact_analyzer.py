@@ -95,7 +95,7 @@ def _build_import_graph(repo_path: Path) -> dict[str, set[str]]:
         file_rel = str(py_file.relative_to(repo_path))
         try:
             text = py_file.read_text(encoding="utf-8", errors="ignore")
-            tree = ast.parse(text)
+            tree = ast.parse(text, filename=str(py_file))
         except (SyntaxError, OSError):
             graph[file_rel] = set()
             continue
