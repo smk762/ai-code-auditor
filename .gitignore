@@ -22,6 +22,7 @@ htmlcov/
 reports/*.md
 reports/*.log
 reports/*.json
+reports/*.yaml
 graph/*.db
 index/code_embeddings.faiss
 index/code_embeddings.meta.json
