@@ -23,7 +23,9 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5433/audit_ci
+      # CI uses the ephemeral Postgres service container on its default port.
+      # The 5433 prod-host convention (192.168.1.121:5433) does not apply here.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/audit_ci
     steps:
       - name: Checkout
         uses: actions/checkout@v4
