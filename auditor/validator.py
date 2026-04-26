@@ -6,6 +6,7 @@ repair loop to test a patch before surfacing it to the user).
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import subprocess
 import time
@@ -18,6 +19,7 @@ from auditor.repo_resolver import resolve_repo_path
 logger = logging.getLogger(__name__)
 
 _OUTPUT_LIMIT = 8000  # chars — cap raw_output to avoid huge payloads
+_SUMMARY_LINE_LIMIT = 20  # max lines returned by extract_failure_summary
 
 
 def validate_repo(
@@ -212,3 +214,99 @@ def _skipped(reason: str) -> ValidationResult:
         raw_output="",
         skipped_reason=reason,
     )
+
+
+# ── Failure summary (LLM-friendly compact output) ────────────────────────────
+
+def extract_failure_summary(raw_output: str, tool: str) -> list[str]:
+    """Extract the most actionable failure lines from test runner output.
+
+    Returns at most ``_SUMMARY_LINE_LIMIT`` lines, chosen to be maximally
+    informative for a local LLM with a limited context window.  Strips
+    boilerplate (progress bars, timing lines, PASSED lines) and keeps only
+    failed-test names and short error messages.
+    """
+    if not raw_output:
+        return []
+
+    lines = raw_output.splitlines()
+
+    if tool in ("pytest", "lint_only"):
+        result = _pytest_summary(lines)
+    elif tool == "go_test":
+        result = _go_summary(lines)
+    elif tool == "cargo_test":
+        result = _cargo_summary(lines)
+    elif tool == "npm_test":
+        result = _npm_summary(lines)
+    else:
+        result = []
+
+    # Universal fallback: last N non-empty, non-boilerplate lines
+    if not result:
+        result = [l for l in lines if l.strip() and not _is_boilerplate(l)][-10:]
+
+    return result[:_SUMMARY_LINE_LIMIT]
+
+
+def _is_boilerplate(line: str) -> bool:
+    """True for lines that carry no signal for the LLM."""
+    stripped = line.strip()
+    if not stripped:
+        return True
+    # pytest progress dots / timing / separator lines
+    if re.match(r"^[.FEs ]+\s*\[?\s*\d+%\]?", stripped):
+        return True
+    if re.match(r"^={5,}|^-{5,}", stripped):
+        return True
+    if re.match(r"^\d+ passed", stripped):
+        return True
+    return False
+
+
+def _pytest_summary(lines: list[str]) -> list[str]:
+    out: list[str] = []
+
+    # FAILED / ERROR test lines (e.g. "FAILED tests/test_foo.py::test_bar - AssertionError")
+    for l in lines:
+        if l.startswith(("FAILED ", "ERROR ")):
+            out.append(l)
+
+    # E-prefixed assertion/exception lines from tracebacks (e.g. "E   AssertionError: …")
+    for l in lines:
+        if re.match(r"^E\s+\S", l):
+            out.append(l)
+
+    # ruff / flake8 lint output — lines with a file:line:col pattern
+    if not out:
+        for l in lines:
+            if re.match(r"^\S.*:\d+:\d+:\s+[A-Z]\d+", l):
+                out.append(l)
+
+    return out
+
+
+def _go_summary(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    for l in lines:
+        if l.startswith(("--- FAIL:", "FAIL\t", "panic:", "got ")):
+            out.append(l)
+        elif re.search(r"\bError\b|\bfailed\b", l, re.IGNORECASE):
+            out.append(l)
+    return out
+
+
+def _cargo_summary(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    for l in lines:
+        if re.search(r"^FAILED|^error\[|panicked at|thread '.*' panicked", l):
+            out.append(l)
+    return out
+
+
+def _npm_summary(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    for l in lines:
+        if re.search(r"(✕|●\s+\S|FAIL\s|\bExpected:\b|\bReceived:\b|Error:)", l):
+            out.append(l)
+    return out

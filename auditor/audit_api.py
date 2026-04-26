@@ -645,6 +645,440 @@ def audit_diff(request: _DiffAuditRequest) -> JSONResponse:
     })
 
 
+class _ValidatePatchRequest(BaseModel):
+    repo: str
+    patch: str
+    timeout_s: int = 120
+
+
+@app.post("/audit/validate_patch")
+def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
+    """Apply *patch* to a temp copy of *repo* and run its test/lint suite.
+
+    This is the primary feedback mechanism for the repair loop with local models:
+    instead of returning thousands of lines of raw test output, the response
+    includes a ``failure_summary`` — a compact list of actionable failure lines
+    that fits comfortably in a local model's context window.
+
+    Returns:
+        patch_applied:   bool — whether ``git apply`` succeeded.
+        patch_error:     str  — git apply stderr when patch_applied is False.
+        passed:          bool — True only when patch applied AND suite passed.
+        tool:            str  — runner used (pytest / go_test / cargo_test / …).
+        duration_ms:     int
+        errors:          list[str] — raw error lines from the runner.
+        failure_summary: list[str] — compact LLM-ready failure lines (≤20).
+        raw_output:      str  — last 2000 chars of runner output.
+        skipped_reason:  str  — non-empty when validation was skipped.
+    """
+    import shutil
+    import tempfile
+
+    from auditor.validator import extract_failure_summary
+    from auditor.validator import validate_repo as _validate
+    from auditor.repo_resolver import resolve_repo_path
+
+    cfg = load_ecosystem_config()
+    repo_cfg = next((r for r in cfg.repos if r.name == request.repo), None)
+    if repo_cfg is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Repo {request.repo!r} not found in ecosystem config.",
+        )
+
+    try:
+        repo_path = resolve_repo_path(repo_cfg)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Cannot resolve repo path: {exc}") from exc
+
+    timeout_s = max(10, min(request.timeout_s, 600))
+    tmp_root = Path(tempfile.mkdtemp(prefix="ai-validate-patch-"))
+    patch_applied = False
+    patch_error = ""
+
+    try:
+        repo_copy = tmp_root / "repo"
+        shutil.copytree(str(repo_path), str(repo_copy), symlinks=True)
+
+        patch_file = tmp_root / "changes.patch"
+        patch_file.write_text(request.patch, encoding="utf-8")
+
+        apply_result = subprocess.run(
+            ["git", "apply", "--whitespace=fix", str(patch_file)],
+            cwd=repo_copy,
+            capture_output=True,
+            text=True,
+        )
+        if apply_result.returncode != 0:
+            patch_error = apply_result.stderr.strip()[:600]
+        else:
+            patch_applied = True
+
+        val_result = _validate(
+            repo_cfg,
+            path_override=repo_copy if patch_applied else None,
+            timeout_s=timeout_s,
+        )
+
+        summary = extract_failure_summary(val_result.raw_output, val_result.tool)
+        passed = patch_applied and val_result.passed
+
+        # Infrastructure errors: runner failed but produced no actionable failure lines.
+        # Log as warning so container logs surface the problem (broken venv, missing
+        # binary, bad shebang after copytree from SSHFS, etc.).
+        if not passed and not summary and val_result.errors and not val_result.skipped_reason:
+            logger.warning(
+                "validate_patch: runner %r reported failure with no actionable output "
+                "(repo=%s, patch_applied=%s). Infra errors: %s",
+                val_result.tool,
+                request.repo,
+                patch_applied,
+                val_result.errors[:3],
+            )
+
+        return JSONResponse({
+            "repo":            request.repo,
+            "patch_applied":   patch_applied,
+            "patch_error":     patch_error,
+            "passed":          passed,
+            "tool":            val_result.tool,
+            "duration_ms":     val_result.duration_ms,
+            "errors":          val_result.errors,
+            "failure_summary": summary,
+            "raw_output":      val_result.raw_output[-2000:],
+            "skipped_reason":  val_result.skipped_reason,
+        })
+    except Exception as exc:
+        logger.exception("validate_patch failed for repo %r", request.repo)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+# ── Repo status + raw diff endpoints ─────────────────────────────────────────
+
+@app.get("/audit/repos/status")
+def repos_status() -> JSONResponse:
+    """Return live status for every enabled repo.
+
+    For each repo: current branch, clean/dirty state, and a diff stat against
+    the configured base branch (or main/master if none configured).  Useful
+    for deciding which repos have changes worth feeding into the repair loop.
+
+    The diff stat is obtained via ``git diff --shortstat <base>...HEAD`` which
+    is fast (no LLM calls).  Repos where the base branch ref is unknown (e.g.
+    the remote branch hasn't been fetched) report ``diff_error`` instead of
+    crashing the whole response.
+    """
+    from auditor.git_ops import get_current_branch, is_working_tree_clean, is_in_conflict_state
+    from auditor.repo_resolver import resolve_repo_path, select_branch
+
+    cfg = load_ecosystem_config()
+    results = []
+
+    for repo in cfg.repos:
+        if not repo.enabled:
+            continue
+
+        entry: dict = {
+            "name":         repo.name,
+            "branch":       "",
+            "base_branch":  "",
+            "is_clean":     None,
+            "in_conflict":  False,
+            "has_diff":     False,
+            "files_changed": 0,
+            "insertions":   0,
+            "deletions":    0,
+            "diff_error":   "",
+            "path_missing": False,
+        }
+
+        try:
+            repo_path = resolve_repo_path(repo)
+        except Exception as exc:
+            entry["diff_error"] = f"path error: {exc}"
+            entry["path_missing"] = True
+            results.append(entry)
+            continue
+
+        entry["branch"]    = get_current_branch(repo_path)
+        entry["is_clean"]  = is_working_tree_clean(repo_path)
+        entry["in_conflict"] = is_in_conflict_state(repo_path)
+
+        base = select_branch(repo, repo_path)
+        entry["base_branch"] = base
+
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(repo_path), "diff", "--shortstat", f"{base}...HEAD"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode != 0:
+                stderr = r.stderr.strip()
+                if "unknown revision" in stderr or "bad revision" in stderr:
+                    entry["diff_error"] = f"base branch {base!r} not found in local refs"
+                else:
+                    entry["diff_error"] = stderr[:200]
+            else:
+                stat = r.stdout.strip()
+                entry["has_diff"] = bool(stat)
+                if stat:
+                    # "3 files changed, 42 insertions(+), 10 deletions(-)"
+                    import re
+                    fc = re.search(r"(\d+) files? changed", stat)
+                    ins = re.search(r"(\d+) insertion", stat)
+                    dels = re.search(r"(\d+) deletion", stat)
+                    entry["files_changed"] = int(fc.group(1)) if fc else 0
+                    entry["insertions"]    = int(ins.group(1)) if ins else 0
+                    entry["deletions"]     = int(dels.group(1)) if dels else 0
+        except subprocess.TimeoutExpired:
+            entry["diff_error"] = "git diff timed out"
+        except Exception as exc:
+            entry["diff_error"] = str(exc)[:200]
+
+        results.append(entry)
+
+    return JSONResponse(results)
+
+
+class _RawDiffRequest(BaseModel):
+    repo: str
+    compare_branch: str
+
+
+@app.post("/audit/git/diff")
+def git_raw_diff(request: _RawDiffRequest) -> JSONResponse:
+    """Return the raw unified diff for *repo* between *compare_branch* and HEAD.
+
+    This is the canonical way for external services (e.g. rag-chat repair router)
+    to obtain a diff — they should not try to read the ecosystem config or run
+    git themselves.
+
+    Returns:
+        diff:        str  — raw unified diff text (empty string when no changes).
+        is_empty:    bool — True when the diff is empty (branches are identical).
+        base_branch: str  — the branch diffed against.
+        error:       str  — non-empty when the diff could not be generated.
+        reason:      str  — machine-readable reason code for the error.
+                           One of: "repo_not_found", "branch_not_found",
+                           "path_error", "git_error", "timeout".
+    """
+    from auditor.repo_resolver import resolve_repo_path
+
+    cfg = load_ecosystem_config()
+    repo_cfg = next((r for r in cfg.repos if r.name == request.repo), None)
+    if repo_cfg is None:
+        return JSONResponse({
+            "diff": "", "is_empty": True,
+            "base_branch": request.compare_branch,
+            "error": f"Repo {request.repo!r} not found in ecosystem config.",
+            "reason": "repo_not_found",
+        }, status_code=404)
+
+    try:
+        repo_path = resolve_repo_path(repo_cfg)
+    except Exception as exc:
+        return JSONResponse({
+            "diff": "", "is_empty": True,
+            "base_branch": request.compare_branch,
+            "error": f"Cannot resolve repo path: {exc}",
+            "reason": "path_error",
+        }, status_code=400)
+
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(repo_path), "diff",
+             f"{request.compare_branch}...HEAD"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return JSONResponse({
+            "diff": "", "is_empty": True,
+            "base_branch": request.compare_branch,
+            "error": "git diff timed out after 30s",
+            "reason": "timeout",
+        })
+
+    if r.returncode != 0:
+        stderr = r.stderr.strip()
+        if "unknown revision" in stderr or "bad revision" in stderr:
+            reason = "branch_not_found"
+            error  = (
+                f"Branch {request.compare_branch!r} is not a known ref in this repo. "
+                f"Available local branches can be found via GET /audit/repos/status."
+            )
+        else:
+            reason = "git_error"
+            error  = stderr[:400]
+        return JSONResponse({
+            "diff": "", "is_empty": True,
+            "base_branch": request.compare_branch,
+            "error": error, "reason": reason,
+        })
+
+    diff_text = r.stdout
+    return JSONResponse({
+        "diff":        diff_text,
+        "is_empty":    not diff_text.strip(),
+        "base_branch": request.compare_branch,
+        "error":       "",
+        "reason":      "",
+    })
+
+
+# ── Git automation endpoints ──────────────────────────────────────────────────
+# These are called by the rag-chat repair router after a successful patch apply.
+# All operations are local-only (no network calls except push_repair_branch).
+# Per-repo locking is not implemented here — the single-slot repair model in
+# rag-chat ensures at most one repair runs per repo at a time.
+
+class _GitBranchRequest(BaseModel):
+    repo: str
+    slug: str
+    base_branch: str = ""
+
+
+class _GitCommitRequest(BaseModel):
+    repo: str
+    message: str
+    patch: str = ""          # if provided, used to determine which files to stage
+    author_name: str = "ai-code-auditor"
+    author_email: str = "noreply@ai-audit.local"
+
+
+class _GitPushRequest(BaseModel):
+    repo: str
+    branch: str = ""         # empty → current branch
+    remote: str = "origin"
+
+
+@app.post("/audit/git/branch")
+def git_create_branch(request: _GitBranchRequest) -> JSONResponse:
+    """Create (and check out) a ``repair/<slug>`` branch for *repo*.
+
+    Returns:
+        branch:      str  — full branch name, e.g. "repair/ext-retry-001".
+        base_branch: str  — branch forked from.
+        is_new:      bool — False if the branch already existed.
+    """
+    from auditor.git_ops import create_repair_branch, GitError
+    from auditor.repo_resolver import resolve_repo_path
+
+    cfg = load_ecosystem_config()
+    repo_cfg = next((r for r in cfg.repos if r.name == request.repo), None)
+    if repo_cfg is None:
+        raise HTTPException(status_code=404, detail=f"Repo {request.repo!r} not found.")
+
+    try:
+        repo_path = resolve_repo_path(repo_cfg)
+        result = create_repair_branch(
+            repo_path,
+            slug=request.slug,
+            base_branch=request.base_branch or None,
+        )
+    except GitError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("git_create_branch failed for %r", request.repo)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return JSONResponse({
+        "repo":        request.repo,
+        "branch":      result.branch,
+        "base_branch": result.base_branch,
+        "is_new":      result.is_new,
+    })
+
+
+@app.post("/audit/git/commit")
+def git_commit(request: _GitCommitRequest) -> JSONResponse:
+    """Stage the repair-touched files and commit them to the current branch.
+
+    Returns:
+        sha:          str  — 40-char commit hash, or "" when nothing was staged.
+        branch:       str  — branch committed to.
+        files_staged: int  — number of files in the commit.
+        skipped:      bool — True when nothing was staged (clean working tree).
+    """
+    from auditor.git_ops import commit_repair, GitError
+    from auditor.repo_resolver import resolve_repo_path
+
+    cfg = load_ecosystem_config()
+    repo_cfg = next((r for r in cfg.repos if r.name == request.repo), None)
+    if repo_cfg is None:
+        raise HTTPException(status_code=404, detail=f"Repo {request.repo!r} not found.")
+
+    try:
+        repo_path = resolve_repo_path(repo_cfg)
+        result = commit_repair(
+            repo_path,
+            message=request.message,
+            patch_text=request.patch,
+            author_name=request.author_name,
+            author_email=request.author_email,
+        )
+    except GitError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("git_commit failed for %r", request.repo)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return JSONResponse({
+        "repo":          request.repo,
+        "sha":           result.sha,
+        "branch":        result.branch,
+        "files_staged":  result.files_staged,
+        "short_message": result.short_message,
+        "skipped":       result.sha == "",
+    })
+
+
+@app.post("/audit/git/push")
+def git_push(request: _GitPushRequest) -> JSONResponse:
+    """Push *branch* (default: current branch) to *remote*.
+
+    Never force-pushes.  Returns ``pushed: false`` with a ``skipped_reason``
+    when the remote is unconfigured or is a local path — not an HTTP error.
+
+    Returns:
+        pushed:         bool
+        branch:         str
+        remote:         str
+        remote_url:     str
+        skipped_reason: str — non-empty when pushed=False
+    """
+    from auditor.git_ops import push_repair_branch, GitError
+    from auditor.repo_resolver import resolve_repo_path
+
+    cfg = load_ecosystem_config()
+    repo_cfg = next((r for r in cfg.repos if r.name == request.repo), None)
+    if repo_cfg is None:
+        raise HTTPException(status_code=404, detail=f"Repo {request.repo!r} not found.")
+
+    try:
+        repo_path = resolve_repo_path(repo_cfg)
+        result = push_repair_branch(
+            repo_path,
+            branch=request.branch or None,
+            remote=request.remote,
+        )
+    except GitError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("git_push failed for %r", request.repo)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return JSONResponse({
+        "repo":           request.repo,
+        "pushed":         result.pushed,
+        "branch":         result.branch,
+        "remote":         result.remote,
+        "remote_url":     result.remote_url,
+        "skipped_reason": result.skipped_reason,
+    })
+
+
 @app.post("/audit/ingest")
 def trigger_ingest() -> JSONResponse:
     """Push the latest audit briefings to the mimiri RAG collection (audit_docs)."""

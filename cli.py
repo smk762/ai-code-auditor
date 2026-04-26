@@ -84,6 +84,21 @@ def _build_parser() -> argparse.ArgumentParser:
     repair_cmd.add_argument("--adversarial-model", default="", help="Enable adversary with this model")
     repair_cmd.add_argument("--max-iterations", type=int, default=3)
     repair_cmd.add_argument("--apply", action="store_true", help="Apply final patch in-place")
+    repair_cmd.add_argument(
+        "--validate-tests", dest="validate_tests", action="store_true", default=True,
+        help="Run repo test/lint suite after each patch (default: on)",
+    )
+    repair_cmd.add_argument(
+        "--no-validate-tests", dest="validate_tests", action="store_false",
+        help="Skip test-suite validation (faster, static-audit only)",
+    )
+    # Git automation flags (only meaningful with --apply --mode auto_fix)
+    repair_cmd.add_argument("--commit", action="store_true", help="Create a repair branch and commit the patch after apply")
+    repair_cmd.add_argument("--push", action="store_true", help="Push the repair branch after commit (implies --commit)")
+    repair_cmd.add_argument("--base-branch", default="", help="Base branch for the repair branch (default: repo default)")
+    repair_cmd.add_argument("--remote", default="origin", help="Remote name for push (default: origin)")
+    repair_cmd.add_argument("--author-name", default="ai-code-auditor", help="Git commit author name")
+    repair_cmd.add_argument("--author-email", default="noreply@ai-audit.local", help="Git commit author e-mail")
     repair_cmd.add_argument("--repair-api-url", default="", help="rag-chat base URL (default: RAG_CHAT_URL env or http://127.0.0.1:9150)")
     repair_cmd.add_argument("--auth-code", default="")
     repair_cmd.add_argument("--auth-token", default="")
@@ -179,6 +194,13 @@ def _run_repair(
     adversarial_model: str = "",
     max_iterations: int = 3,
     apply: bool = False,
+    validate_tests: bool = True,
+    commit: bool = False,
+    push: bool = False,
+    base_branch: str = "",
+    remote: str = "origin",
+    author_name: str = "ai-code-auditor",
+    author_email: str = "noreply@ai-audit.local",
     repair_api_url: str = "",
     auth_code: str = "",
     auth_token: str = "",
@@ -200,6 +222,19 @@ def _run_repair(
         diff_text = sys.stdin.read()
 
     base_url = repair_api_url or os.getenv("RAG_CHAT_URL", "http://127.0.0.1:9150")
+
+    git_ops = None
+    if commit or push:
+        git_ops = {
+            "enabled": True,
+            "commit": True,
+            "push": push,
+            "base_branch": base_branch,
+            "remote": remote,
+            "author_name": author_name,
+            "author_email": author_email,
+        }
+
     payload = {
         "repo": repo_name,
         "diff": diff_text,
@@ -210,6 +245,8 @@ def _run_repair(
         "adversarial_model": adversarial_model,
         "max_iterations": max_iterations,
         "apply": apply,
+        "validate_tests": validate_tests,
+        **({"git_ops": git_ops} if git_ops else {}),
     }
 
     try:
@@ -226,10 +263,28 @@ def _run_repair(
                         if "fixer_response" in data:
                             it = data.get("iteration", "?")
                             print(f"  Iteration {it} — patch extracted: {bool(data.get('patch'))}")
-                            if data.get("validation_passed") is not None:
-                                print(f"  Validation: {'PASS' if data['validation_passed'] else 'FAIL'}")
+                            v = data.get("validation_passed")
+                            if v is not None:
+                                print(f"  Static audit:  {'PASS' if v else 'FAIL'}")
+                                if not v and data.get("validation_errors"):
+                                    for e in data["validation_errors"][:5]:
+                                        print(f"    {e}")
+                            tv = data.get("test_validation_passed")
+                            if tv is not None:
+                                print(f"  Test suite:    {'PASS' if tv else 'FAIL'}")
+                                if not tv and data.get("test_validation_errors"):
+                                    for e in data["test_validation_errors"][:10]:
+                                        print(f"    {e}")
                         elif "final_patch" in data:
-                            print(f"  Applied: {data.get('applied')}")
+                            print(f"  Applied:       {data.get('applied')}")
+                            if data.get("branch"):
+                                print(f"  Branch:        {data['branch']}")
+                            if data.get("commit_sha"):
+                                print(f"  Commit:        {data['commit_sha'][:12]}")
+                            if data.get("push_url"):
+                                print(f"  Pushed to:     {data['push_url']}")
+                            if data.get("git_error"):
+                                print(f"  Git warning:   {data['git_error']}")
                             if data.get("final_patch"):
                                 print("\n--- Final patch ---")
                                 print(data["final_patch"][:4000])
@@ -355,6 +410,13 @@ def main() -> None:
             adversarial_model=args.adversarial_model,
             max_iterations=args.max_iterations,
             apply=args.apply,
+            validate_tests=args.validate_tests,
+            commit=args.commit,
+            push=args.push,
+            base_branch=args.base_branch,
+            remote=args.remote,
+            author_name=args.author_name,
+            author_email=args.author_email,
             repair_api_url=args.repair_api_url,
             auth_code=args.auth_code,
             auth_token=args.auth_token,
