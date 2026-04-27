@@ -36,7 +36,7 @@ from auditor.ecosystem_briefing import build_ecosystem_overview, build_repo_brie
 from auditor.config import load_ecosystem_config
 from ecosystem.api_mapper import discover_api_endpoints
 from ecosystem.graph_builder import GraphBuilder
-from auditor.repo_resolver import resolve_repo_path
+from auditor.repo_resolver import resolve_repo_path, resolve_scan_root
 
 _DEFAULT_INGEST_URL = "http://127.0.0.1:9050/ingest"
 _DEFAULT_COLLECTION = "project_docs"
@@ -126,10 +126,13 @@ def main() -> None:
         repo_path = resolve_repo_path(repo)
         briefing = build_repo_briefing(repo.name, repo_path, graph=graph, max_chars=4000)
 
-        # Append endpoint list if the repo is available
+        # Append endpoint list if the repo is available. Honour subpath so
+        # the briefing only includes APIs from areas the rest of the auditor
+        # pipeline scans (excludes vendored / scoped-out subdirectories).
         endpoints: list[str] = []
-        if repo_path.exists():
-            for py_file in repo_path.rglob("*.py"):
+        scan_root = resolve_scan_root(repo)
+        if scan_root.exists():
+            for py_file in scan_root.rglob("*.py"):
                 if any(p in py_file.parts for p in {".git", ".venv", "__pycache__"}):
                     continue
                 endpoints.extend(discover_api_endpoints(py_file))

@@ -68,8 +68,10 @@ class _FileState:
         elif line.startswith("-") and not line.startswith("---"):
             self._hunk.removed_lines.append(self._old_line)
             self._old_line += 1
-        elif not line.startswith("\\"):
-            # Context line (space-prefixed or empty); skip "\ No newline at end of file"
+        elif line.startswith(" ") or line == "":
+            # Context line (space-prefixed; tolerate empty lines from patch
+            # tools that strip trailing whitespace). "\ No newline at end of
+            # file" markers (and any other prefix) are ignored.
             self._old_line += 1
             self._new_line += 1
 
@@ -160,5 +162,12 @@ def changed_files(file_diffs: list[FileDiff]) -> list[str]:
 
 
 def hunk_new_range(hunk: DiffHunk) -> tuple[int, int]:
-    """Return (start, end) 1-indexed line range in the new file covered by this hunk."""
-    return hunk.new_start, hunk.new_start + max(hunk.new_count, 1) - 1
+    """Return (start, end) 1-indexed line range in the new file covered by this hunk.
+
+    Pure deletion hunks (``new_count == 0``) return an empty range
+    (``new_start, new_start - 1``) so overlap checks don't spuriously match a
+    CodeUnit whose start_line equals the hunk's new_start.
+    """
+    if hunk.new_count == 0:
+        return hunk.new_start, hunk.new_start - 1
+    return hunk.new_start, hunk.new_start + hunk.new_count - 1

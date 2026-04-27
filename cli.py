@@ -213,6 +213,13 @@ def _run_repair(
     provided_auth = auth_code or os.getenv("AI_AUDIT_AUTH_CODE_INPUT", "")
     require_auth(cfg.auth_mode, cfg.auth_code_env, provided_code=provided_auth)
 
+    # --commit / --push only make sense when --apply is also set; without it the
+    # repair API has no patch to commit and would either no-op or commit empty.
+    if (commit or push) and not apply:
+        raise SystemExit("--commit / --push require --apply (no patch would be written).")
+    if push and not commit:
+        commit = True  # documented behavior: --push implies --commit
+
     # Repair can apply patches, create branches, commit, and push — gate it the
     # same way as the other write-capable commands.  ``analyst`` is sufficient
     # for read-only review/suggest; write paths require ``admin``.

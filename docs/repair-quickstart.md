@@ -121,7 +121,7 @@ ai-audit repair \
 
 Output when git ops succeed:
 
-```
+```text
 [complete]
   Applied:       True
   Branch:        repair/a1b2c3d4e5f6

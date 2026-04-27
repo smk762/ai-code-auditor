@@ -297,20 +297,28 @@ def _is_stageable(file_path: str) -> bool:
 
 
 def _extract_filenames_from_patch(patch_text: str) -> list[str]:
-    """Parse the b-side filenames from a unified diff without a full parser.
+    """Parse the touched filenames from a unified diff without a full parser.
 
     Handles both ``+++ b/path`` (git diff) and ``+++ path`` (plain diff).
-    Skips ``/dev/null`` (deleted files — no file to stage).
+    For deletions (``+++ /dev/null``) falls back to the preceding
+    ``--- a/<path>`` so the deleted file still gets staged.
     """
     files: list[str] = []
-    for line in patch_text.splitlines():
+    lines = patch_text.splitlines()
+    for i, line in enumerate(lines):
         if not line.startswith("+++ "):
             continue
-        path = line[4:].strip()
-        if path.startswith("b/"):
-            path = path[2:]
-        if path and path != "/dev/null":
-            files.append(path)
+        b_path = line[4:].strip()
+        if b_path.startswith("b/"):
+            b_path = b_path[2:]
+        if b_path and b_path != "/dev/null":
+            files.append(b_path)
+        elif b_path == "/dev/null" and i > 0 and lines[i - 1].startswith("--- "):
+            a_path = lines[i - 1][4:].strip()
+            if a_path.startswith("a/"):
+                a_path = a_path[2:]
+            if a_path and a_path != "/dev/null":
+                files.append(a_path)
     return files
 
 
