@@ -85,4 +85,7 @@ log_file_path: pipeline.log
 # RAG isolation — keep audit knowledge in its own Qdrant collection so it does
 # not pollute the general-purpose chat RAG in agent-composer (project_docs).
 rag_collection: audit_docs
-rag_ingest_url: http://127.0.0.1:9050/ingest
+# Use host.docker.internal so the dockerised audit-api can reach the
+# rag-ingest service running on the host (compose adds the host-gateway entry).
+# Bare-metal/host-network runs can override with AI_AUDIT_RAG_INGEST_URL=http://127.0.0.1:9050/ingest.
+rag_ingest_url: http://host.docker.internal:9050/ingest

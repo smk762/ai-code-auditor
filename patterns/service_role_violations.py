@@ -21,6 +21,32 @@ from pathlib import Path
 
 from auditor.contracts import RuleViolation
 
+
+def _repo_relative(file_path: Path, repo_files: list[Path]) -> str:
+    """Render *file_path* relative to the common prefix of *repo_files*.
+
+    Falls back to the absolute path string when the common prefix is
+    indeterminate (single-file scans, mixed roots), so reports never collapse
+    to ambiguous basenames.
+    """
+    try:
+        common = Path(*Path(repo_files[0]).parts[: _common_prefix_len(repo_files)])
+        return str(file_path.relative_to(common))
+    except (ValueError, IndexError):
+        return str(file_path)
+
+
+def _common_prefix_len(paths: list[Path]) -> int:
+    if not paths:
+        return 0
+    parts_lists = [p.parts for p in paths]
+    shortest = min(len(parts) for parts in parts_lists)
+    for i in range(shortest):
+        first = parts_lists[0][i]
+        if any(parts[i] != first for parts in parts_lists):
+            return i
+    return shortest
+
 # Patterns in raw source that indicate an HTML/template response.
 _UI_PATTERNS: list[re.Pattern] = [
     re.compile(r'\bTemplateResponse\s*\('),
@@ -68,10 +94,11 @@ def detect_ui_in_worker(
                 match = pattern.search(source)
                 if match:
                     line = source[: match.start()].count("\n") + 1
+                    rel = _repo_relative(file_path, files)
                     violations.append(
                         RuleViolation(
                             rule_name="ui_in_worker",
-                            violating_path=f"{repo_name}: {file_path.name}:{line}",
+                            violating_path=f"{repo_name}: {rel}:{line}",
                             entities=[repo_name],
                             evidence=(
                                 f"UI response pattern '{match.group().strip()}' found in "
@@ -134,7 +161,9 @@ def detect_competing_providers(
             if len(providers) < 2:
                 continue
             backends = [p[0] for p in providers]
-            locations = [f"{Path(p[1]).name}:{p[2]}" for p in providers]
+            locations = [
+                f"{_repo_relative(Path(p[1]), files)}:{p[2]}" for p in providers
+            ]
             violations.append(
                 RuleViolation(
                     rule_name="competing_providers",

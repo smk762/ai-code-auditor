@@ -51,6 +51,10 @@ services:
   audit-api:
     <<: *auditor-base
     container_name: audit-api
+    # Lets the container resolve services running on the host (e.g. rag-ingest at
+    # host.docker.internal:9050 referenced from config/ecosystem.yaml).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${AUDIT_API_BIND_IP:-0.0.0.0}:${AUDIT_API_PORT:-8765}:8765"
     healthcheck:

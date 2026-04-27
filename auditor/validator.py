@@ -78,8 +78,26 @@ def _run_python(repo_path: Path, timeout_s: int) -> ValidationResult:
 def _run_node(repo_path: Path, timeout_s: int) -> ValidationResult:
     if shutil.which("npm") is None:
         return _skipped("npm not installed")
-    cmd = ["npm", "test", "--", "--passWithNoTests"]
+    cmd = ["npm", "test", "--"]
+    # --passWithNoTests is only honoured by Jest, Vitest, Playwright Test and
+    # Bun. Mocha/AVA/node:test will reject the flag and fail the suite, so only
+    # forward it when the test script clearly uses a supporting runner.
+    if _node_runner_supports_pass_with_no_tests(repo_path):
+        cmd.append("--passWithNoTests")
     return _exec(cmd, cwd=repo_path, tool="npm_test", timeout_s=timeout_s)
+
+
+_PASS_WITH_NO_TESTS_RUNNERS = ("jest", "vitest", "playwright", "bun")
+
+
+def _node_runner_supports_pass_with_no_tests(repo_path: Path) -> bool:
+    try:
+        import json
+        pkg = json.loads((repo_path / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    test_script = (pkg.get("scripts") or {}).get("test", "").lower()
+    return any(runner in test_script for runner in _PASS_WITH_NO_TESTS_RUNNERS)
 
 
 def _run_go(repo_path: Path, timeout_s: int) -> ValidationResult:

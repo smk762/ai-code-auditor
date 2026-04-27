@@ -175,7 +175,7 @@ Add a `CapacityManager` class to the same file:
 
 ```python
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 @dataclass
 class CapacityToken:

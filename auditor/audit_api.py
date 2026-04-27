@@ -404,6 +404,10 @@ def stream_run(
             if payload != last_payload:
                 last_payload = payload
                 yield f"event: snapshot\ndata: {payload}\n\n"
+            else:
+                # Comment frame keeps proxies (nginx, docker networks) from
+                # closing the idle stream during long LLM calls.
+                yield ": keepalive\n\n"
             if row["status"] not in ("pending", "running"):
                 yield f"event: terminal\ndata: {json.dumps({'status': row['status']})}\n\n"
                 return
