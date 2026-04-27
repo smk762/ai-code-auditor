@@ -13,6 +13,8 @@ dependencies = [
   "redis>=5.0.7",
   "boto3>=1.34.0",
   "PyJWT>=2.9.0",
+  "fastapi>=0.111.0",
+  "uvicorn[standard]>=0.29.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +34,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.setuptools]
+# Root-level `cli.py` is the console entry; it is not under an included package dir.
+py-modules = ["cli"]
 
 [tool.setuptools.packages.find]
 include = ["auditor*", "ecosystem*", "patterns*", "semantic*", "copilot*", "pipelines*", "qa*"]

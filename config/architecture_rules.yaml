@@ -9,3 +9,134 @@ rules:
     allowed:
       - "gateway->services"
       - "services->libraries"
+
+# Service roles: declares each service's intended role in the architecture.
+# Used by call-graph and service-role violation detectors.
+# Deprecated services (loraline, mimiri, rubedo, test_dbs) have been removed.
+# Playact repos are excluded — they are scanned in isolation, not governed here.
+service_roles:
+  - name: kimini-api
+    role: gateway
+  - name: somnus
+    role: ui
+  - name: gothmog
+    role: orchestrator
+  - name: imogen
+    role: worker
+  - name: vidita
+    role: worker
+  - name: voluptas
+    role: worker
+  - name: tss-stack
+    role: worker
+  - name: agent-composer
+    role: worker
+  - name: sauron
+    role: monitoring
+  - name: ai-code-auditor
+    role: tooling
+
+# Call graph rules: declares which inter-service HTTP calls are permitted.
+# Any edge detected in source that is not in allowed_calls is a violation.
+# Wildcards: to: "*" means the service may call any other service.
+#
+# Key intentional patterns:
+#   gothmog → kimini-api  : webhook callback (Kimini passes callback URL on submit; intentional)
+#   somnus  → gothmog     : operator/infra views (queue depth, cancel/bump jobs); deliberate
+#   somnus  → voluptas    : direct WebSocket + proxy (LAN-only, no Kimini in path); deliberate
+#   imogen  → imogen      : loraline/rubedo functionality absorbed; post-process is now internal
+#
+# Confirmed violations (NOT in this list):
+#   somnus  → imogen/vidita/tss-stack : direct GPU worker proxy, bypassing Kimini
+#   imogen  → gothmog : gallery scheduler submits jobs directly, bypassing Kimini
+call_graph_rules:
+  allowed_calls:
+    - from: somnus
+      to: kimini-api
+    - from: somnus
+      to: gothmog
+      note: "Operator/infra views (queue, cancel, orc run list) — deliberate"
+    - from: somnus
+      to: voluptas
+      note: "ComfyUI WebSocket + proxy — LAN-only direct path, no Kimini in the loop"
+    - from: kimini-api
+      to: gothmog
+    - from: kimini-api
+      to: imogen
+    - from: kimini-api
+      to: vidita
+    - from: kimini-api
+      to: agent-composer
+    - from: kimini-api
+      to: tss-stack
+    - from: gothmog
+      to: kimini-api
+      note: "Webhook callback — Kimini passes callback URL on job submit; intentional"
+    - from: sauron
+      to: "*"
+
+  # Maps env var name fragments (upper-cased) to the target service.
+  service_url_env_vars:
+    - env_fragment: GOTHMOG
+      service: gothmog
+    - env_fragment: KIMINI
+      service: kimini-api
+    - env_fragment: IMAGE_API
+      service: imogen
+    - env_fragment: IMOGEN
+      service: imogen
+    - env_fragment: VIDEO_API
+      service: vidita
+    - env_fragment: VIDITA
+      service: vidita
+    - env_fragment: TSS_API
+      service: tss-stack
+    - env_fragment: GALLERY_API
+      service: imogen
+    - env_fragment: SOMNUS
+      service: somnus
+    - env_fragment: AGENT_COMPOSER
+      service: agent-composer
+    - env_fragment: COMFYUI
+      service: voluptas
+    - env_fragment: VOLUPTAS
+      service: voluptas
+
+# Domain ownership rules: declares which service is the canonical owner of a
+# concern and which repos must not contain duplicate implementations of it.
+domain_ownership:
+  - domain: authentication
+    description: "API key verification and request auth — boundary responsibility of kimini-api"
+    owner: kimini-api
+    severity: HIGH
+    forbidden_in:
+      - imogen
+      - vidita
+      - gothmog
+      - tss-stack
+
+  - domain: rate_limiting
+    description: "Rate-limiting logic — must be enforced at the kimini-api gateway, not inside workers"
+    owner: kimini-api
+    severity: HIGH
+    forbidden_in:
+      - imogen
+      - vidita
+      - tss-stack
+
+  - domain: model_management
+    description: "LoRA/adapter/checkpoint management and GPU sidecar control — owned by imogen (absorbed from loraline)"
+    owner: imogen
+    severity: HIGH
+    forbidden_in:
+      - vidita
+      - gothmog
+
+  - domain: orchestration
+    description: "Job lifecycle, run state schemas, and status observation — owned by gothmog"
+    owner: gothmog
+    severity: MEDIUM
+    forbidden_in:
+      - tss-stack
+      - imogen
+      - kimini-api

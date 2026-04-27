@@ -71,6 +71,48 @@ def _build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--report", default="reports/extraction_candidates.yaml", help="Extraction candidate YAML report path")
     approve.add_argument("--rules-path", default="config/architecture_rules.yaml", help="Architecture rules file to append")
     approve.add_argument("--auth-token", default="", help="JWT token with admin role")
+
+    repair_cmd = sub.add_parser("repair", help="Run agentic repair loop via rag-chat repair API")
+    repair_cmd.add_argument("--repo", required=True, help="Repo name from ecosystem config")
+    _repair_src = repair_cmd.add_mutually_exclusive_group(required=True)
+    _repair_src.add_argument("--diff", dest="repair_diff_file", metavar="FILE", help="Path to a unified diff file")
+    _repair_src.add_argument("--stdin", dest="repair_stdin", action="store_true", help="Read unified diff from stdin")
+    _repair_src.add_argument("--compare-branch", dest="repair_compare_branch", metavar="BRANCH", help="Compare HEAD against BRANCH")
+    repair_cmd.add_argument("--mode", choices=("auto_fix", "review", "suggest"), default="review")
+    repair_cmd.add_argument("--fix-model", default="", help="Override fixer model")
+    repair_cmd.add_argument("--critique-model", default="", help="Enable critic with this model")
+    repair_cmd.add_argument("--adversarial-model", default="", help="Enable adversary with this model")
+    repair_cmd.add_argument("--max-iterations", type=int, default=3)
+    repair_cmd.add_argument("--apply", action="store_true", help="Apply final patch in-place")
+    repair_cmd.add_argument(
+        "--validate-tests", dest="validate_tests", action="store_true", default=True,
+        help="Run repo test/lint suite after each patch (default: on)",
+    )
+    repair_cmd.add_argument(
+        "--no-validate-tests", dest="validate_tests", action="store_false",
+        help="Skip test-suite validation (faster, static-audit only)",
+    )
+    # Git automation flags (only meaningful with --apply --mode auto_fix)
+    repair_cmd.add_argument("--commit", action="store_true", help="Create a repair branch and commit the patch after apply")
+    repair_cmd.add_argument("--push", action="store_true", help="Push the repair branch after commit (implies --commit)")
+    repair_cmd.add_argument("--base-branch", default="", help="Base branch for the repair branch (default: repo default)")
+    repair_cmd.add_argument("--remote", default="origin", help="Remote name for push (default: origin)")
+    repair_cmd.add_argument("--author-name", default="ai-code-auditor", help="Git commit author name")
+    repair_cmd.add_argument("--author-email", default="noreply@ai-audit.local", help="Git commit author e-mail")
+    repair_cmd.add_argument("--repair-api-url", default="", help="rag-chat base URL (default: RAG_CHAT_URL env or http://127.0.0.1:9150)")
+    repair_cmd.add_argument("--auth-code", default="")
+    repair_cmd.add_argument("--auth-token", default="")
+
+    diff_cmd = sub.add_parser("diff-audit", help="Audit only files touched by a diff")
+    diff_cmd.add_argument("--repo", required=True, help="Repo name from ecosystem config")
+    _diff_src = diff_cmd.add_mutually_exclusive_group(required=True)
+    _diff_src.add_argument("--diff", dest="diff_file", metavar="FILE", help="Path to a unified diff file")
+    _diff_src.add_argument("--stdin", action="store_true", help="Read unified diff from stdin")
+    _diff_src.add_argument("--compare-branch", metavar="BRANCH", help="Compare HEAD against BRANCH (git diff BRANCH...HEAD)")
+    diff_cmd.add_argument("--json", action="store_true", help="Output findings as JSON")
+    diff_cmd.add_argument("--auth-code", default="", help="Auth code when auth mode is enabled")
+    diff_cmd.add_argument("--auth-token", default="", help="JWT token with analyst role")
+
     return parser
 
 
@@ -141,6 +183,204 @@ def _run_ask(
             print(f"- {cite}")
 
 
+def _run_repair(
+    repo_name: str,
+    repair_diff_file: str = "",
+    repair_stdin: bool = False,
+    repair_compare_branch: str = "",
+    mode: str = "review",
+    fix_model: str = "",
+    critique_model: str = "",
+    adversarial_model: str = "",
+    max_iterations: int = 3,
+    apply: bool = False,
+    validate_tests: bool = True,
+    commit: bool = False,
+    push: bool = False,
+    base_branch: str = "",
+    remote: str = "origin",
+    author_name: str = "ai-code-auditor",
+    author_email: str = "noreply@ai-audit.local",
+    repair_api_url: str = "",
+    auth_code: str = "",
+    auth_token: str = "",
+) -> None:
+    """Forward a repair request to the rag-chat repair API and stream SSE output."""
+    import sys
+    import requests as _req
+
+    cfg = load_ecosystem_config()
+    provided_auth = auth_code or os.getenv("AI_AUDIT_AUTH_CODE_INPUT", "")
+    require_auth(cfg.auth_mode, cfg.auth_code_env, provided_code=provided_auth)
+
+    # --commit / --push only make sense when --apply is also set; without it the
+    # repair API has no patch to commit and would either no-op or commit empty.
+    if (commit or push) and not apply:
+        raise SystemExit("--commit / --push require --apply (no patch would be written).")
+    if push and not commit:
+        commit = True  # documented behavior: --push implies --commit
+
+    # Repair can apply patches, create branches, commit, and push — gate it the
+    # same way as the other write-capable commands.  ``analyst`` is sufficient
+    # for read-only review/suggest; write paths require ``admin``.
+    write_ops = bool(apply or commit or push)
+    token = auth_token or os.getenv("AI_AUDIT_AUTH_TOKEN", "")
+    if token:
+        enforce_role(token, "admin" if write_ops else "analyst", "cli:repair")
+
+    # Acquire diff text
+    if repair_compare_branch:
+        diff_text = ""  # the repair API will generate this from compare_branch
+    elif repair_diff_file:
+        diff_text = Path(repair_diff_file).read_text(encoding="utf-8")
+    else:
+        diff_text = sys.stdin.read()
+
+    base_url = repair_api_url or os.getenv("RAG_CHAT_URL", "http://127.0.0.1:9150")
+
+    git_ops = None
+    if commit or push:
+        git_ops = {
+            "enabled": True,
+            "commit": True,
+            "push": push,
+            "base_branch": base_branch,
+            "remote": remote,
+            "author_name": author_name,
+            "author_email": author_email,
+        }
+
+    payload = {
+        "repo": repo_name,
+        "diff": diff_text,
+        "compare_branch": repair_compare_branch,
+        "mode": mode,
+        "fix_model": fix_model,
+        "critique_model": critique_model,
+        "adversarial_model": adversarial_model,
+        "max_iterations": max_iterations,
+        "apply": apply,
+        "validate_tests": validate_tests,
+        **({"git_ops": git_ops} if git_ops else {}),
+    }
+
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    try:
+        with _req.post(
+            f"{base_url}/api/repair/run",
+            json=payload,
+            headers=headers,
+            stream=True,
+            timeout=600,
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                if line.startswith("event:"):
+                    print(f"\n[{line[7:].strip()}]")
+                elif line.startswith("data:"):
+                    try:
+                        data = json.loads(line[5:].strip())
+                        if "fixer_response" in data:
+                            it = data.get("iteration", "?")
+                            print(f"  Iteration {it} — patch extracted: {bool(data.get('patch'))}")
+                            v = data.get("validation_passed")
+                            if v is not None:
+                                print(f"  Static audit:  {'PASS' if v else 'FAIL'}")
+                                if not v and data.get("validation_errors"):
+                                    for e in data["validation_errors"][:5]:
+                                        print(f"    {e}")
+                            tv = data.get("test_validation_passed")
+                            if tv is not None:
+                                print(f"  Test suite:    {'PASS' if tv else 'FAIL'}")
+                                if not tv and data.get("test_validation_errors"):
+                                    for e in data["test_validation_errors"][:10]:
+                                        print(f"    {e}")
+                        elif "final_patch" in data:
+                            print(f"  Applied:       {data.get('applied')}")
+                            if data.get("branch"):
+                                print(f"  Branch:        {data['branch']}")
+                            if data.get("commit_sha"):
+                                print(f"  Commit:        {data['commit_sha'][:12]}")
+                            if data.get("push_url"):
+                                print(f"  Pushed to:     {data['push_url']}")
+                            if data.get("git_error"):
+                                print(f"  Git warning:   {data['git_error']}")
+                            if data.get("final_patch"):
+                                print("\n--- Final patch ---")
+                                print(data["final_patch"][:4000])
+                        elif "message" in data:
+                            print(f"  Error: {data['message']}")
+                    except json.JSONDecodeError:
+                        print(line)
+    except _req.exceptions.ConnectionError:
+        raise SystemExit(f"Could not connect to repair API at {base_url}. Is rag-chat running?")
+
+
+def _run_diff_audit(
+    repo_name: str,
+    diff_file: str = "",
+    use_stdin: bool = False,
+    compare_branch: str = "",
+    as_json: bool = False,
+    auth_code: str = "",
+    auth_token: str = "",
+) -> None:
+    import sys
+
+    from auditor.diff_auditor import get_diff_from_branch, run_diff_audit
+    from auditor.repo_resolver import resolve_repo_path
+
+    cfg = load_ecosystem_config()
+    provided_auth = auth_code or os.getenv("AI_AUDIT_AUTH_CODE_INPUT", "")
+    require_auth(cfg.auth_mode, cfg.auth_code_env, provided_code=provided_auth)
+    token = auth_token or os.getenv("AI_AUDIT_AUTH_TOKEN", "")
+    if token:
+        enforce_role(token, "analyst", "cli:diff-audit")
+
+    repo = next((r for r in cfg.repos if r.name == repo_name), None)
+    if repo is None:
+        raise SystemExit(f"Repo {repo_name!r} not found in ecosystem config.")
+
+    if compare_branch:
+        repo_path = resolve_repo_path(repo)
+        diff_text = get_diff_from_branch(repo_path, compare_branch)
+    elif diff_file:
+        diff_text = Path(diff_file).read_text(encoding="utf-8")
+    else:
+        diff_text = sys.stdin.read()
+
+    if not diff_text.strip():
+        print("No diff content — nothing to audit.")
+        return
+
+    result = run_diff_audit(repo, diff_text)
+
+    if as_json:
+        print(json.dumps({
+            "repo": result.repo,
+            "files_changed": len(result.impact.directly_changed),
+            "files_affected": len(result.impact.transitively_affected),
+            "units_analyzed": len(result.units_analyzed),
+            "findings": [asdict(f) for f in result.findings],
+            "generated_at": result.generated_at,
+        }, indent=2))
+        return
+
+    print(f"Repo:                    {result.repo}")
+    print(f"Files changed:           {len(result.impact.directly_changed)}")
+    print(f"Files transitively hit:  {len(result.impact.transitively_affected)}")
+    print(f"Units analyzed:          {len(result.units_analyzed)}")
+    print(f"Findings:                {len(result.findings)}")
+    if result.findings:
+        print()
+        for f in result.findings:
+            print(f"  [{f.severity}] {f.file_path}:{f.line}  {f.title}")
+            if f.description:
+                print(f"    {f.description[:120]}")
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
@@ -180,6 +420,39 @@ def main() -> None:
             print(f"Precision: {result.precision:.3f}")
             print(f"Recall: {result.recall:.3f}")
             print(f"Total queries: {result.total_queries}")
+    elif args.command == "repair":
+        _run_repair(
+            repo_name=args.repo,
+            repair_diff_file=args.repair_diff_file or "",
+            repair_stdin=args.repair_stdin,
+            repair_compare_branch=args.repair_compare_branch or "",
+            mode=args.mode,
+            fix_model=args.fix_model,
+            critique_model=args.critique_model,
+            adversarial_model=args.adversarial_model,
+            max_iterations=args.max_iterations,
+            apply=args.apply,
+            validate_tests=args.validate_tests,
+            commit=args.commit,
+            push=args.push,
+            base_branch=args.base_branch,
+            remote=args.remote,
+            author_name=args.author_name,
+            author_email=args.author_email,
+            repair_api_url=args.repair_api_url,
+            auth_code=args.auth_code,
+            auth_token=args.auth_token,
+        )
+    elif args.command == "diff-audit":
+        _run_diff_audit(
+            repo_name=args.repo,
+            diff_file=args.diff_file or "",
+            use_stdin=args.stdin,
+            compare_branch=args.compare_branch or "",
+            as_json=args.json,
+            auth_code=args.auth_code,
+            auth_token=args.auth_token,
+        )
     elif args.command == "approve-extraction":
         if token:
             enforce_role(token, "admin", "cli:approve-extraction")

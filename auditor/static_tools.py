@@ -3,23 +3,31 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from pathlib import Path
 
 from auditor.contracts import Finding
 
 
 def run_static_checks(repo_name: str, repo_path: str) -> list[Finding]:
     findings: list[Finding] = []
-    findings.extend(_run_bandit(repo_name, repo_path))
-    findings.extend(_run_semgrep(repo_name, repo_path))
-    findings.extend(_run_trivy_fs(repo_name, repo_path))
+    findings.extend(_run_bandit(repo_name, ["-r", repo_path]))
+    findings.extend(_run_semgrep(repo_name, [repo_path]))
     return findings
 
 
-def _run_bandit(repo_name: str, repo_path: str) -> list[Finding]:
+def run_static_checks_on_files(repo_name: str, file_paths: list[str]) -> list[Finding]:
+    """Run static analysis on specific files (for diff-targeted auditing)."""
+    if not file_paths:
+        return []
+    findings: list[Finding] = []
+    findings.extend(_run_bandit(repo_name, list(file_paths)))
+    findings.extend(_run_semgrep(repo_name, list(file_paths)))
+    return findings
+
+
+def _run_bandit(repo_name: str, target_args: list[str]) -> list[Finding]:
     if shutil.which("bandit") is None:
         return []
-    cmd = ["bandit", "-r", repo_path, "-f", "json"]
+    cmd = ["bandit", *target_args, "-f", "json"]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode not in (0, 1):
         return []
@@ -27,30 +35,28 @@ def _run_bandit(repo_name: str, repo_path: str) -> list[Finding]:
         payload = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
         return []
-    findings: list[Finding] = []
-    for issue in payload.get("results", []):
-        findings.append(
-            Finding(
-                id=f"bandit:{issue.get('filename')}:{issue.get('line_number')}",
-                type="security",
-                severity=_bandit_to_severity(issue.get("issue_severity", "LOW")),
-                repo=repo_name,
-                file_path=issue.get("filename", ""),
-                line=int(issue.get("line_number", 0)),
-                title=issue.get("test_name", "Bandit issue"),
-                description=issue.get("issue_text", ""),
-                evidence=issue.get("code", ""),
-                recommendation="Review and remediate this security finding.",
-                source="bandit",
-            )
+    return [
+        Finding(
+            id=f"bandit:{issue.get('filename')}:{issue.get('line_number')}",
+            type="security",
+            severity=_bandit_to_severity(issue.get("issue_severity", "LOW")),
+            repo=repo_name,
+            file_path=issue.get("filename", ""),
+            line=int(issue.get("line_number", 0)),
+            title=issue.get("test_name", "Bandit issue"),
+            description=issue.get("issue_text", ""),
+            evidence=issue.get("code", ""),
+            recommendation="Review and remediate this security finding.",
+            source="bandit",
         )
-    return findings
+        for issue in payload.get("results", [])
+    ]
 
 
-def _run_semgrep(repo_name: str, repo_path: str) -> list[Finding]:
+def _run_semgrep(repo_name: str, target_args: list[str]) -> list[Finding]:
     if shutil.which("semgrep") is None:
         return []
-    cmd = ["semgrep", "--config=auto", "--json", repo_path]
+    cmd = ["semgrep", "--config=auto", "--json", *target_args]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode not in (0, 1):
         return []
@@ -58,57 +64,22 @@ def _run_semgrep(repo_name: str, repo_path: str) -> list[Finding]:
         payload = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
         return []
-    findings: list[Finding] = []
-    for issue in payload.get("results", []):
-        findings.append(
-            Finding(
-                id=f"semgrep:{issue.get('path')}:{issue.get('start', {}).get('line')}",
-                type="code_quality",
-                severity=_semgrep_to_severity(issue.get("extra", {}).get("severity", "WARNING")),
-                repo=repo_name,
-                file_path=issue.get("path", ""),
-                line=int(issue.get("start", {}).get("line", 0)),
-                title=issue.get("check_id", "Semgrep finding"),
-                description=issue.get("extra", {}).get("message", ""),
-                evidence=issue.get("extra", {}).get("lines", ""),
-                recommendation="Apply the Semgrep recommendation and re-run checks.",
-                source="semgrep",
-            )
+    return [
+        Finding(
+            id=f"semgrep:{issue.get('path')}:{issue.get('start', {}).get('line')}",
+            type="code_quality",
+            severity=_semgrep_to_severity(issue.get("extra", {}).get("severity", "WARNING")),
+            repo=repo_name,
+            file_path=issue.get("path", ""),
+            line=int(issue.get("start", {}).get("line", 0)),
+            title=issue.get("check_id", "Semgrep finding"),
+            description=issue.get("extra", {}).get("message", ""),
+            evidence=issue.get("extra", {}).get("lines", ""),
+            recommendation="Apply the Semgrep recommendation and re-run checks.",
+            source="semgrep",
         )
-    return findings
-
-
-def _run_trivy_fs(repo_name: str, repo_path: str) -> list[Finding]:
-    if shutil.which("trivy") is None:
-        return []
-    cmd = ["trivy", "fs", "--scanners", "vuln,secret", "--format", "json", repo_path]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if result.returncode not in (0, 1):
-        return []
-    try:
-        payload = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
-        return []
-    findings: list[Finding] = []
-    for res in payload.get("Results", []):
-        target = res.get("Target", "")
-        for vuln in res.get("Vulnerabilities", []) or []:
-            findings.append(
-                Finding(
-                    id=f"trivy:{target}:{vuln.get('VulnerabilityID')}",
-                    type="security",
-                    severity=_trivy_to_severity(vuln.get("Severity", "LOW")),
-                    repo=repo_name,
-                    file_path=target,
-                    line=0,
-                    title=vuln.get("Title", vuln.get("VulnerabilityID", "Trivy finding")),
-                    description=vuln.get("Description", ""),
-                    evidence=vuln.get("PkgName", ""),
-                    recommendation=f"Upgrade package {vuln.get('PkgName', 'unknown')}.",
-                    source="trivy",
-                )
-            )
-    return findings
+        for issue in payload.get("results", [])
+    ]
 
 
 def _bandit_to_severity(value: str) -> str:
@@ -118,9 +89,4 @@ def _bandit_to_severity(value: str) -> str:
 
 def _semgrep_to_severity(value: str) -> str:
     mapping = {"ERROR": "HIGH", "WARNING": "MEDIUM", "INFO": "LOW"}
-    return mapping.get(value.upper(), "LOW")
-
-
-def _trivy_to_severity(value: str) -> str:
-    mapping = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MEDIUM": "MEDIUM", "LOW": "LOW"}
     return mapping.get(value.upper(), "LOW")

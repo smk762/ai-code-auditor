@@ -5,22 +5,36 @@ from dataclasses import asdict
 from sqlalchemy import delete, select
 
 from auditor.contracts import Finding
-from auditor.db import AuditRun, AuthAuditEvent, FindingRecord, PipelineCheckpoint, RepoRun, db_session, utcnow
+from auditor.db import AuditRun, AuthAuditEvent, FindingRecord, PipelineCheckpoint, RepoRun, as_utc, db_session, utcnow
 from auditor.runtime import RunMetadata
 
 
 def record_run_start(run_id: str, pipeline: str) -> None:
     with db_session() as session:
-        session.add(
-            AuditRun(
-                run_id=run_id,
-                pipeline=pipeline,
-                started_at=utcnow(),
-                finished_at=None,
-                status="running",
-                metadata_json={},
+        row = session.execute(select(AuditRun).where(AuditRun.run_id == run_id)).scalar_one_or_none()
+        if row is None:
+            session.add(
+                AuditRun(
+                    run_id=run_id,
+                    pipeline=pipeline,
+                    started_at=utcnow(),
+                    finished_at=None,
+                    status="running",
+                    metadata_json={},
+                )
             )
-        )
+        else:
+            row.status = "running"
+            row.started_at = utcnow()
+
+
+def record_run_progress(metadata: RunMetadata) -> None:
+    """Merge live progress into ``audit_runs.metadata_json`` without finishing the run."""
+    with db_session() as session:
+        row = session.execute(select(AuditRun).where(AuditRun.run_id == metadata.run_id)).scalar_one_or_none()
+        if row is None:
+            return
+        row.metadata_json = asdict(metadata)
 
 
 def record_run_finish(metadata: RunMetadata, pipeline: str) -> None:
@@ -37,7 +51,12 @@ def record_run_finish(metadata: RunMetadata, pipeline: str) -> None:
             session.add(row)
         row.finished_at = utcnow()
         row.status = metadata.status
-        row.metadata_json = asdict(metadata)
+        payload = asdict(metadata)
+        started = as_utc(row.started_at)
+        finished = as_utc(row.finished_at)
+        if started and finished:
+            payload["duration_ms"] = int((finished - started).total_seconds() * 1000)
+        row.metadata_json = payload
 
 
 def upsert_repo_run(run_id: str, repo_name: str, status: str, attempts: int = 1, error_message: str = "") -> None:

@@ -16,7 +16,7 @@
 - [HIGH] ai-code-auditor `auditor/settings.py`:23 - Potential hardcoded secret
 - [CRITICAL] ai-code-auditor `auditor/auth.py`:88 - Admin auth bypass fallback path
 - [CRITICAL] ai-code-auditor `auditor/settings.py`:54 - Wildcard CORS enabled in production profile
-- [HIGH] ai-code-auditor `auditor/static_tools.py`:81 - Potential hardcoded secret
+- [HIGH] ai-code-auditor `auditor/static_tools.py`:52 - Semgrep `--config=auto` may resolve remote rule bundles
 - [MEDIUM] ai-code-auditor `auditor/repo_resolver.py`:21 - Missing role check on privileged path
 - [MEDIUM] ai-code-auditor `pipelines/nightly_repo_audit.py`:72 - Unverified dependency integrity metadata
 - [CRITICAL] ai-code-auditor `auditor/archive.py`:11 - Token may leak via verbose error logs

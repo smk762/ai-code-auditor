@@ -20,8 +20,12 @@ htmlcov/
 .idea/
 .vscode/
 reports/*.md
-reports/run_*.json
+reports/*.log
+reports/*.json
+reports/*.yaml
 graph/*.db
 index/code_embeddings.faiss
 index/code_embeddings.meta.json
 audit.db
+extraction-candidates-report.md
+tmp-chat.txt

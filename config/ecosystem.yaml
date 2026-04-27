@@ -1,11 +1,77 @@
+# Repo scanner config. Each repo needs a `name` and a `path` (local dir or mountpoint).
+# Optional `subpath` limits scanning to a subdirectory. `branch` is informational only for
+# local paths — the current checkout is scanned as-is.
 repos:
-  - name: ai-code-auditor
-    path: .
-    branch: main
+  # ── Core stack (mounted from remote hosts) ──────────────────────────────────
+  - name: kimini-api
+    path: /home/smk/tmp/mnt/kimini-api
     enabled: true
     provider: local
-    access_token_env: ""
-    local_cache_path: .cache/repos
+    subpath: ""
+
+  - name: somnus
+    path: /home/smk/tmp/mnt/somnus
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: gothmog
+    path: /home/smk/tmp/mnt/gothmog
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: imogen
+    path: /home/smk/tmp/mnt/imogen
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: vidita
+    path: /home/smk/tmp/mnt/vidita
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: voluptas
+    path: /home/smk/tmp/mnt/voluptas
+    enabled: true
+    provider: local
+    subpath: ""
+
+  # ── Local (same host) ────────────────────────────────────────────────────────
+  - name: agent-composer
+    path: /home/smk/agent-composer
+    enabled: true
+    provider: local
+    subpath: ""
+
+  # ── Not yet migrated to this host — enable once up ──────────────────────────
+  - name: tss-stack
+    path: /home/smk/tmp/mnt/tss-stack
+    enabled: false
+    provider: local
+    subpath: ""
+
+  - name: sauron
+    path: /home/smk/tmp/mnt/sauron
+    enabled: false
+    provider: local
+    subpath: ""
+
+  # ── Playact (scanned in isolation — separate public/group project) ───────────
+  # Not part of the main ecosystem; service_roles and call_graph_rules do not apply.
+  - name: playact-engine
+    path: /home/smk/tmp/mnt/playact-engine
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: playact-frontend
+    path: /home/smk/tmp/mnt/playact-frontend
+    enabled: true
+    provider: local
+    subpath: ""
 
 output_dir: reports
 graph_db_path: graph/ecosystem_graph.db
@@ -15,3 +81,11 @@ auth_mode: false
 auth_code_env: AI_AUDIT_AUTH_CODE
 log_level: INFO
 log_file_path: pipeline.log
+
+# RAG isolation — keep audit knowledge in its own Qdrant collection so it does
+# not pollute the general-purpose chat RAG in agent-composer (project_docs).
+rag_collection: audit_docs
+# Use host.docker.internal so the dockerised audit-api can reach the
+# rag-ingest service running on the host (compose adds the host-gateway entry).
+# Bare-metal/host-network runs can override with AI_AUDIT_RAG_INGEST_URL=http://127.0.0.1:9050/ingest.
+rag_ingest_url: http://host.docker.internal:9050/ingest
