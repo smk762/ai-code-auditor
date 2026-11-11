@@ -73,6 +73,35 @@ def run_rest_session(
     if not force and should_freeze_launches(rest) and not dry_run:
         # Outside window or already in wrap-up — still allow explicit force/dry-run.
         logger.warning("Outside active launch window; use --force to run anyway")
+        window = RestWindowInfo(
+            start=rest.start.strftime("%H:%M"),
+            end=rest.end.strftime("%H:%M"),
+            timezone=rest.timezone,
+        )
+        status = build_status(
+            run_id=run_id,
+            ended_reason="time_budget",
+            window=window,
+            repos=[r.name for r in cfg.repos],
+            scanner_counts={},
+            findings=FindingsSummary(),
+            draft_prs=[],
+            decisions_needed=[
+                DecisionNeeded(
+                    id="outside-window",
+                    summary="Rest session skipped: outside launch window (use --force).",
+                )
+            ],
+            worker_stats={"tasks": 0, "completed": 0, "failed": 0, "escalated": 0},
+            next_rest_window=next_window_start_label(rest),
+            summary_one_liner="Rest session skipped: outside launch window.",
+        )
+        return wrap_up(
+            status,
+            output_dir=out,
+            send_webhook=send_webhook,
+            ingest_rag=ingest_rag,
+        )
 
     # Auto-sync mirrors + checkout dev before scanning.
     logger.info("Syncing repo mirrors (branch=dev)…")

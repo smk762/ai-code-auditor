@@ -72,7 +72,7 @@ def create_draft_pr(
         intent.write_text(f"# {title}\n\n{body}\n", encoding="utf-8")
         commit_repair(repo_path, message=f"audit: {title[:60]}", paths=["intent.md"])
         push = push_repair_branch(repo_path, branch=br.branch)
-    except GitError as exc:
+    except (GitError, OSError, TypeError, ValueError) as exc:
         return DraftPrResult(draft=None, branch=br.branch, error=str(exc))
 
     if not push.pushed and push.skipped_reason:

@@ -3,7 +3,7 @@
 Public API
 ----------
 create_repair_branch(repo_path, slug, base_branch=None)   -> BranchResult
-commit_repair(repo_path, message, patch_text="", ...)     -> CommitResult
+commit_repair(repo_path, message, patch_text="", paths=None, ...) -> CommitResult
 push_repair_branch(repo_path, branch=None, remote=...)    -> PushResult
 rollback_repair_branch(repo_path, original, repair, ...)  -> None (best-effort)
 apply_to_tempdir(repo_path, patch_text)                   -> (Path, cleanup_fn)
@@ -328,11 +328,13 @@ def commit_repair(
     patch_text: str = "",
     author_name: str = "ai-code-auditor",
     author_email: str = "noreply@ai-audit.local",
+    paths: list[str] | None = None,
 ) -> CommitResult:
     """Stage repair-touched files and commit them.
 
     Staging strategy:
-    - If *patch_text* is provided: stage exactly the files named in the diff.
+    - If *paths* is provided: stage exactly those paths (after secret-path filter).
+    - Else if *patch_text* is provided: stage exactly the files named in the diff.
     - Otherwise: stage all modifications to already-tracked files (``git add -u``).
     Neither path stages .env / key / credential files.
 
@@ -344,7 +346,21 @@ def commit_repair(
     """
     branch = get_current_branch(repo_path)
 
-    if patch_text:
+    if paths:
+        stageable = [f for f in paths if f and _is_stageable(f)]
+        if not stageable:
+            log.info("commit_repair: paths produced no stageable files in %s", repo_path.name)
+            return CommitResult(sha="", branch=branch, files_staged=0,
+                                short_message=message.splitlines()[0][:72])
+        for f in stageable:
+            # Never allow path escape out of the repo root.
+            target = (repo_path / f).resolve()
+            try:
+                target.relative_to(repo_path.resolve())
+            except ValueError as exc:
+                raise GitError(f"refusing to stage path outside repo: {f!r}") from exc
+            _git(["add", "--", f], repo_path, check=False)
+    elif patch_text:
         patch_files = [f for f in _extract_filenames_from_patch(patch_text) if _is_stageable(f)]
         if not patch_files:
             log.info("commit_repair: patch produced no stageable files in %s", repo_path.name)
@@ -503,7 +519,9 @@ def apply_to_tempdir(
 
     try:
         repo_copy = tmp_root / "repo"
-        shutil.copytree(str(repo_path), str(repo_copy), symlinks=True)
+        # Dereference/skip link copies so a patch cannot write through a
+        # repo symlink into the host filesystem outside the temp tree.
+        shutil.copytree(str(repo_path), str(repo_copy), symlinks=False)
 
         patch_file = tmp_root / "changes.patch"
         patch_file.write_text(patch_text, encoding="utf-8")

@@ -56,7 +56,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "${AUDIT_API_BIND_IP:-0.0.0.0}:${AUDIT_API_PORT:-8765}:8765"
+      # Default loopback-only; set AUDIT_API_BIND_IP=0.0.0.0 only behind a trusted proxy.
+      - "${AUDIT_API_BIND_IP:-127.0.0.1}:${AUDIT_API_PORT:-8765}:8765"
     healthcheck:
       test: ["CMD", "sh", "-lc", "wget -qO- http://127.0.0.1:8765/audit/health >/dev/null 2>&1 || exit 1"]
       interval: 30s

@@ -47,10 +47,19 @@ def checkout_scan_branch(repo: Path, preferred: str = "dev") -> str:
         remote = f"origin/{name}"
         if _branch_exists(repo, local) or _branch_exists(repo, remote):
             if _branch_exists(repo, remote):
-                # Create/update local tracking branch from origin
+                # Create/update local tracking branch from origin without
+                # destroying divergent local commits (never reset --hard).
                 if _branch_exists(repo, local):
                     _git(["checkout", local], repo)
-                    _git(["reset", "--hard", remote], repo)
+                    ff = _git(["merge", "--ff-only", remote], repo)
+                    if ff.returncode != 0:
+                        logger.warning(
+                            "ff-only update failed for %s (%s → %s); leaving local branch as-is: %s",
+                            repo.name,
+                            local,
+                            remote,
+                            (ff.stderr or ff.stdout or "diverged")[:200],
+                        )
                 else:
                     _git(["checkout", "-B", local, remote], repo)
             else:
