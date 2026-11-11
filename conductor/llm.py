@@ -1,0 +1,152 @@
+"""LiteLLM multi-provider client for conductor / workers."""
+
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class ConductorModels:
+    conductor: str
+    workers: str
+    pr_review: str
+    fallbacks: list[str]
+
+
+def load_conductor_models(path: str | Path = "config/generator.yaml") -> ConductorModels:
+    raw: dict[str, Any] = {}
+    p = Path(path)
+    if p.exists():
+        with p.open("r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    return ConductorModels(
+        conductor=str(
+            os.getenv("AI_AUDIT_CONDUCTOR_MODEL")
+            or (raw.get("conductor") or {}).get("model")
+            or "anthropic/claude-opus-4-5"
+        ),
+        workers=str(
+            os.getenv("AI_AUDIT_WORKER_MODEL")
+            or (raw.get("workers") or {}).get("model")
+            or "anthropic/claude-opus-4-5"
+        ),
+        pr_review=str(
+            os.getenv("AI_AUDIT_PR_REVIEW_MODEL")
+            or (raw.get("pr_review") or {}).get("model")
+            or "anthropic/claude-opus-4-5"
+        ),
+        fallbacks=[str(x) for x in (raw.get("fallbacks") or [])],
+    )
+
+
+def completion(
+    messages: list[dict[str, str]],
+    *,
+    model: str | None = None,
+    temperature: float = 0.1,
+    max_tokens: int = 4096,
+) -> str:
+    """Chat completion via LiteLLM when installed; otherwise Anthropic/OpenAI HTTP."""
+    models = load_conductor_models()
+    chosen = model or models.conductor
+    try:
+        import litellm  # type: ignore
+
+        resp = litellm.completion(
+            model=chosen,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return str(resp.choices[0].message.content or "")
+    except ImportError:
+        logger.debug("litellm not installed; using requests fallback for %s", chosen)
+        return _requests_completion(chosen, messages, temperature=temperature, max_tokens=max_tokens)
+    except Exception as exc:
+        for fb in models.fallbacks:
+            try:
+                import litellm  # type: ignore
+
+                resp = litellm.completion(
+                    model=fb,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                logger.warning("primary model %s failed (%s); used fallback %s", chosen, exc, fb)
+                return str(resp.choices[0].message.content or "")
+            except Exception:
+                continue
+        raise
+
+
+def _requests_completion(
+    model: str,
+    messages: list[dict[str, str]],
+    *,
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    import requests
+
+    if model.startswith("anthropic/") or model.startswith("claude"):
+        key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not key:
+            raise RuntimeError("ANTHROPIC_API_KEY required")
+        name = model.split("/", 1)[-1]
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": name,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "messages": [m for m in messages if m.get("role") != "system"],
+                "system": next((m["content"] for m in messages if m.get("role") == "system"), ""),
+            },
+            timeout=180,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        parts = data.get("content") or []
+        return "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+
+    # OpenAI-compatible (openai/, xai/, etc.)
+    if model.startswith("openai/") or model.startswith("gpt"):
+        key = os.getenv("OPENAI_API_KEY", "")
+        base = "https://api.openai.com/v1/chat/completions"
+        name = model.split("/", 1)[-1] if "/" in model else model
+    elif model.startswith("xai/") or model.startswith("grok"):
+        key = os.getenv("XAI_API_KEY", "")
+        base = "https://api.x.ai/v1/chat/completions"
+        name = model.split("/", 1)[-1]
+    else:
+        raise RuntimeError(f"unsupported model without litellm: {model}")
+
+    if not key:
+        raise RuntimeError("API key missing for provider")
+    resp = requests.post(
+        base,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        json={
+            "model": name,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return str(resp.json()["choices"][0]["message"]["content"] or "")

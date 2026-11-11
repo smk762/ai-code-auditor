@@ -11,6 +11,10 @@ GET  /audit/runs/{run_id}/stream      SSE: snapshot events until the run leaves 
 POST /audit/runs/{run_id}/cancel      Stop an in-flight run (pending/running); idempotent if cancelled
 DELETE /audit/runs/{run_id}           Remove a finished run and related DB rows (not while active)
 GET  /audit/reports/{run_id}          Return combined markdown report for a completed run
+GET  /audit/topology                  Return the latest service topology HTML
+GET  /audit/topology.json             Return the latest service topology JSON sidecar
+GET  /reports/mithrandir/LATEST.json  Atomic rest-session status for mithrandir (Jarrah)
+GET  /reports/mithrandir/LATEST.md    TTS-safe companion briefing for Holly
 POST /audit/ingest                    Trigger RAG briefing ingest to the audit_docs collection
 
 Start:
@@ -32,7 +36,7 @@ from typing import Any
 from dataclasses import asdict
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 
@@ -545,6 +549,30 @@ def get_report(run_id: str) -> str:
         sections.append(f"<!-- {f.name} -->\n\n{f.read_text(encoding='utf-8')}")
 
     return "\n\n---\n\n".join(sections)
+
+
+@app.get("/audit/topology")
+def get_service_topology() -> FileResponse:
+    """Return the latest service topology HTML.  404 if not yet generated."""
+    path = Path(_output_dir()) / "service_topology.html"
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Service topology has not been generated yet — run an ecosystem audit first.",
+        )
+    return FileResponse(path, media_type="text/html")
+
+
+@app.get("/audit/topology.json")
+def get_service_topology_json() -> FileResponse:
+    """Return the structured JSON sidecar for the latest topology.  404 if absent."""
+    path = Path(_output_dir()) / "service_topology.json"
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Service topology JSON has not been generated yet.",
+        )
+    return FileResponse(path, media_type="application/json")
 
 
 class _ValidateRequest(BaseModel):
@@ -1098,6 +1126,32 @@ def git_push(request: _GitPushRequest) -> JSONResponse:
         "remote_url":     result.remote_url,
         "skipped_reason": result.skipped_reason,
     })
+
+
+@app.get("/reports/mithrandir/LATEST.json")
+def mithrandir_latest_json() -> JSONResponse:
+    """Serve the latest rest-session status for mithrandir (atomic on-disk publish)."""
+    from conductor.publish import mithrandir_dir
+
+    path = mithrandir_dir(_output_dir()) / "LATEST.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="LATEST.json not published yet.")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"LATEST.json corrupt: {exc}") from exc
+    return JSONResponse(data)
+
+
+@app.get("/reports/mithrandir/LATEST.md", response_class=PlainTextResponse)
+def mithrandir_latest_md() -> str:
+    """Serve the TTS-safe companion briefing for Holly."""
+    from conductor.publish import mithrandir_dir
+
+    path = mithrandir_dir(_output_dir()) / "LATEST.md"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="LATEST.md not published yet.")
+    return path.read_text(encoding="utf-8")
 
 
 @app.post("/audit/ingest")

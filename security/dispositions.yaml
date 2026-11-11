@@ -1,0 +1,3 @@
+# Disposition ledger keyed by fingerprint (category|file|symbol hash).
+# decision: accepted | rejected | risk-accepted
+dispositions: []

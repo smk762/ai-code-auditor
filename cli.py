@@ -32,6 +32,19 @@ def _build_parser() -> argparse.ArgumentParser:
     eco.add_argument("--auth-code", default="", help="Auth code when auth mode is enabled")
     eco.add_argument("--auth-token", default="", help="JWT token with admin role")
 
+    rest = sub.add_parser(
+        "rest-run",
+        help="Night conductor rest session (scanners → Opus workers → draft PRs → mithrandir LATEST)",
+    )
+    rest.add_argument("--dry-run", action="store_true", help="Stub workers; still publish LATEST")
+    rest.add_argument("--force", action="store_true", help="Run outside the rest window")
+    rest.add_argument("--no-webhook", action="store_true", help="Skip Jarrah companion webhook")
+    rest.add_argument("--no-rag", action="store_true", help="Skip slim RAG ingest")
+    rest.add_argument("--no-draft-prs", action="store_true")
+    rest.add_argument("--no-pr-review", action="store_true")
+    rest.add_argument("--auth-code", default="")
+    rest.add_argument("--auth-token", default="")
+
     ask = sub.add_parser("ask", help="Ask ecosystem copilot a question")
     ask.add_argument("query", type=str, help="Natural language query")
     ask.add_argument("--json", action="store_true", help="Output as JSON")
@@ -388,12 +401,31 @@ def main() -> None:
     provided_auth = getattr(args, "auth_code", "") or os.getenv("AI_AUDIT_AUTH_CODE_INPUT", "")
     require_auth(cfg.auth_mode, cfg.auth_code_env, provided_code=provided_auth)
     token = getattr(args, "auth_token", "") or os.getenv("AI_AUDIT_AUTH_TOKEN", "")
-    if token and args.command in {"repo-run", "ecosystem-run"}:
+    if token and args.command in {"repo-run", "ecosystem-run", "rest-run"}:
         enforce_role(token, "admin", f"cli:{args.command}")
     if args.command == "repo-run":
         run_repo_audit()
     elif args.command == "ecosystem-run":
         run_ecosystem_audit()
+    elif args.command == "rest-run":
+        from pipelines.rest_session import run as run_rest
+
+        result = run_rest(
+            dry_run=bool(args.dry_run),
+            force=bool(args.force),
+            no_webhook=bool(args.no_webhook),
+            no_rag=bool(args.no_rag),
+            no_draft_prs=bool(args.no_draft_prs),
+            no_pr_review=bool(args.no_pr_review),
+        )
+        print(json.dumps({
+            "run_id": (result.get("status") or {}).get("run_id"),
+            "event_id": (result.get("status") or {}).get("event_id"),
+            "severity": (result.get("status") or {}).get("severity"),
+            "requires_ack": (result.get("status") or {}).get("requires_ack"),
+            "latest_url": (result.get("status") or {}).get("latest_url"),
+            "webhook": result.get("webhook"),
+        }, indent=2))
     elif args.command == "ask":
         _run_ask(
             args.query,

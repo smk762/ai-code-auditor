@@ -36,9 +36,10 @@ from auditor.reporter import (
 from auditor.runtime import RunMetadata, require_auth, setup_logging, write_run_metadata
 from auditor.retry import with_retries
 from auditor.settings import get_settings
+from auditor.service_topology import write_service_topology
 from ecosystem.architecture_engine import ArchitectureEngine
 from ecosystem.graph_builder import GraphBuilder
-from ecosystem.call_graph_analyzer import detect_call_graph_violations
+from ecosystem.call_graph_analyzer import analyze_call_graph, violations_from_edges
 from patterns.boundary_violation_detector import detect_boundary_violations
 from patterns.extraction_candidate_builder import collect_git_metrics, detect_duplicate_clusters
 from patterns.pattern_clusterer import cluster_patterns
@@ -110,6 +111,8 @@ def _write_ecosystem_report(
         f"- Pattern proposals: {proposal_count}",
         f"- Extraction candidates: {extraction_candidate_count}",
         "",
+        "Service topology: [service_topology.html](service_topology.html)",
+        "",
     ]
     report.write_text("\n".join(lines), encoding="utf-8")
     return report
@@ -120,8 +123,14 @@ def run() -> None:
     setup_logging(level=cfg.log_level, log_file_path=cfg.log_file_path, output_dir=cfg.output_dir)
     rules = load_architecture_rules()
 
-    # Wait until GPU capacity is available before acquiring the pipeline lock.
-    # This may block for one or more 30-minute retry cycles.
+    # Night Conductor redesign: ecosystem governance no longer depends on VRAM.
+    # GPU wait is skipped by default; set AI_AUDIT_SKIP_GPU_SCHEDULER=0 to restore.
+    skip_gpu = os.getenv("AI_AUDIT_SKIP_GPU_SCHEDULER", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
     scheduler = GpuScheduler()
 
     # AI_AUDIT_RUN_ID lets the audit API pre-assign the run_id so it can
@@ -129,32 +138,40 @@ def run() -> None:
     forced_run_id = os.getenv("AI_AUDIT_RUN_ID", "")
     meta = RunMetadata.start("ecosystem-audit", run_id=forced_run_id)
     meta.repos_total = len(cfg.repos)
-    meta.current_stage = "awaiting_gpu_capacity"
-    record_run_progress(meta)
 
-    _apply_gpu_wait_progress(
-        meta,
-        scheduler.wait_progress_payload(
-            vram=get_vram_info(),
-            services=[],
-            reason="awaiting_gpu_capacity",
-            queue_ahead=None,
-        ),
-    )
-    gpu = scheduler.wait_for_capacity(
-        on_wait_update=lambda s: _apply_gpu_wait_progress(meta, s),
-    )
-    for k in _WAIT_PROGRESS_EXTRA_KEYS:
-        meta.extra.pop(k, None)
-    meta.stage_status.pop("awaiting_gpu_capacity", None)
-
-    logger.info(
-        "Ecosystem run %s — GPU offload: %s (vram_free_mb=%s). Repos to scan: %d.",
-        meta.run_id,
-        gpu.offload_mode,
-        gpu.vram_free_mb,
-        len(cfg.repos),
-    )
+    if skip_gpu:
+        os.environ.setdefault("AI_AUDIT_SKIP_GPU_SCHEDULER", "1")
+        gpu = scheduler.wait_for_capacity()
+        logger.info(
+            "Ecosystem run %s — GPU scheduler skipped (cloud/API path). Repos: %d.",
+            meta.run_id,
+            len(cfg.repos),
+        )
+    else:
+        meta.current_stage = "awaiting_gpu_capacity"
+        record_run_progress(meta)
+        _apply_gpu_wait_progress(
+            meta,
+            scheduler.wait_progress_payload(
+                vram=get_vram_info(),
+                services=[],
+                reason="awaiting_gpu_capacity",
+                queue_ahead=None,
+            ),
+        )
+        gpu = scheduler.wait_for_capacity(
+            on_wait_update=lambda s: _apply_gpu_wait_progress(meta, s),
+        )
+        for k in _WAIT_PROGRESS_EXTRA_KEYS:
+            meta.extra.pop(k, None)
+        meta.stage_status.pop("awaiting_gpu_capacity", None)
+        logger.info(
+            "Ecosystem run %s — GPU offload: %s (vram_free_mb=%s). Repos to scan: %d.",
+            meta.run_id,
+            gpu.offload_mode,
+            gpu.vram_free_mb,
+            len(cfg.repos),
+        )
 
     meta.extra["gpu_offload_mode"] = gpu.offload_mode
     meta.extra["gpu_num_layers"] = gpu.num_gpu_layers
@@ -266,10 +283,11 @@ def run() -> None:
                 duplicate_clusters=duplicate_clusters,
                 domain_ownership=rules.get("domain_ownership", []),
             )
-            call_graph_violations = detect_call_graph_violations(
+            observed_call_edges = analyze_call_graph(
                 repo_files=repo_files,
                 call_graph_rules=rules.get("call_graph_rules", {}),
             )
+            call_graph_violations = violations_from_edges(observed_call_edges)
             service_role_violations = detect_ui_in_worker(
                 repo_files=repo_files,
                 service_roles=rules.get("service_roles", []),
@@ -280,6 +298,14 @@ def run() -> None:
             violations = violations + boundary_violations + call_graph_violations + service_role_violations
             meta.violations = len(violations)
             write_architecture_violations(violations, output_dir=cfg.output_dir)
+            write_service_topology(
+                rules=rules,
+                observed_edges=observed_call_edges,
+                violations=violations,
+                enabled_repos=[r.name for r in cfg.repos],
+                output_dir=cfg.output_dir,
+                run_metadata=meta,
+            )
 
             _write_ecosystem_report(
                 output_dir=cfg.output_dir,

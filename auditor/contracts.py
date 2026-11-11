@@ -60,6 +60,15 @@ class RuleViolation:
 
 
 @dataclass(slots=True)
+class ObservedCallEdge:
+    """An inter-service HTTP call detected in source, classified against policy."""
+    from_repo: str
+    to_service: str
+    allowed: bool
+    evidence: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class PatternProposal:
     domain: str
     candidates: list[str]

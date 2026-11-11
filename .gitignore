@@ -23,6 +23,8 @@ reports/*.md
 reports/*.log
 reports/*.json
 reports/*.yaml
+reports/*.html
+reports/mithrandir/
 graph/*.db
 index/code_embeddings.faiss
 index/code_embeddings.meta.json

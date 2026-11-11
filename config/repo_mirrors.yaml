@@ -1,0 +1,74 @@
+# Local git mirrors for night conductor — Argus suite + shared deps.
+# Auto-synced at the start of each `ai-audit rest-run` (checkout default_branch).
+# mithrandir omitted (HTTP status handoff only).
+
+mirror_root: /home/smk/mirrors
+default_branch: dev
+
+mirrors:
+  - name: argus-assay
+    url: https://github.com/smk762/argus-assay.git
+    path: /home/smk/mirrors/argus-assay
+  - name: argus-atlas
+    url: https://github.com/smk762/argus-atlas.git
+    path: /home/smk/mirrors/argus-atlas
+  - name: argus-ci
+    url: https://github.com/smk762/argus-ci.git
+    path: /home/smk/mirrors/argus-ci
+  - name: argus-cortex
+    url: https://github.com/smk762/argus-cortex.git
+    path: /home/smk/mirrors/argus-cortex
+  - name: argus-cull
+    url: https://github.com/smk762/argus-cull.git
+    path: /home/smk/argus-cull
+  - name: argus-curator
+    url: https://github.com/smk762/argus-curator.git
+    path: /home/smk/mirrors/argus-curator
+  - name: argus-darkroom
+    url: https://github.com/smk762/argus-darkroom.git
+    path: /home/smk/mirrors/argus-darkroom
+  - name: argus-forge
+    url: https://github.com/smk762/argus-forge.git
+    path: /home/smk/mirrors/argus-forge
+  - name: argus-halo
+    url: https://github.com/smk762/argus-halo.git
+    path: /home/smk/mirrors/argus-halo
+  - name: argus-lens
+    url: https://github.com/smk762/argus-lens.git
+    path: /home/smk/argus-lens
+  - name: argus-lightbox
+    url: https://github.com/smk762/argus-lightbox.git
+    path: /home/smk/mirrors/argus-lightbox
+  - name: argus-mask
+    url: https://github.com/smk762/argus-mask.git
+    path: /home/smk/mirrors/argus-mask
+  - name: argus-mint
+    url: https://github.com/smk762/argus-mint.git
+    path: /home/smk/mirrors/argus-mint
+  - name: argus-pkg-template
+    url: https://github.com/smk762/argus-pkg-template.git
+    path: /home/smk/mirrors/argus-pkg-template
+  - name: argus-proof
+    url: https://github.com/smk762/argus-proof.git
+    path: /home/smk/mirrors/argus-proof
+  - name: argus-quarry
+    url: https://github.com/smk762/argus-quarry.git
+    path: /home/smk/mirrors/argus-quarry
+  - name: argus-safelight
+    url: https://github.com/smk762/argus-safelight.git
+    path: /home/smk/mirrors/argus-safelight
+  - name: argus-sightline
+    url: https://github.com/smk762/argus-sightline.git
+    path: /home/smk/mirrors/argus-sightline
+  - name: argus-studio
+    url: https://github.com/smk762/argus-studio.git
+    path: /home/smk/mirrors/argus-studio
+  - name: argus-survey
+    url: https://github.com/smk762/argus-survey.git
+    path: /home/smk/mirrors/argus-survey
+  - name: agent-composer
+    url: https://github.com/smk762/agent-composer.git
+    path: /home/smk/agent-composer
+  - name: voluptas
+    url: https://github.com/smk762/voluptas.git
+    path: /home/smk/mirrors/voluptas

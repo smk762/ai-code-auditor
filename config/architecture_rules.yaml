@@ -10,133 +10,128 @@ rules:
       - "gateway->services"
       - "services->libraries"
 
-# Service roles: declares each service's intended role in the architecture.
-# Used by call-graph and service-role violation detectors.
-# Deprecated services (loraline, mimiri, rubedo, test_dbs) have been removed.
-# Playact repos are excluded — they are scanned in isolation, not governed here.
+# Service roles for the Argus suite + shared dependencies.
 service_roles:
-  - name: kimini-api
-    role: gateway
-  - name: somnus
-    role: ui
-  - name: gothmog
-    role: orchestrator
-  - name: imogen
+  - name: argus-cortex
+    role: library
+  - name: argus-quarry
     role: worker
-  - name: vidita
+  - name: argus-curator
+    role: worker
+  - name: argus-cull
+    role: ui
+  - name: argus-lens
+    role: worker
+  - name: argus-lightbox
+    role: ui
+  - name: argus-studio
+    role: ui
+  - name: argus-darkroom
+    role: worker
+  - name: argus-safelight
+    role: ui
+  - name: argus-forge
+    role: worker
+  - name: argus-proof
+    role: worker
+  - name: argus-atlas
+    role: worker
+  - name: argus-survey
+    role: worker
+  - name: argus-sightline
+    role: ui
+  - name: argus-mint
+    role: worker
+  - name: argus-assay
+    role: ui
+  - name: argus-mask
+    role: worker
+  - name: argus-halo
+    role: tooling
+  - name: argus-ci
+    role: tooling
+  - name: argus-pkg-template
+    role: tooling
+  - name: agent-composer
     role: worker
   - name: voluptas
     role: worker
-  - name: tss-stack
-    role: worker
-  - name: agent-composer
-    role: worker
-  - name: sauron
-    role: monitoring
   - name: ai-code-auditor
     role: tooling
 
-# Call graph rules: declares which inter-service HTTP calls are permitted.
-# Any edge detected in source that is not in allowed_calls is a violation.
-# Wildcards: to: "*" means the service may call any other service.
-#
-# Key intentional patterns:
-#   gothmog → kimini-api  : webhook callback (Kimini passes callback URL on submit; intentional)
-#   somnus  → gothmog     : operator/infra views (queue depth, cancel/bump jobs); deliberate
-#   somnus  → voluptas    : direct WebSocket + proxy (LAN-only, no Kimini in path); deliberate
-#   imogen  → imogen      : loraline/rubedo functionality absorbed; post-process is now internal
-#
-# Confirmed violations (NOT in this list):
-#   somnus  → imogen/vidita/tss-stack : direct GPU worker proxy, bypassing Kimini
-#   imogen  → gothmog : gallery scheduler submits jobs directly, bypassing Kimini
+# Permitted inter-service HTTP edges (expand as Argus wiring hardens).
 call_graph_rules:
   allowed_calls:
-    - from: somnus
-      to: kimini-api
-    - from: somnus
-      to: gothmog
-      note: "Operator/infra views (queue, cancel, orc run list) — deliberate"
-    - from: somnus
+    - from: argus-darkroom
       to: voluptas
-      note: "ComfyUI WebSocket + proxy — LAN-only direct path, no Kimini in the loop"
-    - from: kimini-api
-      to: gothmog
-    - from: kimini-api
-      to: imogen
-    - from: kimini-api
-      to: vidita
-    - from: kimini-api
+      note: "Guarded generation runs on ComfyUI"
+    - from: argus-studio
+      to: voluptas
+      note: "Studio may submit ComfyUI workflows"
+    - from: argus-safelight
+      to: argus-darkroom
+    - from: argus-cull
+      to: argus-curator
+    - from: argus-assay
+      to: argus-mint
+    - from: argus-sightline
+      to: argus-survey
+    - from: argus-lightbox
+      to: argus-lens
+    - from: argus-forge
+      to: argus-curator
+    - from: argus-proof
+      to: argus-forge
+    - from: "*"
       to: agent-composer
-    - from: kimini-api
-      to: tss-stack
-    - from: gothmog
-      to: kimini-api
-      note: "Webhook callback — Kimini passes callback URL on job submit; intentional"
-    - from: sauron
-      to: "*"
+      note: "Suite consumes chat/RAG via agent-composer"
+    - from: "*"
+      to: argus-cortex
+      note: "Shared taxonomy / wire schemas"
 
-  # Maps env var name fragments (upper-cased) to the target service.
   service_url_env_vars:
-    - env_fragment: GOTHMOG
-      service: gothmog
-    - env_fragment: KIMINI
-      service: kimini-api
-    - env_fragment: IMAGE_API
-      service: imogen
-    - env_fragment: IMOGEN
-      service: imogen
-    - env_fragment: VIDEO_API
-      service: vidita
-    - env_fragment: VIDITA
-      service: vidita
-    - env_fragment: TSS_API
-      service: tss-stack
-    - env_fragment: GALLERY_API
-      service: imogen
-    - env_fragment: SOMNUS
-      service: somnus
     - env_fragment: AGENT_COMPOSER
+      service: agent-composer
+    - env_fragment: RAG_
       service: agent-composer
     - env_fragment: COMFYUI
       service: voluptas
     - env_fragment: VOLUPTAS
       service: voluptas
+    - env_fragment: ARGUS_CORTEX
+      service: argus-cortex
+    - env_fragment: DARKROOM
+      service: argus-darkroom
+    - env_fragment: CURATOR
+      service: argus-curator
+    - env_fragment: LENS
+      service: argus-lens
 
-# Domain ownership rules: declares which service is the canonical owner of a
-# concern and which repos must not contain duplicate implementations of it.
 domain_ownership:
-  - domain: authentication
-    description: "API key verification and request auth — boundary responsibility of kimini-api"
-    owner: kimini-api
+  - domain: taxonomy_and_wire_schema
+    description: "Shared Argus taxonomy and versioned wire schemas — owned by argus-cortex"
+    owner: argus-cortex
     severity: HIGH
     forbidden_in:
-      - imogen
-      - vidita
-      - gothmog
-      - tss-stack
+      - argus-cull
+      - argus-safelight
+      - argus-lightbox
+      - argus-sightline
+      - argus-assay
 
-  - domain: rate_limiting
-    description: "Rate-limiting logic — must be enforced at the kimini-api gateway, not inside workers"
-    owner: kimini-api
+  - domain: comfyui_runtime
+    description: "ComfyUI process and GPU sidecar control — owned by voluptas"
+    owner: voluptas
     severity: HIGH
     forbidden_in:
-      - imogen
-      - vidita
-      - tss-stack
+      - argus-studio
+      - argus-safelight
+      - argus-cull
 
-  - domain: model_management
-    description: "LoRA/adapter/checkpoint management and GPU sidecar control — owned by imogen (absorbed from loraline)"
-    owner: imogen
-    severity: HIGH
-    forbidden_in:
-      - vidita
-      - gothmog
-
-  - domain: orchestration
-    description: "Job lifecycle, run state schemas, and status observation — owned by gothmog"
-    owner: gothmog
+  - domain: rag_and_chat
+    description: "RAG ingest, Qdrant collections, chat gateway — owned by agent-composer"
+    owner: agent-composer
     severity: MEDIUM
     forbidden_in:
-      - tss-stack
-      - imogen
-      - kimini-api
+      - argus-halo
+      - argus-ci

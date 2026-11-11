@@ -1,0 +1,10 @@
+# Rest windows for night conductor sessions (local timezone).
+timezone: Australia/Perth
+windows:
+  - name: nightly
+    start: "00:30"
+    end: "06:00"
+wrap_up_before_end_minutes: 20
+# Soft wait for in-flight workers after freeze (seconds).
+inflight_grace_s: 120
+max_tasks_per_session: 12

@@ -1,8 +1,9 @@
 FROM python:3.11-slim
 
 # git: ecosystem_audit / extraction metrics (subprocess git). wget: compose healthcheck for audit-api.
+# graphviz: `dot` binary, used by service_topology renderer.
 RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git wget ca-certificates \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git wget ca-certificates graphviz \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
