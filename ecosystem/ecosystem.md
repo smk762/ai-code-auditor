@@ -1,356 +1,98 @@
-## Repos
+> Canonical ecosystem reference for the Argus suite. If another repo needs this document, link to this file rather than maintaining a divergent copy.
 
-| Label | Repo | Role |
-|-------|------|------|
-| Core API | [kimini](https://github.com/smk762/kimini-api) | FastAPI platform backend — auth, chat, companions, economy, marketplace, generation proxies, WebSocket |
-| Familiar UI | [somnus](https://github.com/smk762/somnus) | Frontend/operator app for familiar workflows, HITL review/rating, and training/evaluation operations |
-| Image | [imogen](https://github.com/smk762/imogen) | Self-hosted GPU image generation (FLUX.1-dev + SDXL) + LoRA training and post-processing (absorbed from loraline/rubedo) |
-| Video | [vidita](https://github.com/smk762/vidita) | Self-hosted GPU video generation (Wan 2.2) behind async gateway |
-| Voice | [tss-stack](https://github.com/smk762/tss-stack) | TTS (XTTS) + STT (Whisper) voice gateway with async job API, presigned audio URLs |
-| Ollama Chat | [agent-composer](https://github.com/smk762/agent-composer) | Ollama-backed chat + RAG ingest service, ModernBERT classifier sidecar, behind Cloudflare Zero Trust |
-| Orchestrator | [gothmog](https://github.com/smk762/gothmog) | LangGraph/LangChain workflow orchestrator — multi-step pipelines across stacks |
-| ComfyUI | [voluptas](https://github.com/smk762/voluptas) | ComfyUI inference node — docker-compose wrapper with GPU passthrough, workflow API at :8188 |
-| Observability | [sauron](https://github.com/smk762/sauron) | Prometheus + Grafana + Loki + Promtail + Alertmanager for cross-stack metrics, logs, and alerting |
+## Repos (scanned)
 
----
+Night conductor scans `dev` on every `smk762/argus-*` repo, plus shared dependencies the suite consumes:
 
-## Ecosystem Flow Diagram
+| Area | Repo | Role |
+|------|------|------|
+| Taxonomy / AI contract | [argus-cortex](https://github.com/smk762/argus-cortex) | Shared foundation: taxonomy, versioned wire schemas, local/remote AI backend contract |
+| Acquisition | [argus-quarry](https://github.com/smk762/argus-quarry) | Provenance-first public-domain / CC0 portrait acquisition (input stage) |
+| Curation | [argus-curator](https://github.com/smk762/argus-curator) | Dataset curation for LoRA training — quality, diversity, subset selection |
+| Curation demo | [argus-cull](https://github.com/smk762/argus-cull) | Demo for curator: which images make the training set |
+| Captioning | [argus-lens](https://github.com/smk762/argus-lens) | Structured image captioning for training and generation |
+| Gallery | [argus-lightbox](https://github.com/smk762/argus-lightbox) | Static gallery navigated by lens captions (facets, EXIF, sidecars) |
+| Studio UI | [argus-studio](https://github.com/smk762/argus-studio) | Suite web UI + compose orchestration: curate, caption, export LoRA datasets |
+| Guarded gen | [argus-darkroom](https://github.com/smk762/argus-darkroom) | Guarded image generation for the suite |
+| Gen demo | [argus-safelight](https://github.com/smk762/argus-safelight) | Demo UI for darkroom with verdicts on show |
+| Training bridge | [argus-forge](https://github.com/smk762/argus-forge) | Curated exports → kohya / OneTrainer / diffusers LoRA configs |
+| Eval | [argus-proof](https://github.com/smk762/argus-proof) | Post-training LoRA evaluation and optimisation |
+| Maps | [argus-atlas](https://github.com/smk762/argus-atlas) | Georeferenced fantasy-map tiles from DEM + cartography LoRA |
+| Survey | [argus-survey](https://github.com/smk762/argus-survey) | Point-cloud deliverables for land surveyors (PDAL/GDAL/PROJ) |
+| Survey UI | [argus-sightline](https://github.com/smk762/argus-sightline) | Web workspace for survey deliverables |
+| Provenance | [argus-mint](https://github.com/smk762/argus-mint) | Provenance tokens for game assets (IPFS, ERC-721, Merkle anchors) |
+| Review UI | [argus-assay](https://github.com/smk762/argus-assay) | Review UI for mint — approve cards/templates/frames before pin/sign |
+| Face / TTS face | [argus-mask](https://github.com/smk762/argus-mask) | Audio → facial animation frames for LAN screens |
+| Infra | [argus-halo](https://github.com/smk762/argus-halo) | Public demo infra (Hetzner, Terraform, Cloudflare) |
+| CI | [argus-ci](https://github.com/smk762/argus-ci) | Reusable GitHub Actions for the suite |
+| Package template | [argus-pkg-template](https://github.com/smk762/argus-pkg-template) | Copier template for Argus Python packages |
+| Chat / RAG | [agent-composer](https://github.com/smk762/agent-composer) | Ollama chat, rag-ingest, Qdrant — consumed by Argus for AI/RAG |
+| ComfyUI | [voluptas](https://github.com/smk762/voluptas) | ComfyUI inference node — consumed by Argus generation paths |
 
-```
-                              ┌─────────────────────────────────────────────┐
-                              │             CLIENTS / FRONTENDS             │
-                              │  (somnus UI, web app, mobile, SDK, admin)   │
-                              └────────────────────┬────────────────────────┘
-                                                   │
-                                        HTTP / WebSocket
-                                                   │
-                         ┌─────────────────────────▼──────────────────────────┐
-                         │                                                    │
-                         │            KIMINI  —  Core API  :8000              │
-                         │         (fastapi-prod-skeleton)                    │
-                         │                                                    │
-                         │  ┌──────────┬──────────┬──────────┬─────────────┐  │
-                         │  │ Auth     │ Chat     │ Economy  │ Marketplace │  │
-                         │  │ Users    │ Convos   │ Gems     │ Creators    │  │
-                         │  │ Personas │ Stories  │ Subs     │ Discover    │  │
-                         │  ├──────────┴──────────┴──────────┴─────────────┤  │
-                         │  │           Generation Domains                 │  │
-                         │  │  imagegen │ videogen │ voicegen              │  │
-                         │  ├──────────────────────────────────────────────┤  │
-                         │  │  Orchestrate proxy  │  WebSocket (realtime)  │  │
-                         │  ├──────────────────────────────────────────────┤  │
-                         │  │  TaskIQ workers (high / default / low)       │  │
-                         │  └──────────────────────────────────────────────┘  │
-                         │                                                    │
-                         └──┬──────┬──────┬──────┬──────┬──────┬─────────────┘
-                            │      │      │      │      │      │
-            ┌───────────────┘      │      │      │      │      └──────────────────┐
-            │                ┌─────┘      │      └─────┐│                         │
-            ▼                ▼            ▼            ▼▼                         ▼
-  ┌─────────────────┐ ┌──────────┐ ┌──────────────┐ ┌────────────────┐ ┌──────────────────┐
-  │  GOTHMOG :8030  │ │ IMOGEN   │ │  VIDITA      │ │ TSS-STACK      │ │ AGENT-COMPOSER   │
-  │  Orchestrator   │ │ :8003    │ │  :8000       │ │ :9001 gateway  │ │ Ollama chat      │
-  │                 │ │ img-gw   │ │  vid-gw      │ │                │ │                  │
-  │ LangGraph       │ │          │ │              │ │ TTS (XTTS)     │ │ rag-chat  :9150  │
-  │ workflows:      │ │ POST     │ │ POST         │ │ STT (Whisper)  │ │ rag-ingest :9050 │
-  │ • img_generate  │ │ /images/ │ │ /videos/     │ │                │ │                  │
-  │ • img_to_video  │ │ generate │ │ generate     │ │ /voices        │ │ Ollama :11434    │
-  │ • char_create   │ │          │ │              │ │ /tts/jobs      │ │ (container-local)│
-  │ • style_xfer    │ │ GET      │ │ GET          │ │ /stt/jobs      │ │                  │
-  │ • batch_gen     │ │ /images/ │ │ /videos/     │ │ /tts/jobs/{id} │ │ Cloudflare       │
-  │                 │ │ jobs/{id}│ │ jobs/{id}    │ │ /stt/jobs/{id} │ │ Zero Trust       │
-  │ LLM calls:      │ │          │ │              │ │                │ └──────────────────┘
-  │ prompt expand,  │ │ GPU:     │ │ GPU:         │ │ Services:      │
-  │ style analysis  │ │ flux     │ │ wan22 :8010  │ │ xtts (engine)  │ ┌──────────────────┐
-  │                 │ │ :8001    │ │ (internal)   │ │ tts-worker     │ │ VOLUPTAS :8188   │
-  │ Tools call ─────┤►│ sdxl     │ │              │ │ whisper-worker │ │ ComfyUI          │
-  │ img/vid/voice   │ │ :8002    │ │              │ │ redis, minio   │ │                  │
-  └────────┬────────┘ │          │ │              │ │                │ │ somnus → direct  │
-           │          │ LoRA /   │ │              │ │                │ │ WS + proxy       │
-           │          │ train    │ │              │ │                │ └──────────────────┘
-           │          │ :8004    │ │              │ │                │
-           │          └──────────┘ └──────────────┘ └───────┬────────┘
-           │               ▲             ▲              ▲   │
-           │               │             │              │   │
-           └───────────────┴─────────────┴──────────────┘   │
-             gothmog calls img/vid/voice stacks              │
-             directly via LangChain tools                    │
-           kimini voicegen calls tss-stack ──────────────────┘
-
-  ────────────────────────────────────────────────────────────────────────────
-                         SHARED DATA LAYER
-  ────────────────────────────────────────────────────────────────────────────
-
-  ┌──────────────────────┐  ┌──────────────────┐  ┌──────────────────────────┐  ┌──────────────────┐
-  │ PostgreSQL :5433     │  │ Redis :6380      │  │ MinIO (S3) :9000/:9001   │  │ Qdrant :6333     │
-  │ NAS (.121)           │  │ NAS (.121)       │  │ NAS (.121)               │  │ .198 (agent-     │
-  │                      │  │                  │  │                          │  │  composer)       │
-  │  kimini tables       │  │  rate limits     │  │  uploads bucket          │  │  project_docs    │
-  │  gothmog.runs        │  │  TaskIQ broker   │  │  generated/images/       │  │  RAG vectors     │
-  │                      │  │  WS pub/sub      │  │  generated/videos/       │  │  code_audit      │
-  │                      │  │  imgq:*, vidq:*  │  │  generated/audio/        │  │  audit_docs      │
-  │                      │  │  orcq:*, orcr:*  │  │  comfyui/workflows/      │  │                  │
-  │                      │  │  tss job queues  │  │  tts/stt audio artifacts │  │                  │
-  └──────────────────────┘  └──────────────────┘  └──────────────────────────┘  └──────────────────┘
-
-  ────────────────────────────────────────────────────────────────────────────
-                           OBSERVABILITY  (sauron)
-  ────────────────────────────────────────────────────────────────────────────
-
-  ┌──────────────────────────────────────────────────────────────────────────┐
-  │ SAURON  (migrating to .198)                                              │
-  │ prometheus:9090  grafana:3001  loki:3100  alertmanager:9093              │
-  │ promtail ships Docker logs -> Loki                                       │
-  │ Prometheus scrapes primary host services + remote GPU exporters          │
-  │ (stack remains healthy if one GPU host is offline)                       │
-  └──────────────────────────────────────────────────────────────────────────┘
-```
-
-RAG ingestion is served by `rag-ingest` on `192.168.1.198:9050` (inside `agent-composer`), colocated with Qdrant on `192.168.1.198:6333`, using Ollama container-locally at `http://ollama:11434`.
+**Not scanned (integration only):** [mithrandir](https://github.com/smk762/mithrandir) receives night-conductor status via HTTP (`LATEST.json` / companion events). Do not clone it for audits.
 
 ---
 
-## Deployment Topology
+## Ecosystem flow
 
-### Host Allocation
+```
+  quarry ──► curator / cull ──► lens / lightbox ──► studio
+                 │                      │
+                 ▼                      ▼
+              forge ──► (train) ──► proof
+                 │
+                 ▼
+           darkroom / safelight ──► voluptas (ComfyUI :8188)
+                 │
+                 ▼
+              mint / assay
 
-| Host | Hardware | Services |
-|------|----------|----------|
-| `192.168.1.109` | Linux desktop, RTX 3090 24 GB, 64 GB RAM, Ryzen 5 7600 | `kimini-api`, `imogen` (+ LoRA/post-process absorbed), `vidita`, `voluptas` |
-| `192.168.1.86` | — | `gothmog`, `somnus` |
-| `192.168.1.198` | VM, RTX 4060 8 GB (passthrough), 16 GB RAM, 8 vCPU | `agent-composer` (Ollama + Qdrant + rag-ingest + ModernBERT), `tss-stack` *(pending)*, `sauron` *(pending)* |
-| `192.168.1.121` | DS923+ NAS | PostgreSQL (`:5433`), Redis (`:6380`), MinIO (`:9000`) |
+  atlas (maps)     survey / sightline (point clouds)
+  mask (face)      halo (demo infra)
 
-### Repo-to-Host Quick Matrix
+  Shared AI / RAG:  argus-* ──► agent-composer (rag-chat :9150, rag-ingest :9050, Qdrant :6333)
+  Night auditor:    ai-code-auditor (Dragon :8765) ──► mithrandir (Jarrah :8400)
+```
 
-| Repo | Host |
+---
+
+## Deployment notes (current)
+
+| Host | Role |
 |------|------|
-| `kimini-api` | `192.168.1.109` |
-| `imogen` | `192.168.1.109` |
-| `vidita` | `192.168.1.109` |
-| `voluptas` | `192.168.1.109` |
-| `gothmog` | `192.168.1.86` |
-| `somnus` | `192.168.1.86` |
-| `agent-composer` (+ Qdrant + rag-ingest) | `192.168.1.198` |
-| `tss-stack` | `192.168.1.198` *(pending migration)* |
-| `sauron` | `192.168.1.198` *(pending migration)* |
-| PostgreSQL / Redis / MinIO | `192.168.1.121` (NAS) |
-| ~~`mimiri`~~ | retired — `rag-ingest` lives in `agent-composer` |
-| ~~`loraline`~~ | retired — absorbed into `imogen` |
-| ~~`rubedo`~~ | retired — absorbed into `imogen` |
-| ~~`test_dbs`~~ | retired — data layer split: NAS (.121) + Qdrant in agent-composer |
+| Dragon `192.168.1.198` | `ai-code-auditor`, `agent-composer` (Ollama/Qdrant/rag-ingest), local argus checkouts / mirrors |
+| Jarrah `192.168.1.109` | `mithrandir` companion; Ollama for embeddings (`:11434`) so RAG ingest need not wake Dragon GPU |
+| Voluptas host | ComfyUI `:8188` (see voluptas compose); Argus darkroom/studio call into it |
 
-### Validation Commands (2-3 minute smoke check)
-
-```bash
-# NAS data layer (.121)
-docker run --rm -e PGPASSWORD=testpass postgres:16 \
-  psql -h 192.168.1.121 -p 5433 -U testuser -d ai_audit -c "SELECT 1" >/dev/null || echo "postgres (NAS) down"
-redis-cli -h 192.168.1.121 -p 6380 -a testpass ping || echo "redis (NAS) down"
-curl -fsS http://192.168.1.121:9000/minio/health/live || echo "minio (NAS) down"
-
-# GPU + core API node (.109)
-curl -fsS http://192.168.1.109:8000/health || echo "kimini down"
-curl -fsS http://192.168.1.109:8003/health || echo "imogen down"
-curl -fsS http://192.168.1.109:8000/videos/health || echo "vidita down"
-curl -fsS http://192.168.1.109:8188/system_stats || echo "voluptas (comfyui) down"
-
-# Orchestrator / UI node (.86)
-curl -fsS http://192.168.1.86:8030/health || echo "gothmog down"
-# somnus: check on its configured frontend port
-
-# Voice/chat/RAG node (.198)
-curl -fsS http://192.168.1.198:9001/health || echo "tss-stack down"
-curl -fsS http://192.168.1.198:9150/health || echo "agent-composer-rag down"
-curl -fsS http://192.168.1.198:9050/health || echo "rag-ingest down"
-curl -fsS http://192.168.1.198:6333/collections >/dev/null || echo "qdrant down"
-curl -fsS http://192.168.1.198:11434/api/tags >/dev/null || echo "ollama down"
-
-# Optional observability (expected to fail until sauron migrated to .138)
-curl -fsS http://192.168.1.198:9090/-/healthy || echo "prometheus down"
-curl -fsS http://192.168.1.198:9100/metrics >/dev/null || echo "node exporter down"
-curl -fsS http://192.168.1.109:9091/-/ready || echo "pushgateway down"
-```
-
-Expected baseline:
-- Core checks (`kimini`, `gothmog`, `imogen`, `vidita`, `voluptas`, `agent-composer-rag`, `rag-ingest`, `qdrant`, `ollama`, NAS data layer) should pass.
-- `tss-stack` and `sauron` expected to fail until migration to `.198` is complete.
-
-### Practical notes
-
-- `kimini-api`, `imogen`, `vidita`, `voluptas` run on `.109` (RTX 3090 — heaviest GPU workloads).
-- `gothmog` and `somnus` run on `.86` (orchestration + operator UI).
-- `agent-composer` with local Ollama, Qdrant, and `rag-ingest` runs on `.198`.
-- `tss-stack` and `sauron` will migrate to `.198` when ready.
-- PostgreSQL (`:5433`), Redis (`:6380`), and MinIO (`:9000`) run on the DS923+ NAS (`.121`) — stateful infra decoupled from compute nodes.
-- Qdrant is container-local inside `agent-composer` on `.198`; `rag-ingest` uses `QDRANT_URL=http://qdrant:6333`.
-- No automatic failover; optimize for deterministic single-job behavior.
+Branch policy: all `argus-*` repos use **`dev` as default**. Night conductor syncs mirrors and checks out `dev` before each rest session.
 
 ---
 
-### Cutover Checklist
+## Night conductor + mithrandir
 
-Status legend: `[x] done`, `[ ] remaining`, `[~] partial`.
+| Artifact | URL |
+|----------|-----|
+| Status envelope | `http://192.168.1.198:8765/reports/mithrandir/LATEST.json` |
+| TTS body | `http://192.168.1.198:8765/reports/mithrandir/LATEST.md` |
+| Webhook | `POST http://192.168.1.109:8400/api/companion/events` |
 
-- [x] `.128` decommissioned.
-- [x] `rag-ingest` and Qdrant colocated in `agent-composer` on `192.168.1.198` — `mimiri` retired.
-- [x] `loraline` and `rubedo` functionality absorbed into `imogen`.
-- [x] Stateful data layer (PostgreSQL, Redis) moved to NAS (`.121`, non-standard ports).
-- [x] `gothmog` and `somnus` running on `192.168.1.86`.
-- [x] `kimini-api` running on `192.168.1.109`.
-- [~] `imogen` and `vidita` reachable but do not expose `/metrics` (health only).
-- [ ] `tss-stack` migration to `.138` not yet complete.
-- [ ] `sauron` migration to `.138` not yet complete.
-- [ ] Update Prometheus scrape config in `sauron` — Qdrant target `.138:6333`; gothmog target `.86:8030`; Redis port `6380`.
-- [ ] Confirm all ingest callers/scrape targets point to `192.168.1.198:9050`.
-- [ ] `node exporter` (`.138:9100`) unreachable until sauron is deployed.
-- [ ] Ensure `kimini` env routes image/video calls to `.109` and orchestrator calls to `.86:8030`.
+`LATEST.json` is one `source=ai-code-auditor` status event in mithrandir’s shared envelope — not exclusive owner of the morning broadcast.
 
 ---
 
-## Request Flow: Direct Generation
+## RAG
 
-```
-Client
-  │
-  ├─► POST /v1/images/generate ──► Kimini ──► TaskIQ worker ──► Imogen gateway
-  │                                                                 │
-  │                                               flux/sdxl ◄───────┘
-  │                                                  │
-  │                                            GPU inference + post-process
-  │                                                  │
-  │                                            MinIO upload
-  │                                                  │
-  │   poll GET /v1/images/{job_id} ◄── Kimini ◄──── Redis job status
-  │   or subscribe WS job:{job_id}
-  │
-  ├─► POST /v1/videos/generate ──► Kimini ──► TaskIQ worker ──► Vidita gateway
-  │                                                                 │
-  │                                                wan22 ◄──────────┘
-  │                                                  │
-  │                                            GPU inference → MinIO
-  │
-  ├─► POST /v1/voice/tts ──► Kimini ──► TaskIQ worker ──► tss-stack gateway :9001
-  │                                                           │
-  │                                              tts-worker ◄─┘──► xtts engine
-  │                                                  │
-  │                                            MinIO upload (presigned URL)
-  │
-  └─► POST /v1/voice/stt ──► Kimini ──► TaskIQ worker ──► tss-stack gateway :9001
-                                                           │
-                                         whisper-worker ◄─┘──► Whisper model
-                                                  │
-                                            MinIO upload (transcript)
-```
+- Collection `audit_docs` (isolated from chat `project_docs`).
+- Ingest slim `LATEST.md` + short JSON only (not full SARIF).
+- Prefer Jarrah Ollama for embeddings: `http://192.168.1.109:11434`.
 
 ---
 
-## Request Flow: ComfyUI (somnus → voluptas direct)
+## Architecture governance (summary)
 
-```
-Operator (browser)
-  │
-  │  WebSocket ws://NEXT_PUBLIC_COMFYUI_WS_URL/ws?clientId=X
-  │  ───────────────────────────────────────────────────────► Voluptas :8188 (direct, LAN-only)
-  │                                                            (WEB_ENABLE_AUTH=false)
-  │
-  ├─► POST /api/comfyui/prompt ──► somnus (server) ──proxy──► Voluptas :8188
-  │         (submit workflow)                                   │
-  │                                                             │  GPU inference (ComfyUI)
-  │                                                             │
-  │  WS message: executing / progress ◄──────────────────────────┘
-  │  WS message: node=null → run complete
-  │
-  ├─► GET /api/comfyui/history/{prompt_id} ──proxy──► Voluptas /history/{id}
-  │
-  ├─► GET /api/comfyui/view?filename=...&type=output ──proxy──► Voluptas /view
-  │
-  └─► GET/POST/PUT/DELETE /api/comfyui-workflows[/{id}]
-            (workflow CRUD — reads/writes MinIO uploads/comfyui/workflows/{id}.json)
-            No Kimini in this path — somnus owns the workflow library directly.
-```
+See [`config/architecture_rules.yaml`](../config/architecture_rules.yaml):
 
-Note: `COMFYUI_API_URL` (server-side proxy target) and `NEXT_PUBLIC_COMFYUI_WS_URL` (browser WS) are
-separate env vars. The HTTP proxy uses the server-side var; the WebSocket connects directly from the
-browser (no server-side WS proxy needed since ComfyUI is LAN-gated).
-
----
-
-## Request Flow: Orchestrated Pipeline
-
-```
-Client
-  │
-  POST /v1/orchestrate/run { workflow: "character_create", input: {...} }
-  │
-  ▼
-Kimini ──proxy──► Gothmog
-                    │
-                    ▼
-              LangGraph executes workflow DAG:
-              ┌──────────────────────────────────────────────────────────┐
-              │                                                          │
-              │  1. expand_character  ──► LLM (Ollama / OpenAI / etc.)   │
-              │         │                                                │
-              │         ▼                                                │
-              │  2. generate_portraits ──► Imogen (3× txt2img)           │
-              │         │                                                │
-              │         ▼                                                │
-              │  3. moderate_portraits ──► (placeholder / NudeNet)       │
-              │         │                                                │
-              │         ▼                                                │
-              │  4. generate_video_intro ──► Vidita (img2vid)            │
-              │                                                          │
-              └──────────────────────────────────────────────────────────┘
-                    │
-                    ▼
-              Result stored in Redis + Postgres
-              │
-              ▼
-Client polls GET /v1/orchestrate/runs/{run_id}
-  or streams via POST /v1/orchestrate/run/stream (SSE)
-```
-
----
-
-## Async Job Pattern (universal)
-
-Every generation domain follows the same contract:
-
-```
-  Client                Kimini                  Backend Gateway
-    │                     │                          │
-    │  POST /v1/{domain}  │                          │
-    │────────────────────►│  enqueue (TaskIQ/Redis)  │
-    │  ◄── 202 {job_id}   │                          │
-    │                     │  worker picks up job     │
-    │                     │─────────────────────────►│  POST /{domain}/generate
-    │                     │  ◄── 202 {backend_id}    │
-    │                     │                          │  GPU inference...
-    │                     │  poll loop               │
-    │                     │─────────────────────────►│  GET /{domain}/jobs/{id}
-    │                     │  ◄── {status, result}    │
-    │                     │                          │
-    │  poll or WS sub     │  update job in DB        │
-    │────────────────────►│                          │
-    │  ◄── {completed}    │                          │
-```
-
-Domains using this pattern: `imagegen`, `videogen`, `voicegen`
-
----
-
-## Observability Flow (sauron)
-
-```
-Runtime services + infra exporters
-  │
-  ├─ metrics endpoints (/metrics) ───────────────► Prometheus (:9090)
-  │                                                │
-  │                                                ├─ alert rules ─► Alertmanager (:9093)
-  │                                                └─ datasource ──► Grafana (:3001)
-  │
-  └─ Docker container logs ─► Promtail ───────────► Loki (:3100) ──► Grafana Explore
-
-Remote host metrics scrapes are best-effort/opportunistic. In this homelab profile, degraded visibility is acceptable when a non-critical exporter is down.
-```
+- `argus-cortex` owns shared taxonomy / wire schemas.
+- Generation workers call `voluptas`; chat/RAG goes through `agent-composer`.
+- UI demos (`cull`, `safelight`, `lightbox`, `sightline`, `assay`) should not reimplement cortex contracts.
+- Night conductor is aware of open PRs/issues on `dev` to avoid duplicate draft PRs.

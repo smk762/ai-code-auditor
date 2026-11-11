@@ -1,12 +1,12 @@
 # Architecture Memory
 
-2026-03-10
+2026-11-11
 
 Decision:
-Use local-first runtime and nightly governance checks.
+Night conductor governs the Argus suite (`argus-*`) plus shared deps `agent-composer` and `voluptas`. Scan `dev`. Publish mithrandir status envelopes from Dragon; do not treat the auditor as exclusive morning-broadcast owner.
 
 Reason:
-Operate without cloud dependency and enforce architecture consistency continuously.
+Prior kimini/somnus/gothmog/imogen/vidita/tss/sauron/playact stack is out of scope. Argus consumes agent-composer (RAG/chat) and voluptas (ComfyUI).
 
 Applies to:
-All repositories in `config/ecosystem.yaml`.
+`config/ecosystem.yaml`, `config/architecture_rules.yaml`, `ecosystem/ecosystem.md`.

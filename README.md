@@ -239,16 +239,18 @@ Deliverables expected:
 - PR checklist and verification plan
 ```
 
-## Ecosystem SSHFS (single switch)
+## Repo mirrors
 
-If repos live on a remote host under `/mnt/ai-audit/...`, define all SSHFS pairs in [`config/sshfs_mounts.yaml`](config/sshfs_mounts.yaml) and use **one** systemd user unit to mount everything: [`contrib/systemd/user/README.md`](contrib/systemd/user/README.md).
+Scan set: all `smk762/argus-*` plus `agent-composer` and `voluptas` on branch **`dev`**. See [`ecosystem/ecosystem.md`](ecosystem/ecosystem.md) and [`config/repo_mirrors.yaml`](config/repo_mirrors.yaml).
+
+`ai-audit rest-run` syncs mirrors automatically before scanning. Manual: `bash scripts/sync_repo_mirrors.sh`. SSHFS is deprecated.
 
 ## Docker
 
-**Yes — the `auditor` service is a batch job** (ecosystem audit once, then exit). In production you usually:
+**Yes — the `auditor` service is a batch job**. In production you usually:
 
-- Keep **`audit-api`** running (daemon).
-- Run **`auditor` on a schedule** (cron or systemd timer), not only when you happen to `docker compose up`.
+- Keep **`audit-api`** running (daemon) on Dragon `:8765` for mithrandir polls.
+- Run **`ai-audit rest-run`** on the rest-window timer ([`contrib/systemd/user/ai-audit-rest.timer`](contrib/systemd/user/ai-audit-rest.timer)).
 
 ### Typical commands
 
@@ -258,29 +260,20 @@ cp .env.example .env
 # API only (good default for “always on”)
 docker compose up -d --build audit-api
 
-# One-off ecosystem audit (same image/command as the auditor service)
-docker compose run --rm --no-deps auditor
+# Night conductor rest session (mirrors → scanners → workers → LATEST + webhook)
+ai-audit rest-run --force
 
-# Dev / smoke: start API + run one audit immediately on boot
-docker compose up -d --build
-docker compose logs -f --tail 200
+# Legacy one-off ecosystem governance pass
+docker compose run --rm --no-deps auditor
 ```
 
-`audit-api` listens on port **8765** (see `.env` / `AUDIT_API_PORT`). Logs: `docker compose logs -f audit-api`.
+`audit-api` listens on port **8765**. Mithrandir: `GET /reports/mithrandir/LATEST.json`.
 
 ### Ecosystem repo paths in Docker
 
-`config/ecosystem.yaml` uses **absolute host paths**. `docker-compose.yml` already bind-mounts the two prefixes used there: **`/mnt/ai-audit`** (SSHFS / shared audit trees) and **`/home/smk/GITHUB/smk762`** (imogen, vidita, loraline). On another machine, edit those volume lines so the left side matches your host.
+`config/ecosystem.yaml` uses **absolute host paths** under `/home/smk` and `/home/smk/mirrors`. Bind-mount those prefixes in compose so the container sees the same trees.
 
-If every repo still logs **`path not found, skipping`**, the host paths are missing (e.g. SSHFS not mounted) or you need an extra volume for a new `path:` prefix.
-
-**Redis / DB from the container:** `REDIS_URL` / `DATABASE_URL` must point at an address the **container** can open (often your LAN host IP, e.g. `192.168.1.121`, not `127.0.0.1` on the host unless you use host networking).
-
-### Daily schedule (example)
-
-Use a **systemd timer** or **cron** that runs `docker compose run --rm --no-deps auditor` from the repo directory. Copy/adjust: [`contrib/systemd/user/ai-audit-docker-ecosystem.service`](contrib/systemd/user/ai-audit-docker-ecosystem.service) and [`.timer`](contrib/systemd/user/ai-audit-docker-ecosystem.timer).
-
-Repo-only nightly scan (no Docker): `python pipelines/nightly_repo_audit.py` — use when the stack runs on the host instead of a container.
+**Redis / DB from the container:** `REDIS_URL` / `DATABASE_URL` must point at an address the **container** can open (often your LAN host IP, e.g. `192.168.1.121`, not `127.0.0.1` unless host networking).
 
 [Compose profiles](https://docs.docker.com/compose/how-tos/profiles/) are reserved for optional stacks (e.g. a future **`tests`** service); core services are not hidden behind profiles by default.
 

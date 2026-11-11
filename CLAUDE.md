@@ -47,15 +47,16 @@ docker compose logs -f audit-api
 | `config/embedder.yaml` | Embedder provider/model (default: `local-hash`) |
 | `config/architecture_rules.yaml` | Cross-repo boundary and call-graph rules |
 | `config/prompts.yaml` | LLM prompt templates |
-| `config/sshfs_mounts.yaml` | SSHFS pairs for remote repos (see mount notes below) |
+| `config/repo_mirrors.yaml` | Local git mirrors for Argus + agent-composer + voluptas (`dev`) |
+| `config/rest_windows.yaml` | Night conductor rest window + wrap-up budget |
 
 Override any config value with env vars — all keys in `auditor/config.py` have `AI_AUDIT_*` prefixes. Copy `.env.example` → `.env`.
 
-## Repo mounts
+## Repo mirrors
 
-Remote repos are mounted via `~/mount_ecosystem.sh` into `/home/smk/tmp/mnt/`. All `path:` entries in `config/ecosystem.yaml` use that prefix. `agent-composer` is local at `/home/smk/agent-composer`. `docker-compose.yml` bind-mounts `/home/smk/tmp/mnt` and `/home/smk/agent-composer` directly.
+Scan set is all `smk762/argus-*` plus `agent-composer` and `voluptas` (Argus consumes both). Paths live under `/home/smk/<name>` or `/home/smk/mirrors/<name>`. `ai-audit rest-run` auto-syncs mirrors and checks out **`dev`** before scanning. Manual sync: `bash scripts/sync_repo_mirrors.sh`. SSHFS mounts are deprecated.
 
-Repos not yet on this host (`tss-stack`, `sauron`) are set `enabled: false` in `ecosystem.yaml` — enable once migrated. Playact repos (`playact-engine`, `playact-frontend`) are scanned but excluded from service-role and call-graph rules.
+Canonical topology: [`ecosystem/ecosystem.md`](ecosystem/ecosystem.md).
 
 ## Architecture
 

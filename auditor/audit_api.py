@@ -11,6 +11,10 @@ GET  /audit/runs/{run_id}/stream      SSE: snapshot events until the run leaves 
 POST /audit/runs/{run_id}/cancel      Stop an in-flight run (pending/running); idempotent if cancelled
 DELETE /audit/runs/{run_id}           Remove a finished run and related DB rows (not while active)
 GET  /audit/reports/{run_id}          Return combined markdown report for a completed run
+GET  /audit/topology                  Return the latest service topology HTML
+GET  /audit/topology.json             Return the latest service topology JSON sidecar
+GET  /reports/mithrandir/LATEST.json  Atomic rest-session status for mithrandir (Jarrah)
+GET  /reports/mithrandir/LATEST.md    TTS-safe companion briefing for Holly
 POST /audit/ingest                    Trigger RAG briefing ingest to the audit_docs collection
 
 Start:
@@ -31,8 +35,8 @@ from typing import Any
 
 from dataclasses import asdict
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 
@@ -45,6 +49,50 @@ from auditor.gpu_scheduler import get_vram_info
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="ai-code-auditor API", version="1.0.0")
+
+
+def _require_mutating_auth(
+    authorization: str | None = Header(default=None),
+    x_auth_code: str | None = Header(default=None, alias="X-Auth-Code"),
+    x_api_token: str | None = Header(default=None, alias="X-API-Token"),
+) -> None:
+    """Gate write endpoints (git mutate, validate_patch, run, ingest, cancel).
+
+    Auth is required when ``AI_AUDIT_AUTH_MODE`` is enabled or ``AI_AUDIT_API_TOKEN``
+    is set. Accepts Bearer JWT (admin), ``X-Auth-Code``, or ``X-API-Token``.
+    When neither mode is configured (local/dev), requests are allowed.
+    """
+    cfg = load_ecosystem_config()
+    api_token = os.getenv("AI_AUDIT_API_TOKEN", "").strip()
+    if not cfg.auth_mode and not api_token:
+        return
+
+    if api_token and (x_api_token or "").strip() == api_token:
+        return
+
+    if cfg.auth_mode:
+        expected_env = cfg.auth_code_env or "AI_AUDIT_AUTH_CODE"
+        expected = os.getenv(expected_env, "")
+        if expected and (x_auth_code or "") == expected:
+            return
+
+    bearer = (authorization or "").strip()
+    if bearer.lower().startswith("bearer "):
+        token = bearer[7:].strip()
+        if token:
+            try:
+                from auditor.auth import enforce_role
+
+                enforce_role(token, "admin", "api:mutating")
+                return
+            except PermissionError as exc:
+                raise HTTPException(status_code=401, detail="Invalid or unauthorized JWT") from exc
+
+    raise HTTPException(
+        status_code=401,
+        detail="Mutating endpoint requires X-API-Token, X-Auth-Code, or Bearer admin JWT",
+    )
+
 
 # ---------------------------------------------------------------------------
 # Active-run tracking (in-memory, single slot)
@@ -325,7 +373,7 @@ def health() -> JSONResponse:
     return JSONResponse(body)
 
 
-@app.post("/audit/run", status_code=202)
+@app.post("/audit/run", status_code=202, dependencies=[Depends(_require_mutating_auth)])
 def start_run() -> JSONResponse:
     """Start a new ecosystem audit run.
 
@@ -433,7 +481,7 @@ def get_run(run_id: str) -> JSONResponse:
     return JSONResponse(row)
 
 
-@app.post("/audit/runs/{run_id}/cancel")
+@app.post("/audit/runs/{run_id}/cancel", dependencies=[Depends(_require_mutating_auth)])
 def cancel_run(run_id: str) -> JSONResponse:
     """Mark an in-flight ecosystem audit as ``cancelled`` and SIGTERM the subprocess when tracked."""
     with db_session() as session:
@@ -466,7 +514,7 @@ def cancel_run(run_id: str) -> JSONResponse:
     return JSONResponse(out)
 
 
-@app.delete("/audit/runs/{run_id}", status_code=204)
+@app.delete("/audit/runs/{run_id}", status_code=204, dependencies=[Depends(_require_mutating_auth)])
 def delete_run(run_id: str) -> None:
     """Remove a finished ecosystem audit row and related child rows from the database."""
     with db_session() as session:
@@ -545,6 +593,30 @@ def get_report(run_id: str) -> str:
         sections.append(f"<!-- {f.name} -->\n\n{f.read_text(encoding='utf-8')}")
 
     return "\n\n---\n\n".join(sections)
+
+
+@app.get("/audit/topology")
+def get_service_topology() -> FileResponse:
+    """Return the latest service topology HTML.  404 if not yet generated."""
+    path = Path(_output_dir()) / "service_topology.html"
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Service topology has not been generated yet — run an ecosystem audit first.",
+        )
+    return FileResponse(path, media_type="text/html")
+
+
+@app.get("/audit/topology.json")
+def get_service_topology_json() -> FileResponse:
+    """Return the structured JSON sidecar for the latest topology.  404 if absent."""
+    path = Path(_output_dir()) / "service_topology.json"
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Service topology JSON has not been generated yet.",
+        )
+    return FileResponse(path, media_type="application/json")
 
 
 class _ValidateRequest(BaseModel):
@@ -657,7 +729,7 @@ class _ValidatePatchRequest(BaseModel):
     timeout_s: int = 120
 
 
-@app.post("/audit/validate_patch")
+@app.post("/audit/validate_patch", dependencies=[Depends(_require_mutating_auth)])
 def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
     """Apply *patch* to a temp copy of *repo* and run its test/lint suite.
 
@@ -704,7 +776,9 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
 
     try:
         repo_copy = tmp_root / "repo"
-        shutil.copytree(str(repo_path), str(repo_copy), symlinks=True)
+        # Do not preserve symlinks: a crafted patch must not write through a
+        # repo symlink into the host filesystem outside this temp tree.
+        shutil.copytree(str(repo_path), str(repo_copy), symlinks=False)
 
         patch_file = tmp_root / "changes.patch"
         patch_file.write_text(request.patch, encoding="utf-8")
@@ -974,7 +1048,7 @@ class _GitPushRequest(BaseModel):
     remote: str = "origin"
 
 
-@app.post("/audit/git/branch")
+@app.post("/audit/git/branch", dependencies=[Depends(_require_mutating_auth)])
 def git_create_branch(request: _GitBranchRequest) -> JSONResponse:
     """Create (and check out) a ``repair/<slug>`` branch for *repo*.
 
@@ -1012,7 +1086,7 @@ def git_create_branch(request: _GitBranchRequest) -> JSONResponse:
     })
 
 
-@app.post("/audit/git/commit")
+@app.post("/audit/git/commit", dependencies=[Depends(_require_mutating_auth)])
 def git_commit(request: _GitCommitRequest) -> JSONResponse:
     """Stage the repair-touched files and commit them to the current branch.
 
@@ -1055,7 +1129,7 @@ def git_commit(request: _GitCommitRequest) -> JSONResponse:
     })
 
 
-@app.post("/audit/git/push")
+@app.post("/audit/git/push", dependencies=[Depends(_require_mutating_auth)])
 def git_push(request: _GitPushRequest) -> JSONResponse:
     """Push *branch* (default: current branch) to *remote*.
 
@@ -1100,7 +1174,33 @@ def git_push(request: _GitPushRequest) -> JSONResponse:
     })
 
 
-@app.post("/audit/ingest")
+@app.get("/reports/mithrandir/LATEST.json")
+def mithrandir_latest_json() -> JSONResponse:
+    """Serve the latest rest-session status for mithrandir (atomic on-disk publish)."""
+    from conductor.publish import mithrandir_dir
+
+    path = mithrandir_dir(_output_dir()) / "LATEST.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="LATEST.json not published yet.")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"LATEST.json corrupt: {exc}") from exc
+    return JSONResponse(data)
+
+
+@app.get("/reports/mithrandir/LATEST.md", response_class=PlainTextResponse)
+def mithrandir_latest_md() -> str:
+    """Serve the TTS-safe companion briefing for Holly."""
+    from conductor.publish import mithrandir_dir
+
+    path = mithrandir_dir(_output_dir()) / "LATEST.md"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="LATEST.md not published yet.")
+    return path.read_text(encoding="utf-8")
+
+
+@app.post("/audit/ingest", dependencies=[Depends(_require_mutating_auth)])
 def trigger_ingest() -> JSONResponse:
     """Push the latest audit briefings to the RAG ingest service (audit_docs collection)."""
     script = Path(__file__).resolve().parents[1] / "scripts" / "ingest_ecosystem_to_rag.py"

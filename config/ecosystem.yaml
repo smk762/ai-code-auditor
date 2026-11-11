@@ -1,74 +1,160 @@
-# Repo scanner config. Each repo needs a `name` and a `path` (local dir or mountpoint).
-# Optional `subpath` limits scanning to a subdirectory. `branch` is informational only for
-# local paths — the current checkout is scanned as-is.
+# Night conductor scan set: all https://github.com/smk762/argus-* repos
+# plus shared deps the suite consumes (agent-composer, voluptas).
+# mithrandir is omitted (HTTP status handoff only).
+# Prefer local checkouts under /home/smk/<name>; otherwise /home/smk/mirrors/<name>
+# (see config/repo_mirrors.yaml + scripts/sync_repo_mirrors.sh). Scan branch: dev.
 repos:
-  # ── Core stack (mounted from remote hosts) ──────────────────────────────────
-  - name: kimini-api
-    path: /home/smk/tmp/mnt/kimini-api
+  - name: argus-assay
+    path: /home/smk/mirrors/argus-assay
+    branch: dev
     enabled: true
     provider: local
     subpath: ""
 
-  - name: somnus
-    path: /home/smk/tmp/mnt/somnus
+  - name: argus-atlas
+    path: /home/smk/mirrors/argus-atlas
+    branch: dev
     enabled: true
     provider: local
     subpath: ""
 
-  - name: gothmog
-    path: /home/smk/tmp/mnt/gothmog
+  - name: argus-ci
+    path: /home/smk/mirrors/argus-ci
+    branch: dev
     enabled: true
     provider: local
     subpath: ""
 
-  - name: imogen
-    path: /home/smk/tmp/mnt/imogen
+  - name: argus-cortex
+    path: /home/smk/mirrors/argus-cortex
+    branch: dev
     enabled: true
     provider: local
     subpath: ""
 
-  - name: vidita
-    path: /home/smk/tmp/mnt/vidita
+  - name: argus-cull
+    path: /home/smk/argus-cull
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-curator
+    path: /home/smk/mirrors/argus-curator
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-darkroom
+    path: /home/smk/mirrors/argus-darkroom
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-forge
+    path: /home/smk/mirrors/argus-forge
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-halo
+    path: /home/smk/mirrors/argus-halo
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-lens
+    path: /home/smk/argus-lens
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-lightbox
+    path: /home/smk/mirrors/argus-lightbox
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-mask
+    path: /home/smk/mirrors/argus-mask
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-mint
+    path: /home/smk/mirrors/argus-mint
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-pkg-template
+    path: /home/smk/mirrors/argus-pkg-template
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-proof
+    path: /home/smk/mirrors/argus-proof
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-quarry
+    path: /home/smk/mirrors/argus-quarry
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-safelight
+    path: /home/smk/mirrors/argus-safelight
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-sightline
+    path: /home/smk/mirrors/argus-sightline
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-studio
+    path: /home/smk/mirrors/argus-studio
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-survey
+    path: /home/smk/mirrors/argus-survey
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  # Shared deps Argus consumes
+  - name: agent-composer
+    path: /home/smk/agent-composer
+    branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: voluptas
-    path: /home/smk/tmp/mnt/voluptas
-    enabled: true
-    provider: local
-    subpath: ""
-
-  # ── Local (same host) ────────────────────────────────────────────────────────
-  - name: agent-composer
-    path: /home/smk/agent-composer
-    enabled: true
-    provider: local
-    subpath: ""
-
-  # ── Not yet migrated to this host — enable once up ──────────────────────────
-  - name: tss-stack
-    path: /home/smk/tmp/mnt/tss-stack
-    enabled: false
-    provider: local
-    subpath: ""
-
-  - name: sauron
-    path: /home/smk/tmp/mnt/sauron
-    enabled: false
-    provider: local
-    subpath: ""
-
-  # ── Playact (scanned in isolation — separate public/group project) ───────────
-  # Not part of the main ecosystem; service_roles and call_graph_rules do not apply.
-  - name: playact-engine
-    path: /home/smk/tmp/mnt/playact-engine
-    enabled: true
-    provider: local
-    subpath: ""
-
-  - name: playact-frontend
-    path: /home/smk/tmp/mnt/playact-frontend
+    path: /home/smk/mirrors/voluptas
+    branch: dev
     enabled: true
     provider: local
     subpath: ""

@@ -20,10 +20,94 @@ import ast
 from collections import defaultdict
 from pathlib import Path
 
-from auditor.contracts import RuleViolation
+from auditor.contracts import ObservedCallEdge, RuleViolation
 
 HTTP_CLIENT_MODULES = frozenset({"httpx", "requests", "aiohttp", "urllib"})
 HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete", "request", "send", "head", "options"})
+
+
+def analyze_call_graph(
+    repo_files: dict[str, list[Path]],
+    call_graph_rules: dict,
+) -> list[ObservedCallEdge]:
+    """
+    Return every inter-service HTTP edge detected in source, classified against
+    ``call_graph_rules.allowed_calls``.
+
+    Each ``(from_repo, to_service)`` pair appears once with merged evidence.
+    Edges from wildcard senders (``to: "*"``) and explicit allowed pairs are
+    flagged ``allowed=True``; all others are ``allowed=False``.
+    """
+    env_to_service: dict[str, str] = {
+        item["env_fragment"].upper(): item["service"]
+        for item in call_graph_rules.get("service_url_env_vars", [])
+        if "env_fragment" in item and "service" in item
+    }
+    allowed_calls_raw = call_graph_rules.get("allowed_calls", [])
+    allowed_set: set[tuple[str, str]] = {
+        (item["from"], item["to"])
+        for item in allowed_calls_raw
+        if "from" in item and "to" in item and item["to"] != "*"
+    }
+    wildcard_senders: set[str] = {
+        item["from"] for item in allowed_calls_raw if item.get("to") == "*"
+    }
+
+    if not env_to_service:
+        return []
+
+    evidence_map: dict[tuple[str, str], list[str]] = defaultdict(list)
+
+    for repo_name, files in repo_files.items():
+        for file_path in files:
+            if file_path.suffix != ".py":
+                continue
+            try:
+                source = file_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+
+            edges = _find_service_calls(source, file_path, repo_name, env_to_service)
+            for edge in edges:
+                key = (repo_name, edge["to_service"])
+                evidence_map[key].append(
+                    f"{file_path.name}:{edge['line']} ({edge['evidence']})"
+                )
+
+    observed: list[ObservedCallEdge] = []
+    for (from_repo, to_service), evidence_items in sorted(evidence_map.items()):
+        is_allowed = from_repo in wildcard_senders or (from_repo, to_service) in allowed_set
+        observed.append(
+            ObservedCallEdge(
+                from_repo=from_repo,
+                to_service=to_service,
+                allowed=is_allowed,
+                evidence=evidence_items,
+            )
+        )
+    return observed
+
+
+def violations_from_edges(edges: list[ObservedCallEdge]) -> list[RuleViolation]:
+    """Convert disallowed observed edges to ``RuleViolation`` records."""
+    violations: list[RuleViolation] = []
+    for edge in edges:
+        if edge.allowed:
+            continue
+        violations.append(
+            RuleViolation(
+                rule_name="call_graph_violation",
+                violating_path=f"{edge.from_repo} → {edge.to_service}",
+                entities=[edge.from_repo, edge.to_service],
+                evidence=(
+                    f"Unauthorised direct call from '{edge.from_repo}' to '{edge.to_service}'. "
+                    f"Locations: {'; '.join(edge.evidence[:5])}"
+                    + (" (and more)" if len(edge.evidence) > 5 else "")
+                ),
+                severity="HIGH",
+            )
+        )
+    return violations
 
 
 def detect_call_graph_violations(
@@ -37,63 +121,7 @@ def detect_call_graph_violations(
         repo_files: mapping of repo_name → list of source file paths
         call_graph_rules: the ``call_graph_rules`` block from architecture_rules.yaml
     """
-    env_to_service: dict[str, str] = {
-        item["env_fragment"].upper(): item["service"]
-        for item in call_graph_rules.get("service_url_env_vars", [])
-        if "env_fragment" in item and "service" in item
-    }
-    allowed_calls_raw = call_graph_rules.get("allowed_calls", [])
-    allowed_set: set[tuple[str, str]] = {
-        (item["from"], item["to"])
-        for item in allowed_calls_raw
-        if "from" in item and "to" in item
-    }
-    wildcard_senders: set[str] = {
-        item["from"] for item in allowed_calls_raw if item.get("to") == "*"
-    }
-
-    if not env_to_service:
-        return []
-
-    # Accumulate evidence per (from_repo, to_service) to avoid duplicate violations.
-    evidence_map: dict[tuple[str, str], list[str]] = defaultdict(list)
-
-    for repo_name, files in repo_files.items():
-        if repo_name in wildcard_senders:
-            continue
-        for file_path in files:
-            if file_path.suffix != ".py":
-                continue
-            try:
-                source = file_path.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                continue
-
-            edges = _find_service_calls(source, file_path, repo_name, env_to_service)
-            for edge in edges:
-                to_service = edge["to_service"]
-                if (repo_name, to_service) not in allowed_set:
-                    key = (repo_name, to_service)
-                    evidence_map[key].append(
-                        f"{file_path.name}:{edge['line']} ({edge['evidence']})"
-                    )
-
-    violations: list[RuleViolation] = []
-    for (from_repo, to_service), evidence_items in sorted(evidence_map.items()):
-        violations.append(
-            RuleViolation(
-                rule_name="call_graph_violation",
-                violating_path=f"{from_repo} → {to_service}",
-                entities=[from_repo, to_service],
-                evidence=(
-                    f"Unauthorised direct call from '{from_repo}' to '{to_service}'. "
-                    f"Locations: {'; '.join(evidence_items[:5])}"
-                    + (" (and more)" if len(evidence_items) > 5 else "")
-                ),
-                severity="HIGH",
-            )
-        )
-    return violations
+    return violations_from_edges(analyze_call_graph(repo_files, call_graph_rules))
 
 
 # ---------------------------------------------------------------------------

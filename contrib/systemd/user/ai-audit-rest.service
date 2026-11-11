@@ -1,0 +1,15 @@
+[Unit]
+Description=AI Code Auditor — night conductor rest session
+Documentation=file:///home/smk/ai-code-auditor/conductor/CONDUCTOR.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/ai-code-auditor
+EnvironmentFile=-%h/ai-code-auditor/.env
+ExecStart=%h/ai-code-auditor/.venv/bin/ai-audit rest-run --force
+# Soft deadline is enforced inside the conductor via rest_windows.yaml wrap-up.
+
+[Install]
+WantedBy=default.target

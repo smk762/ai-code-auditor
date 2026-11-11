@@ -29,20 +29,34 @@ if TYPE_CHECKING:
 
 _ECOSYSTEM_MD = Path(__file__).resolve().parents[1] / "ecosystem" / "ecosystem.md"
 
-# Matches table rows like: | Core API | kimini | FastAPI ... |
+# Matches table rows like: | Taxonomy | [argus-cortex](url) | Shared foundation ... |
 _TABLE_ROW = re.compile(r"^\|\s*([^|]+?)\s*\|\s*\[?(\w[\w-]*)\]?[^|]*\|\s*([^|]+?)\s*\|", re.MULTILINE)
 
 
 def _load_repo_roles() -> dict[str, dict[str, str]]:
-    """Return {repo_name: {label, role}} parsed from ecosystem.md."""
+    """Return {repo_name: {label, role}} parsed from ecosystem.md repos table."""
     roles: dict[str, dict[str, str]] = {}
     if not _ECOSYSTEM_MD.exists():
         return roles
     text = _ECOSYSTEM_MD.read_text(encoding="utf-8")
-    for m in _TABLE_ROW.finditer(text):
+    # Prefer the scanned-repos section so other markdown tables are ignored.
+    section = text
+    for marker in ("## Repos (scanned)", "## Repos"):
+        if marker in text:
+            section = text.split(marker, 1)[1]
+            section = section.split("\n## ", 1)[0]
+            break
+    skip_repos = {"repo", "name", "---"}
+    skip_labels = {"label", "area", "---"}
+    for m in _TABLE_ROW.finditer(section):
         label, repo, role = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
-        if repo and role and label.lower() not in {"label", "---"}:
-            roles[repo] = {"label": label, "role": role}
+        if not repo or not role:
+            continue
+        if repo.lower() in skip_repos or label.lower() in skip_labels:
+            continue
+        if role.lower() == "role":
+            continue
+        roles[repo] = {"label": label, "role": role}
     return roles
 
 
@@ -67,17 +81,17 @@ def build_ecosystem_overview(max_chars: int = 2000) -> str:
         return ""
     lines = [
         "## Ecosystem Overview",
-        "This codebase is a multi-service homelab stack. Repos and their roles:",
+        "This codebase is the Argus suite (argus-*) plus shared deps agent-composer and voluptas.",
         "",
     ]
     for repo, info in roles.items():
         lines.append(f"- **{repo}** ({info['label']}): {info['role']}")
     lines += [
         "",
-        "Architecture: clients → kimini-api (core) → TaskIQ workers → GPU services (imogen/vidita/tss-stack).",
-        "Shared data layer: PostgreSQL, Redis, MinIO, Qdrant.",
-        "Orchestration: gothmog (LangGraph). Observability: sauron (Prometheus/Grafana/Loki).",
-        "Auth boundary: all external traffic through kimini-api. GPU services are LAN-only.",
+        "Pipeline: quarry → curator/lens/studio → forge/proof; darkroom → voluptas (ComfyUI).",
+        "Shared AI/RAG: argus-* → agent-composer (rag-chat, rag-ingest, Qdrant).",
+        "Night auditor publishes mithrandir status from Dragon; scan branch is dev.",
+        "argus-cortex owns taxonomy/wire schemas; do not reimplement in demo UIs.",
     ]
     result = "\n".join(lines)
     return result[:max_chars]
@@ -154,27 +168,28 @@ def build_file_briefing(
 # ---------------------------------------------------------------------------
 
 _SECURITY_NOTES: dict[str, list[str]] = {
-    "kimini-api": [
-        "Auth boundary: all external requests enter here. JWT validation, rate limiting, and role checks are critical.",
-        "Generation proxies must not leak backend service URLs or credentials to clients.",
+    "argus-cortex": [
+        "Shared taxonomy and wire schemas — breaking changes affect the whole suite.",
+        "Validate versioned schema migrations carefully.",
     ],
-    "imogen": [
-        "LAN-only GPU service. Should never accept unauthenticated external requests.",
-        "The /unload endpoint frees GPU VRAM — misuse could cause service disruption.",
-        "File paths passed to model inference must be validated to prevent path traversal.",
+    "argus-darkroom": [
+        "Guarded generation path — policy/verdict checks must not be bypassable.",
+        "Do not embed ComfyUI runtime here; call voluptas.",
     ],
-    "vidita": [
-        "LAN-only GPU service. Redis queue keys (vidq:*) must not be accessible externally.",
-        "MinIO presigned URLs must have short TTLs; check for URL exposure in logs or responses.",
+    "argus-mint": [
+        "Provenance / on-chain paths — treat keys, IPFS pins, and Merkle roots as sensitive.",
     ],
-    "gothmog": [
-        "Orchestrator with LLM tool calls. Prompt injection via user-controlled inputs could redirect tool calls.",
-        "Executes multi-step workflows — check for TOCTOU races in state transitions.",
+    "argus-quarry": [
+        "Acquisition of third-party images — license/provenance metadata must stay attached.",
     ],
     "agent-composer": [
         "RAG chat + ingest service. User queries reach the LLM — sanitise inputs that feed into retrieval or generation.",
         "Signed ingest endpoint — HMAC validation must be applied before any Qdrant writes; replay window (nonce DB) must be checked on every request.",
         "Cloudflare Zero Trust is the auth layer; do not add routes that bypass it.",
+    ],
+    "voluptas": [
+        "ComfyUI GPU node — LAN-facing workflow API; do not expose unauthenticated to the public internet.",
+        "Workflow and path inputs must be validated to prevent traversal / arbitrary execution.",
     ],
 }
 
