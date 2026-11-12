@@ -12,12 +12,12 @@ cp -f "$ROOT/contrib/systemd/user/ai-audit-docker-ecosystem.timer" "$UNIT_DIR/"
 cp -f "$ROOT/contrib/systemd/user/ai-audit-merge-poll.service" "$UNIT_DIR/"
 cp -f "$ROOT/contrib/systemd/user/ai-audit-merge-poll.timer" "$UNIT_DIR/"
 
-# Units ship with WorkingDirectory=%h/ai-code-auditor. Rewrite if this clone
-# lives elsewhere under $HOME.
+# Units ship with %h/ai-code-auditor in WorkingDirectory, EnvironmentFile and
+# ExecStart. Rewrite every occurrence if this clone lives elsewhere under $HOME.
 if [[ "$ROOT" == "$HOME"/* ]]; then
   rel="%h/${ROOT#"$HOME"/}"
   for f in ai-audit-rest.service ai-audit-docker-ecosystem.service ai-audit-merge-poll.service; do
-    sed -i "s|^WorkingDirectory=.*|WorkingDirectory=$rel|" "$UNIT_DIR/$f"
+    sed -i "s|%h/ai-code-auditor|$rel|g" "$UNIT_DIR/$f"
   done
 fi
 

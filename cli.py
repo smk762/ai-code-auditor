@@ -511,6 +511,32 @@ def _run_diff_audit(
                 print(f"    {f.description[:120]}")
 
 
+def _post_merge_refresh(api_base: str, payload: dict) -> dict:
+    """POST a merge-refresh request to the audit API ``/audit/merge`` endpoint.
+
+    Raises ``urllib.error.HTTPError`` / ``URLError`` on failure.
+    """
+    import urllib.request
+
+    base = (
+        api_base
+        or os.getenv("AI_AUDIT_PUBLIC_BASE_URL")
+        or "http://127.0.0.1:8765"
+    ).rstrip("/")
+    headers = {"Content-Type": "application/json"}
+    tok = os.getenv("AI_AUDIT_API_TOKEN", "").strip()
+    if tok:
+        headers["X-API-Token"] = tok
+    req = urllib.request.Request(
+        f"{base}/audit/merge",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
@@ -690,39 +716,23 @@ def main() -> None:
             raise SystemExit("Use only one of --schedule or --now")
         if args.schedule:
             import urllib.error
-            import urllib.request
 
-            base = (
-                args.api_base
-                or os.getenv("AI_AUDIT_PUBLIC_BASE_URL")
-                or "http://127.0.0.1:8765"
-            ).rstrip("/")
-            payload = json.dumps({
-                "repo": args.repo,
-                "before": args.before,
-                "after": args.after,
-                "force": False,
-                "sync_mirror": not args.no_sync,
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                f"{base}/audit/merge",
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    **(
-                        {"X-API-Token": tok}
-                        if (tok := os.getenv("AI_AUDIT_API_TOKEN", "").strip())
-                        else {}
-                    ),
-                },
-                method="POST",
-            )
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    body = resp.read().decode("utf-8")
+                body = _post_merge_refresh(
+                    args.api_base,
+                    {
+                        "repo": args.repo,
+                        "before": args.before,
+                        "after": args.after,
+                        "force": False,
+                        "sync_mirror": not args.no_sync,
+                    },
+                )
             except urllib.error.HTTPError as exc:
                 raise SystemExit(f"schedule failed: {exc.code} {exc.read().decode('utf-8', 'replace')}") from exc
-            print(body if args.json else json.dumps(json.loads(body), indent=2))
+            except urllib.error.URLError as exc:
+                raise SystemExit(f"schedule failed: audit API unreachable ({exc.reason})") from exc
+            print(json.dumps(body) if args.json else json.dumps(body, indent=2))
         elif args.now:
             result = run_merge_refresh(
                 MergeEvent(
@@ -737,66 +747,53 @@ def main() -> None:
             )
             print(json.dumps(result, indent=2))
         else:
-            # Default: enqueue into in-process scheduler (useful when invoked under audit-api host)
-            queued = get_scheduler().enqueue(
+            # Default: enqueue into this process's debounced scheduler and wait for
+            # it to drain — its timer/worker are daemon threads that die on exit.
+            sched = get_scheduler()
+            queued = sched.enqueue(
                 MergeEvent(
                     repo=args.repo,
                     before=args.before,
                     after=args.after,
                     source="cli",
                     force=False,
+                    sync_mirror=not args.no_sync,
                 )
             )
             print(json.dumps(queued, indent=2))
+            if queued.get("accepted"):
+                sched.wait_idle()
+                print(json.dumps(sched.status().get("recent") or [], indent=2))
     elif args.command == "merge-poll":
+        from auditor.merge_hook import get_scheduler
         from auditor.merge_poll import poll_dev_tips
 
         if args.schedule and args.local:
             raise SystemExit("Use only one of --schedule or --local")
         # --schedule: detect changes here, POST each into audit-api worker.
-        # --local / default: enqueue into this process (fine for debug; systemd uses --schedule).
-        use_api = bool(args.schedule)
+        # --local / default: enqueue into this process and wait for it to drain.
+        dispatch = None
+        if args.schedule:
+            def dispatch(event):  # noqa: E306 - closure over args.api_base
+                return _post_merge_refresh(
+                    args.api_base,
+                    {
+                        "repo": event.repo,
+                        "before": event.before,
+                        "after": event.after,
+                        "force": True,
+                        "sync_mirror": True,
+                    },
+                )
+
         result = poll_dev_tips(
-            enqueue=not use_api and not args.baseline_only,
+            enqueue=not args.baseline_only,
             baseline_only=bool(args.baseline_only),
             force_queue=True,
+            dispatch=dispatch,
         )
-        if use_api and not args.baseline_only and result.changes:
-            import urllib.error
-            import urllib.request
-
-            base = (
-                args.api_base
-                or os.getenv("AI_AUDIT_PUBLIC_BASE_URL")
-                or "http://127.0.0.1:8765"
-            ).rstrip("/")
-            api_tok = os.getenv("AI_AUDIT_API_TOKEN", "").strip()
-            for ch in result.changes:
-                payload = json.dumps({
-                    "repo": ch["repo"],
-                    "before": ch["before"],
-                    "after": ch["after"],
-                    "force": True,
-                    "sync_mirror": True,
-                }).encode("utf-8")
-                req = urllib.request.Request(
-                    f"{base}/audit/merge",
-                    data=payload,
-                    headers={
-                        "Content-Type": "application/json",
-                        **({"X-API-Token": api_tok} if api_tok else {}),
-                    },
-                    method="POST",
-                )
-                try:
-                    with urllib.request.urlopen(req, timeout=30) as resp:
-                        body = json.loads(resp.read().decode("utf-8"))
-                    result.queued.append(body)
-                except urllib.error.HTTPError as exc:
-                    result.errors.append({
-                        "repo": ch["repo"],
-                        "error": f"schedule {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}",
-                    })
+        if not args.schedule and result.queued:
+            get_scheduler().wait_idle()
         print(json.dumps(result.to_dict(), indent=2))
     elif args.command == "diff-audit":
         _run_diff_audit(

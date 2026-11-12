@@ -17,21 +17,16 @@ import urllib.request
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
+
+from auditor.config import _bool_env
 
 logger = logging.getLogger(__name__)
 
 _GITHUB_OWNER_REPO = re.compile(
-    r"(?:github\.com[:/]|git@github\.com:)(?P<owner>[^/]+)/(?P<repo>[^/.]+?)(?:\.git)?/?$"
+    r"(?:github\.com[:/]|git@github\.com:)(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
 )
-
-
-def _bool_env(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def merge_poll_enabled() -> bool:
@@ -206,11 +201,17 @@ def poll_dev_tips(
     baseline_only: bool = False,
     force_queue: bool = True,
     token: str | None = None,
+    dispatch: Callable[[Any], dict[str, Any]] | None = None,
 ) -> PollResult:
     """Poll each mirror's remote branch tip; enqueue merge refresh on SHA change.
 
     First sighting of a repo only baselines the SHA (no refresh) unless
     ``baseline_only`` is already implied — avoids a stampede on first install.
+
+    *dispatch* receives each :class:`MergeEvent` (default: the in-process
+    scheduler's ``enqueue``). When dispatch raises or does not accept the
+    event, the previous SHA is kept in state so the change is retried on the
+    next poll instead of being silently dropped.
     """
     from auditor.merge_hook import MergeEvent, get_scheduler, merge_branch, merge_hook_enabled
 
@@ -242,12 +243,7 @@ def poll_dev_tips(
 
         prev = repos_state.get(name) or {}
         prev_sha = str(prev.get("sha") or "").strip()
-        repos_state[name] = {
-            "slug": slug,
-            "sha": tip,
-            "branch": br,
-            "checked_at": result.polled_at,
-        }
+        recorded_sha = tip
 
         if not prev_sha:
             result.baselined.append(name)
@@ -257,23 +253,38 @@ def poll_dev_tips(
             result.changed.append(name)
             result.changes.append({"repo": name, "before": prev_sha, "after": tip})
             if not baseline_only and enqueue:
-                if not merge_hook_enabled():
+                if dispatch is None and not merge_hook_enabled():
                     result.errors.append(
                         {"repo": name, "error": "merge hook disabled; not queued"}
                     )
+                    recorded_sha = prev_sha
                 else:
-                    queued = get_scheduler().enqueue(
-                        MergeEvent(
-                            repo=name,
-                            before=prev_sha,
-                            after=tip,
-                            ref=f"refs/heads/{br}",
-                            source="poll",
-                            force=force_queue,
-                        )
+                    send = dispatch or get_scheduler().enqueue
+                    event = MergeEvent(
+                        repo=name,
+                        before=prev_sha,
+                        after=tip,
+                        ref=f"refs/heads/{br}",
+                        source="poll",
+                        force=force_queue,
                     )
-                    result.queued.append(queued)
+                    try:
+                        queued = send(event)
+                    except Exception as exc:
+                        logger.warning("dispatch failed for %s: %s", name, exc)
+                        result.errors.append({"repo": name, "error": str(exc)[:400]})
+                        recorded_sha = prev_sha
+                    else:
+                        result.queued.append(queued)
+                        if not queued.get("accepted"):
+                            recorded_sha = prev_sha
 
+        repos_state[name] = {
+            "slug": slug,
+            "sha": recorded_sha,
+            "branch": br,
+            "checked_at": result.polled_at,
+        }
         time.sleep(0.05)
 
     state["repos"] = repos_state

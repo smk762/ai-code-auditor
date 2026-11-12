@@ -138,13 +138,16 @@ def sync_one_mirror(
     name: str,
     config_path: str | Path = "config/repo_mirrors.yaml",
     *,
-    branch: str = "dev",
+    branch: str | None = None,
 ) -> MirrorSyncResult:
-    """Clone/fetch a single named mirror and check out *branch* (default ``dev``)."""
+    """Clone/fetch a single named mirror and check out *branch*.
+
+    An explicit *branch* wins; otherwise the config ``default_branch`` (or ``dev``).
+    """
     cfg = load_mirrors_config(config_path)
     root = Path(cfg.get("mirror_root") or "/home/smk/mirrors")
     root.mkdir(parents=True, exist_ok=True)
-    preferred = str(cfg.get("default_branch") or branch)
+    preferred = str(branch or cfg.get("default_branch") or "dev")
     needle = name.strip().lower()
     for item in cfg.get("mirrors") or []:
         item_name = str(item.get("name") or "")

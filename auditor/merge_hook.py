@@ -27,16 +27,11 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from auditor.config import _bool_env
+
 logger = logging.getLogger(__name__)
 
 _ZERO_SHA = "0" * 40
-
-
-def _bool_env(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _int_env(name: str, default: int) -> int:
@@ -348,6 +343,10 @@ class MergeHookScheduler:
             old = self._timers.pop(repo, None)
             if old is not None:
                 old.cancel()
+            if delay > 0 and repo in self._ready:
+                # A new push restarts the quiet window even if the repo was
+                # already armed and waiting behind the global gap.
+                self._ready.remove(repo)
             if delay <= 0:
                 self._arm_ready(repo)
             else:
@@ -365,6 +364,23 @@ class MergeHookScheduler:
             "after": merged.after,
             "scheduled_for": datetime.fromtimestamp(run_at, tz=timezone.utc).isoformat(),
         }
+
+    def wait_idle(self, timeout: float | None = None, poll_s: float = 0.5) -> bool:
+        """Block until no jobs are pending, ready, or running.
+
+        Short-lived CLI processes must call this: timers and the worker are
+        daemon threads and die with the interpreter.
+        """
+        deadline = None if timeout is None else time.time() + timeout
+        while True:
+            with self._lock:
+                worker = self._worker_thread
+                busy = bool(self._pending or self._ready or (worker and worker.is_alive()))
+            if not busy:
+                return True
+            if deadline is not None and time.time() >= deadline:
+                return False
+            time.sleep(poll_s)
 
     def _on_debounce_fire(self, repo: str) -> None:
         with self._lock:
