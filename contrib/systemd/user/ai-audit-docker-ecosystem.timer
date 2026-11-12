@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily AI Code Auditor ecosystem run (Docker)
+
+[Timer]
+# 02:00 local time daily; adjust as needed (`man systemd.time`).
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

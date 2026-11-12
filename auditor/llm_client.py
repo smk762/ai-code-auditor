@@ -8,19 +8,38 @@ import requests
 from auditor.config import ModelProviderConfig, get_secret_from_env, load_model_provider_config
 from auditor.contracts import CodeUnit, Finding
 from auditor.retry import with_retries
+from auditor.ecosystem_briefing import build_ecosystem_overview, build_file_briefing
 
 
 class LLMClient:
-    def __init__(self, provider_config: ModelProviderConfig | None = None):
+    def __init__(
+        self,
+        provider_config: ModelProviderConfig | None = None,
+        num_gpu_layers: int = -1,
+        repo_briefing: str = "",
+    ):
         self.provider_config = provider_config or load_model_provider_config()
         self.model = self.provider_config.model
         self.endpoint = self.provider_config.endpoint
         self.timeout_s = self.provider_config.timeout_s
         self.provider = self.provider_config.provider
         self.api_key = get_secret_from_env(self.provider_config.api_key_env)
+        # -1 = let Ollama decide (all layers on GPU); ≥0 = explicit layer count for CPU offload
+        self.num_gpu_layers = num_gpu_layers
+        # Pre-built ecosystem context injected into every audit prompt
+        self._ecosystem_overview = build_ecosystem_overview()
+        self._repo_briefing = repo_briefing
 
     def generate(self, prompt: str) -> str:
-        payload = {"model": self.model, "prompt": prompt, "stream": False, "temperature": self.provider_config.temperature}
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "temperature": self.provider_config.temperature,
+        }
+        # Ollama-specific: pass num_gpu only when we want explicit CPU offload control.
+        if self.provider.startswith("ollama") and self.num_gpu_layers >= 0:
+            payload["options"] = {"num_gpu": self.num_gpu_layers}
         headers: dict[str, str] = {}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -45,25 +64,48 @@ class LLMClient:
         return str(body.get("response", body.get("text", "")))
 
     def health_check(self) -> tuple[bool, str]:
-        payload = {"model": self.model, "prompt": "health-check", "stream": False}
+        # Use the short healthcheck timeout — we just want to know if the server responds,
+        # not wait for a full model load/generate cycle.
+        timeout = self.provider_config.healthcheck_timeout_s
+        # For Ollama, hit the lightweight /api/tags endpoint instead of /api/generate
+        # so we don't accidentally trigger a model download.
+        if self.provider.startswith("ollama"):
+            tags_url = self.endpoint.rsplit("/api/", 1)[0] + "/api/tags"
+            try:
+                resp = requests.get(tags_url, timeout=timeout)
+                resp.raise_for_status()
+                return True, "ok"
+            except requests.RequestException as exc:
+                return False, str(exc)
+        payload = {"model": self.model, "prompt": "ping", "stream": False}
         headers: dict[str, str] = {}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         try:
-            resp = requests.post(self.endpoint, json=payload, headers=headers, timeout=self.timeout_s)
+            resp = requests.post(self.endpoint, json=payload, headers=headers, timeout=timeout)
             resp.raise_for_status()
             return True, "ok"
         except requests.RequestException as exc:
             return False, str(exc)
 
-    def analyze_code(self, unit: CodeUnit) -> list[Finding]:
+    def analyze_code(self, unit: CodeUnit, repo_path: str = "") -> list[Finding]:
+        file_ctx = build_file_briefing(
+            repo_name=unit.repo,
+            file_path=__import__("pathlib").Path(unit.file_path),
+            repo_path=__import__("pathlib").Path(repo_path or unit.file_path).parent,
+        )
         prompt = (
-            "Review the following code for bugs, security issues, and maintainability problems. "
-            "Return a JSON list where each element has: type, severity, title, description, line, recommendation.\n\n"
+            f"{self._ecosystem_overview}\n\n"
+            f"{self._repo_briefing}\n\n"
+            f"---\n{file_ctx}\n"
             f"File: {unit.file_path}\n"
-            f"Symbol: {unit.symbol}\n"
-            "Code:\n"
-            f"{unit.raw_text}\n"
+            f"Symbol: {unit.symbol}\n\n"
+            "Review the code below for security vulnerabilities (auth bypass, injection, path traversal, "
+            "hardcoded secrets, IDOR), bugs, cross-service contract violations, and maintainability issues.\n"
+            "Return a JSON array. Each element: type, severity (CRITICAL/HIGH/MEDIUM/LOW/INFO), "
+            "title, description, line, recommendation.\n"
+            "Return [] if no issues. Return only the JSON array.\n\n"
+            f"```\n{unit.raw_text}\n```"
         )
         response = self.generate(prompt)
         if response:

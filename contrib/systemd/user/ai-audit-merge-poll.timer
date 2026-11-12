@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly GitHub API poll for merges to dev (pack/RAG refresh)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=3m
+
+[Install]
+WantedBy=timers.target

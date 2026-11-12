@@ -34,7 +34,7 @@ class Settings:
     db_max_overflow: int = _int("DB_MAX_OVERFLOW", 20)
     db_pool_timeout: int = _int("DB_POOL_TIMEOUT", 30)
 
-    redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6380/0")
 
     s3_endpoint_url: str = os.getenv("S3_ENDPOINT_URL", "")
     s3_access_key_id: str = os.getenv("S3_ACCESS_KEY_ID", "")

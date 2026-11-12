@@ -1,0 +1,15 @@
+[Unit]
+Description=AI Code Auditor — hourly GitHub dev-tip poll → merge refresh
+Documentation=file:///home/smk/ai-code-auditor/contrib/github/merge-refresh-webhook.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/ai-code-auditor
+EnvironmentFile=-%h/ai-code-auditor/.env
+# --schedule posts into the running audit-api debounce/serial worker.
+ExecStart=%h/ai-code-auditor/.venv/bin/ai-audit merge-poll --schedule
+
+[Install]
+WantedBy=default.target

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import logging
 import os
+import sys
 import time
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -63,6 +66,24 @@ def run() -> None:
             write_nightly_repo_report(deduped, output_dir=cfg.output_dir)
             write_security_report(deduped, output_dir=cfg.output_dir)
             store_findings(meta.run_id, deduped)
+            try:
+                from auditor.agent_pack import emit_packs_from_findings, pack_rag_ingest_enabled
+                from auditor.repo_resolver import resolve_repo_path
+                from conductor.publish import public_base_url
+
+                repo_paths = {r.name: resolve_repo_path(r) for r in cfg.repos}
+                packs = emit_packs_from_findings(
+                    deduped,
+                    output_dir=cfg.output_dir,
+                    kind="nightly",
+                    run_id=meta.run_id,
+                    public_base_url=public_base_url(),
+                    ingest_rag=pack_rag_ingest_enabled(),
+                    repo_paths=repo_paths,
+                )
+                logger.info("emitted %d agent coding packs from nightly findings", len(packs))
+            except Exception:
+                logger.exception("agent pack emission from nightly findings failed")
             archive_reports(cfg.output_dir, meta.run_id)
             meta.mark_stage("report_generation", int((time.monotonic() - t1) * 1000))
             meta.finish("partial_success" if meta.errors else "success")

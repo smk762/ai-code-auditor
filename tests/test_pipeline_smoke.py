@@ -4,6 +4,13 @@ from pipelines.ecosystem_audit import run as ecosystem_run
 from pipelines.nightly_repo_audit import run as repo_run
 
 
+def _stub_llm_client(monkeypatch) -> None:
+    """Prevent any real network calls to Ollama during smoke tests."""
+    import auditor.llm_client as llm_mod
+    monkeypatch.setattr(llm_mod.LLMClient, "health_check", lambda self: (True, "ok"))
+    monkeypatch.setattr(llm_mod.LLMClient, "generate", lambda self, prompt: "[]")
+
+
 def test_pipeline_smoke_generates_reports(tmp_path, monkeypatch) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -26,6 +33,8 @@ architecture_memory_path: {tmp_path / "memory" / "architecture_memory.md"}
     (config_dir / "architecture_rules.yaml").write_text("rules: []\n", encoding="utf-8")
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AI_AUDIT_SKIP_GPU_SCHEDULER", "1")
+    _stub_llm_client(monkeypatch)
     repo_run()
     ecosystem_run()
 

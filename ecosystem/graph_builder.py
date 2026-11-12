@@ -107,6 +107,21 @@ class GraphBuilder:
         ).fetchall()
         return [row[0] for row in rows]
 
+    def query_callers(self, repo_name: str) -> list[str]:
+        """Return names of repos that declare a DEPENDS_ON edge targeting *repo_name*."""
+        cur = self.conn.cursor()
+        tgt_id = f"repo::{repo_name}"
+        rows = cur.execute(
+            """
+            SELECT n.name
+            FROM edges e
+            JOIN nodes n ON n.id = e.source_id
+            WHERE e.target_id = ? AND e.edge_type = 'DEPENDS_ON'
+            """,
+            (tgt_id,),
+        ).fetchall()
+        return [row[0] for row in rows]
+
     def all_edges(self) -> list[tuple[str, str, str]]:
         cur = self.conn.cursor()
         return cur.execute("SELECT source_id, target_id, edge_type FROM edges").fetchall()

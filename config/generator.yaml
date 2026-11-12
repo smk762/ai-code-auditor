@@ -1,12 +1,46 @@
-provider: ollama
+# Multi-provider LLM config for Night Conductor (LiteLLM-compatible model ids).
+# Override with AI_AUDIT_* env vars. Local Ollama remains available as optional fallback.
 
+provider: anthropic
+
+conductor:
+  model: anthropic/claude-opus-4-5
+workers:
+  model: anthropic/claude-opus-4-5
+pr_review:
+  model: anthropic/claude-opus-4-5
+  intensity_default: high
+  intensity_by_mission:
+    security: max
+    bughunt: high
+    refactor: standard
+    invariants: high
+
+fallbacks:
+  - openai/gpt-4o
+  - xai/grok-2-latest
+  - ollama/qwen2.5-coder:32b
+
+keys_env:
+  anthropic: ANTHROPIC_API_KEY
+  openai: OPENAI_API_KEY
+  xai: XAI_API_KEY
+
+# Legacy single-provider map (used by older llm_client path).
 providers:
-  ollama:
-    model: deepseek-coder-33b
-    endpoint: http://localhost:11434/api/generate
+  anthropic:
+    model: claude-opus-4-5
+    endpoint: https://api.anthropic.com/v1/messages
+    timeout_s: 180
+    temperature: 0.1
+    api_key_env: ANTHROPIC_API_KEY
+
+  openai:
+    model: gpt-4o
+    endpoint: https://api.openai.com/v1/chat/completions
     timeout_s: 90
     temperature: 0.1
-    api_key_env: ""
+    api_key_env: OPENAI_API_KEY
 
   openai-compatible:
     model: gpt-4o-mini
@@ -14,3 +48,17 @@ providers:
     timeout_s: 90
     temperature: 0.1
     api_key_env: OPENAI_API_KEY
+
+  xai:
+    model: grok-2-latest
+    endpoint: https://api.x.ai/v1/chat/completions
+    timeout_s: 90
+    temperature: 0.1
+    api_key_env: XAI_API_KEY
+
+  ollama:
+    model: qwen2.5-coder:32b
+    endpoint: http://localhost:11434/api/generate
+    timeout_s: 300
+    temperature: 0.1
+    api_key_env: ""

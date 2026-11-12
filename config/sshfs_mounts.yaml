@@ -1,0 +1,3 @@
+# Deprecated: night conductor uses local git mirrors (config/repo_mirrors.yaml)
+# synced at rest-session start. Kept empty so legacy mount scripts no-op.
+pairs: []

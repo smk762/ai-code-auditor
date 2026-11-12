@@ -212,7 +212,7 @@ def _normalized_ast_repr(unit: CodeUnit) -> str:
     if unit.language != "python":
         return ""
     try:
-        tree = ast.parse(unit.raw_text)
+        tree = ast.parse(unit.raw_text, filename=unit.file_path)
     except SyntaxError:
         return ""
 
@@ -265,7 +265,7 @@ def _signature_compatibility(left: CodeUnit, right: CodeUnit) -> float:
 def _extract_signature(text: str, language: str) -> dict:
     if language == "python":
         try:
-            tree = ast.parse(text)
+            tree = ast.parse(text, filename="<extract-signature>")
             node = tree.body[0] if tree.body else None
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 arg_count = len(node.args.args) + len(node.args.kwonlyargs)
@@ -345,16 +345,42 @@ def _relative_to_repo(file_path: str, repo_root: str) -> str:
 
 def _infer_domain(symbol: str) -> str:
     keywords = {
+        # authentication / access control
+        "verify_key": "authentication",
+        "check_key": "authentication",
         "auth": "authentication",
         "token": "authentication",
+        # rate limiting
+        "rate_limit": "rate_limiting",
+        "ratelimit": "rate_limiting",
+        "throttle": "rate_limiting",
+        # orchestration / job lifecycle
+        "runstatus": "orchestration",
+        "run_status": "orchestration",
+        "orchestrat": "orchestration",
+        "job_status": "orchestration",
+        "observe_job": "orchestration",
+        "taskstatus": "orchestration",
+        # model / adapter management
+        "adapter": "model_management",
+        "lora": "model_management",
+        "civitai": "model_management",
+        "checkpoint": "model_management",
+        "sidecar": "model_management",
+        "hf_kind": "model_management",
+        "hf_checkpoint": "model_management",
+        # observability
         "retry": "resilience",
         "log": "observability",
         "metric": "observability",
+        "observe": "observability",
+        # infrastructure
         "cache": "caching",
         "http": "networking",
     }
+    s = symbol.lower()
     for key, domain in keywords.items():
-        if key in symbol:
+        if key in s:
             return domain
     return "shared-logic"
 

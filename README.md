@@ -38,10 +38,47 @@ cd ai-code-auditor
    - `pip install -e .[dev]`
 3. Run DB migrations:
    - `alembic upgrade head`
-4. Configure repositories in `config/ecosystem.yaml`.
+4. Configure repositories in `config/ecosystem.yaml` (see [Ecosystem configuration](#ecosystem-configuration) below).
    - Optional provider configs:
      - `config/generator.yaml`
      - `config/embedder.yaml`
+
+## Ecosystem configuration
+
+Repositories are listed under `repos` in `config/ecosystem.yaml`. Each entry needs a `name` and a `path`. Optional `subpath` limits scanning to a folder inside that repository (empty means the whole tree).
+
+**Local directory** — scan a clone on disk (relative or absolute). The current Git checkout is what gets scanned; `branch` in YAML is not applied.
+
+```yaml
+repos:
+  - name: my-service
+    path: ../my-service
+    provider: local
+    subpath: ""
+```
+
+**Mounted path** (homelab share, bind-mount, NFS, etc.) — same as local; use the mountpoint path.
+
+```yaml
+repos:
+  - name: my-service
+    path: /mnt/ai-audit/my-service
+    provider: local
+    subpath: ""
+```
+
+**Remote (HTTPS)** — the tool clones or updates under `local_cache_path` (default `.cache/repos`). Use `branch` for the branch to check out. For private repositories, set `access_token_env` to an environment variable that holds a token (see `.env.example`).
+
+```yaml
+repos:
+  - name: my-service
+    path: https://github.com/org/my-service.git
+    branch: main
+    provider: remote
+    access_token_env: GITHUB_TOKEN
+    local_cache_path: .cache/repos
+    subpath: ""
+```
 
 ## CLI Commands + Representative Responses
 
@@ -202,12 +239,43 @@ Deliverables expected:
 - PR checklist and verification plan
 ```
 
+## Repo mirrors
+
+Scan set: all `smk762/argus-*` plus `agent-composer` and `voluptas` on branch **`dev`**. See [`ecosystem/ecosystem.md`](ecosystem/ecosystem.md) and [`config/repo_mirrors.yaml`](config/repo_mirrors.yaml).
+
+`ai-audit rest-run` syncs mirrors automatically before scanning. Manual: `bash scripts/sync_repo_mirrors.sh`. SSHFS is deprecated.
+
 ## Docker
+
+**Yes — the `auditor` service is a batch job**. In production you usually:
+
+- Keep **`audit-api`** running (daemon) on Dragon `:8765` for mithrandir polls.
+- Run **`ai-audit rest-run`** on the rest-window timer ([`contrib/systemd/user/ai-audit-rest.timer`](contrib/systemd/user/ai-audit-rest.timer)).
+
+### Typical commands
 
 ```bash
 cp .env.example .env
-docker compose up --build
+
+# API only (good default for “always on”)
+docker compose up -d --build audit-api
+
+# Night conductor rest session (mirrors → scanners → workers → LATEST + webhook)
+ai-audit rest-run --force
+
+# Legacy one-off ecosystem governance pass
+docker compose run --rm --no-deps auditor
 ```
+
+`audit-api` listens on port **8765**. Mithrandir: `GET /reports/mithrandir/LATEST.json`.
+
+### Ecosystem repo paths in Docker
+
+`config/ecosystem.yaml` uses **absolute host paths** under `/home/smk` and `/home/smk/mirrors`. Bind-mount those prefixes in compose so the container sees the same trees.
+
+**Redis / DB from the container:** `REDIS_URL` / `DATABASE_URL` must point at an address the **container** can open (Jarrah stateful node `192.168.1.109`, not `127.0.0.1` unless host networking).
+
+[Compose profiles](https://docs.docker.com/compose/how-tos/profiles/) are reserved for optional stacks (e.g. a future **`tests`** service); core services are not hidden behind profiles by default.
 
 ## Generated Artifacts
 

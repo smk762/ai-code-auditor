@@ -1,0 +1,11 @@
+intensity_default: high
+intensity_by_mission:
+  security: max
+  bughunt: high
+  refactor: standard
+  invariants: high
+# Max fix rounds after reviewer findings (capped further by intensity).
+max_fix_rounds:
+  standard: 0
+  high: 1
+  max: 2

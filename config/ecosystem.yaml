@@ -1,11 +1,163 @@
+# Night conductor scan set: all https://github.com/smk762/argus-* repos
+# plus shared deps the suite consumes (agent-composer, voluptas).
+# mithrandir is omitted (HTTP status handoff only).
+# Prefer local checkouts under /home/smk/<name>; otherwise /home/smk/mirrors/<name>
+# (see config/repo_mirrors.yaml + scripts/sync_repo_mirrors.sh). Scan branch: dev.
 repos:
-  - name: ai-code-auditor
-    path: .
-    branch: main
+  - name: argus-assay
+    path: /home/smk/mirrors/argus-assay
+    branch: dev
     enabled: true
     provider: local
-    access_token_env: ""
-    local_cache_path: .cache/repos
+    subpath: ""
+
+  - name: argus-atlas
+    path: /home/smk/mirrors/argus-atlas
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-ci
+    path: /home/smk/mirrors/argus-ci
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-cortex
+    path: /home/smk/mirrors/argus-cortex
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-cull
+    path: /home/smk/argus-cull
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-curator
+    path: /home/smk/mirrors/argus-curator
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-darkroom
+    path: /home/smk/mirrors/argus-darkroom
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-forge
+    path: /home/smk/mirrors/argus-forge
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-halo
+    path: /home/smk/mirrors/argus-halo
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-lens
+    path: /home/smk/argus-lens
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-lightbox
+    path: /home/smk/mirrors/argus-lightbox
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-mask
+    path: /home/smk/mirrors/argus-mask
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-mint
+    path: /home/smk/mirrors/argus-mint
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-pkg-template
+    path: /home/smk/mirrors/argus-pkg-template
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-proof
+    path: /home/smk/mirrors/argus-proof
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-quarry
+    path: /home/smk/mirrors/argus-quarry
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-safelight
+    path: /home/smk/mirrors/argus-safelight
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-sightline
+    path: /home/smk/mirrors/argus-sightline
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-studio
+    path: /home/smk/mirrors/argus-studio
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-survey
+    path: /home/smk/mirrors/argus-survey
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  # Shared deps Argus consumes
+  - name: agent-composer
+    path: /home/smk/agent-composer
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: voluptas
+    path: /home/smk/mirrors/voluptas
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
 
 output_dir: reports
 graph_db_path: graph/ecosystem_graph.db
@@ -15,3 +167,11 @@ auth_mode: false
 auth_code_env: AI_AUDIT_AUTH_CODE
 log_level: INFO
 log_file_path: pipeline.log
+
+# RAG isolation — keep audit knowledge in its own Qdrant collection so it does
+# not pollute the general-purpose chat RAG in agent-composer (project_docs).
+rag_collection: audit_docs
+# Use host.docker.internal so the dockerised audit-api can reach the
+# rag-ingest service running on the host (compose adds the host-gateway entry).
+# Bare-metal/host-network runs can override with AI_AUDIT_RAG_INGEST_URL=http://127.0.0.1:9050/ingest.
+rag_ingest_url: http://host.docker.internal:9050/ingest

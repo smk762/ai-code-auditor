@@ -9,3 +9,129 @@ rules:
     allowed:
       - "gateway->services"
       - "services->libraries"
+
+# Service roles for the Argus suite + shared dependencies.
+service_roles:
+  - name: argus-cortex
+    role: library
+  - name: argus-quarry
+    role: worker
+  - name: argus-curator
+    role: worker
+  - name: argus-cull
+    role: ui
+  - name: argus-lens
+    role: worker
+  - name: argus-lightbox
+    role: ui
+  - name: argus-studio
+    role: ui
+  - name: argus-darkroom
+    role: worker
+  - name: argus-safelight
+    role: ui
+  - name: argus-forge
+    role: worker
+  - name: argus-proof
+    role: worker
+  - name: argus-atlas
+    role: worker
+  - name: argus-survey
+    role: worker
+  - name: argus-sightline
+    role: ui
+  - name: argus-mint
+    role: worker
+  - name: argus-assay
+    role: ui
+  - name: argus-mask
+    role: worker
+  - name: argus-halo
+    role: tooling
+  - name: argus-ci
+    role: tooling
+  - name: argus-pkg-template
+    role: tooling
+  - name: agent-composer
+    role: worker
+  - name: voluptas
+    role: worker
+  - name: ai-code-auditor
+    role: tooling
+
+# Permitted inter-service HTTP edges (expand as Argus wiring hardens).
+call_graph_rules:
+  allowed_calls:
+    - from: argus-darkroom
+      to: voluptas
+      note: "Guarded generation runs on ComfyUI"
+    - from: argus-studio
+      to: voluptas
+      note: "Studio may submit ComfyUI workflows"
+    - from: argus-safelight
+      to: argus-darkroom
+    - from: argus-cull
+      to: argus-curator
+    - from: argus-assay
+      to: argus-mint
+    - from: argus-sightline
+      to: argus-survey
+    - from: argus-lightbox
+      to: argus-lens
+    - from: argus-forge
+      to: argus-curator
+    - from: argus-proof
+      to: argus-forge
+    - from: "*"
+      to: agent-composer
+      note: "Suite consumes chat/RAG via agent-composer"
+    - from: "*"
+      to: argus-cortex
+      note: "Shared taxonomy / wire schemas"
+
+  service_url_env_vars:
+    - env_fragment: AGENT_COMPOSER
+      service: agent-composer
+    - env_fragment: RAG_
+      service: agent-composer
+    - env_fragment: COMFYUI
+      service: voluptas
+    - env_fragment: VOLUPTAS
+      service: voluptas
+    - env_fragment: ARGUS_CORTEX
+      service: argus-cortex
+    - env_fragment: DARKROOM
+      service: argus-darkroom
+    - env_fragment: CURATOR
+      service: argus-curator
+    - env_fragment: LENS
+      service: argus-lens
+
+domain_ownership:
+  - domain: taxonomy_and_wire_schema
+    description: "Shared Argus taxonomy and versioned wire schemas — owned by argus-cortex"
+    owner: argus-cortex
+    severity: HIGH
+    forbidden_in:
+      - argus-cull
+      - argus-safelight
+      - argus-lightbox
+      - argus-sightline
+      - argus-assay
+
+  - domain: comfyui_runtime
+    description: "ComfyUI process and GPU sidecar control — owned by voluptas"
+    owner: voluptas
+    severity: HIGH
+    forbidden_in:
+      - argus-studio
+      - argus-safelight
+      - argus-cull
+
+  - domain: rag_and_chat
+    description: "RAG ingest, Qdrant collections, chat gateway — owned by agent-composer"
+    owner: agent-composer
+    severity: MEDIUM
+    forbidden_in:
+      - argus-halo
+      - argus-ci
