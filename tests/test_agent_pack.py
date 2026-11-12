@@ -145,6 +145,85 @@ def test_emit_from_worker_and_api(tmp_path: Path, monkeypatch):
     assert "Suspicious constant" in brief.text
 
 
+def test_emit_world_model_and_extraction_layers(tmp_path: Path, monkeypatch):
+    from auditor.agent_pack import (
+        emit_packs_from_extraction_candidates,
+        emit_world_model_packs,
+        list_packs,
+        rebuild_index,
+    )
+
+    # Minimal ecosystem config stub via monkeypatch of loaders used inside emit_world_model
+    mem = tmp_path / "architecture_memory.md"
+    mem.write_text("# Decision\nArgus only.\n", encoding="utf-8")
+
+    class _Repo:
+        name = "argus-cortex"
+        enabled = True
+        branch = "dev"
+        path = str(tmp_path / "argus-cortex")
+
+    (tmp_path / "argus-cortex").mkdir()
+    (tmp_path / "argus-cortex" / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+
+    class _Cfg:
+        output_dir = str(tmp_path)
+        architecture_memory_path = str(mem)
+        graph_db_path = str(tmp_path / "g.db")
+        repos = [_Repo()]
+
+    monkeypatch.setattr("auditor.config.load_ecosystem_config", lambda: _Cfg())
+    monkeypatch.setattr(
+        "auditor.repo_resolver.resolve_repo_path",
+        lambda repo: Path(repo.path),
+    )
+    monkeypatch.setattr(
+        "auditor.ecosystem_briefing.build_ecosystem_overview",
+        lambda max_chars=8000: "overview text",
+    )
+    monkeypatch.setattr(
+        "auditor.ecosystem_briefing.build_repo_briefing",
+        lambda *a, **k: "repo briefing",
+    )
+    monkeypatch.setattr("auditor.ecosystem_briefing._get_repo_roles", lambda: {"argus-cortex": {"label": "Taxonomy", "role": "foundation"}})
+
+    # GraphBuilder may touch sqlite — use real path under tmp
+    world = emit_world_model_packs(
+        output_dir=tmp_path,
+        run_id="t",
+        public_base_url="http://example.test:8765",
+        include_repos=True,
+    )
+    assert any(p.work_item_id == "pack-world-ecosystem" for p in world)
+    assert any(p.work_item_id == "pack-world-architecture-memory" for p in world)
+    assert any(p.work_item_id == "pack-world-argus-cortex" for p in world)
+
+    ext = emit_packs_from_extraction_candidates(
+        [
+            {
+                "id": "ext-demo-001",
+                "title": "Extract helper",
+                "extraction_score": 0.8,
+                "repos_involved": ["argus-cortex", "argus-studio"],
+                "source_units": [{"repo": "argus-cortex", "path": "a.py", "symbols": ["helper"]}],
+                "rationale": ["duped"],
+                "migration_plan": {"phase_1": "wrap"},
+                "risks": ["low"],
+                "proposed_library": {"name": "shared-helper", "public_api": ["helper()"]},
+            }
+        ],
+        output_dir=tmp_path,
+        public_base_url="http://example.test:8765",
+    )
+    assert len(ext) == 1
+    assert ext[0].kind == "extraction"
+    idx = rebuild_index(tmp_path, public_base_url="http://example.test:8765")
+    assert "world_model" in idx["layers"]
+    assert "specialist" in idx["layers"]
+    assert list_packs(tmp_path, layer="world_model")
+    assert list_packs(tmp_path, kind="extraction")
+
+
 def test_finding_from_violation_parses_call_evidence():
     from auditor.agent_pack import finding_from_violation
     from auditor.contracts import RuleViolation

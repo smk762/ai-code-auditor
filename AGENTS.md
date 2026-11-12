@@ -1,27 +1,47 @@
 # Agent notes — ai-code-auditor
 
-## Coding packs (prefer over pasted context)
+## Loop: scan → compressed world model → specialist coding packs
 
-Scans emit **agent coding packs**: compressed work items (finding, snippet, constraints, verify commands).
+Do **not** wait for a pasted brief. Fetch packs in this order:
 
-**Find a pack** (do not ask the user to paste):
+1. **World model** (topology / ownership / durable decisions)
+2. **Specialist pack** for the concrete fix or feature
+
+### 1. World model
 
 ```bash
-ai-audit packs --json
-ai-audit packs --repo argus-cortex --q auth
-ai-audit packs --id pack-… --brief
+ai-audit packs --kind world_model --json
+# or
+curl -s 'http://192.168.1.198:8765/audit/packs?kind=world_model'
 ```
 
-HTTP (Dragon):
+Always useful ids:
 
-- `GET http://192.168.1.198:8765/audit/packs?repo=&severity=&kind=&q=`
-- `GET /audit/packs/{id}` — full pack
-- `GET /audit/packs/{id}/brief` — markdown brief
+- `pack-world-ecosystem` — suite map, pipeline, ownership
+- `pack-world-architecture-memory` — durable decisions
+- `pack-world-<repo>` — per-repo briefing (deps, callers, endpoints, security notes)
 
-Also: `reports/agent_packs/INDEX.json`, and slim RAG docs in `audit_docs` (`kind=agent_coding_pack`).
+### 2. Specialist coding packs
 
-After a fix: use pack `suggested_test_commands` or `POST /audit/validate_patch`.
+```bash
+ai-audit packs --layer specialist --repo argus-cortex --json
+ai-audit packs --kind architecture --json
+ai-audit packs --kind extraction --json
+ai-audit packs --id <pack-id> --brief
+```
 
-Emit/refresh without a full night run: `python scripts/emit_agent_packs.py`.
+Kinds: `architecture`, `security`, `bughunt`, `nightly`, `diff_audit`, `extraction`, …
 
-See `ecosystem/ecosystem.md` (Agent coding packs) and `CLAUDE.md`.
+HTTP:
+
+- `GET /audit/packs?layer=world_model`
+- `GET /audit/packs?layer=specialist&repo=…&q=…`
+- `GET /audit/packs/{id}` / `/brief`
+
+On disk: `reports/agent_packs/INDEX.json` (includes `layers` + `kind_counts`).
+
+After a fix: pack `suggested_test_commands` or `POST /audit/validate_patch`.
+
+Refresh full loop: `python scripts/emit_agent_packs.py`
+
+See `.cursor/rules/agent-coding-packs.mdc`, `ecosystem/ecosystem.md`, `CLAUDE.md`.

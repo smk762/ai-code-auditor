@@ -128,11 +128,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
     packs = sub.add_parser(
         "packs",
-        help="List/search agent coding packs (discoverable work items for coding agents)",
+        help="List/search agent packs (world model + specialist coding packs)",
     )
     packs.add_argument("--repo", default="", help="Filter by repo name substring")
     packs.add_argument("--severity", default="", help="Filter by severity (CRITICAL/HIGH/...)")
-    packs.add_argument("--kind", default="", help="Filter by kind (security/bughunt/diff_audit/...)")
+    packs.add_argument(
+        "--kind",
+        default="",
+        help="Filter by kind (world_model/architecture/extraction/security/...)",
+    )
+    packs.add_argument(
+        "--layer",
+        default="",
+        help="Filter by layer: world_model | specialist",
+    )
     packs.add_argument("--q", default="", help="Substring match on id/title/repo/path")
     packs.add_argument("--run-id", default="", help="Filter by conductor/diff run id")
     packs.add_argument("--limit", type=int, default=50)
@@ -479,6 +488,7 @@ def main() -> None:
                 repo=args.repo,
                 severity=args.severity,
                 kind=args.kind,
+                layer=getattr(args, "layer", "") or "",
                 q=args.q,
                 run_id=args.run_id,
                 limit=args.limit,
@@ -487,16 +497,19 @@ def main() -> None:
                 "count": len(entries),
                 "packs": entries,
                 "list_url": f"{public_base_url()}/audit/packs",
+                "world_model_url": f"{public_base_url()}/audit/packs?kind=world_model",
             }
             if args.json:
                 print(json.dumps(payload, indent=2))
             else:
                 for e in entries:
                     print(
+                        f"{e.get('layer', '?'):11} {e.get('kind', '?'):14} "
                         f"{e.get('severity', '?'):8}  {e.get('repo', ''):20}  "
-                        f"{e.get('id', '')}  {e.get('title', '')[:60]}"
+                        f"{e.get('id', '')}  {e.get('title', '')[:50]}"
                     )
                 print(f"\n{len(entries)} packs — GET {payload['list_url']}")
+                print(f"World model — GET {payload['world_model_url']}")
     elif args.command == "ask":
         _run_ask(
             args.query,

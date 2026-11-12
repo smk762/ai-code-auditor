@@ -1230,15 +1230,16 @@ def mithrandir_latest_md() -> str:
 def list_agent_packs(
     repo: str = Query(default=""),
     severity: str = Query(default=""),
-    kind: str = Query(default=""),
+    kind: str = Query(default="", description="world_model | architecture | extraction | …"),
+    layer: str = Query(default="", description="world_model | specialist"),
     q: str = Query(default="", description="Substring match on id/title/repo/path"),
     run_id: str = Query(default=""),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> JSONResponse:
-    """Discover agent coding packs without a pasted brief.
+    """Discover agent packs: world model first, then specialist coding packs.
 
-    Coding agents should call this (or RAG ``audit_docs`` with kind=agent_coding_pack)
-    then ``GET /audit/packs/{id}`` for the full compressed work item.
+    Coding agents should load ``kind=world_model`` (or ``layer=world_model``) for
+    the target repo, then fetch specialist packs — no pasted brief required.
     """
     from auditor.agent_pack import index_path, list_packs, rebuild_index
     from conductor.publish import public_base_url
@@ -1247,14 +1248,31 @@ def list_agent_packs(
     if not index_path(out).exists():
         rebuild_index(out, public_base_url=public_base_url())
     packs = list_packs(
-        out, repo=repo, severity=severity, kind=kind, q=q, run_id=run_id, limit=limit
+        out,
+        repo=repo,
+        severity=severity,
+        kind=kind,
+        layer=layer,
+        q=q,
+        run_id=run_id,
+        limit=limit,
     )
+    idx_meta: dict[str, Any] = {}
+    try:
+        idx_meta = json.loads(index_path(out).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
     return JSONResponse({
         "count": len(packs),
+        "loop": idx_meta.get("loop", "scan → compressed world model → specialist coding packs"),
+        "layers": idx_meta.get("layers", {}),
+        "kind_counts": idx_meta.get("kind_counts", {}),
         "packs": packs,
-        "discovery": {
+        "discovery": idx_meta.get("discovery")
+        or {
             "get": "/audit/packs/{id}",
             "brief": "/audit/packs/{id}/brief",
+            "world_model": "/audit/packs?kind=world_model",
             "index_file": f"{out}/agent_packs/INDEX.json",
         },
     })

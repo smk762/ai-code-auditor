@@ -88,18 +88,24 @@ Branch policy: all `argus-*` repos use **`dev` as default**. Night conductor syn
 
 ## Agent coding packs
 
-Compressed work items for coding agents (no paste required):
+Loop: **scan → compressed world model → specialist coding packs** (no paste required).
+
+| Layer | Kind examples | Purpose |
+|-------|---------------|---------|
+| World model | `world_model` (`pack-world-ecosystem`, `pack-world-<repo>`, architecture memory) | Compressed topology / ownership / decisions |
+| Specialist | `architecture`, `security`, `bughunt`, `extraction`, `diff_audit`, `nightly` | Actionable coding work items |
 
 | Artifact | Location |
 |----------|----------|
 | Pack YAML + markdown brief | `reports/agent_packs/<id>.yaml` / `.md` |
-| Discovery index | `reports/agent_packs/INDEX.json` |
-| List/search | `GET http://192.168.1.198:8765/audit/packs?repo=&severity=&q=` |
-| Full pack | `GET /audit/packs/{id}` |
-| Markdown brief | `GET /audit/packs/{id}/brief` |
-| CLI | `ai-audit packs [--repo …] [--q …] [--id … --brief]` |
+| Discovery index | `reports/agent_packs/INDEX.json` (`layers`, `kind_counts`) |
+| World model | `GET http://192.168.1.198:8765/audit/packs?kind=world_model` |
+| Specialists | `GET /audit/packs?layer=specialist&repo=&q=` |
+| Full pack / brief | `GET /audit/packs/{id}` · `/brief` |
+| CLI | `ai-audit packs --kind world_model` · `--layer specialist` |
+| Refresh | `python scripts/emit_agent_packs.py` |
 
-Night conductor and `POST /audit/diff` emit packs; slim summaries also land in `audit_docs` (`kind=agent_coding_pack`). Agents should search the index/API (or RAG), then fetch the pack by id.
+Ecosystem audit, night conductor, and `POST /audit/diff` emit packs; slim summaries land in `audit_docs`. Agents load world model first, then a specialist pack by id.
 
 ---
 

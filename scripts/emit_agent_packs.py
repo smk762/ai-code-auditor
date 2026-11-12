@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit agent coding packs from the current architecture engine (no full audit).
+"""Build the full agent pack loop: scan → world model → specialist packs.
 
 Usage:
     python scripts/emit_agent_packs.py [--limit 30] [--ingest-rag] [--quick]
@@ -16,7 +16,13 @@ from auditor.env_loader import load_env_file
 
 load_env_file()
 
-from auditor.agent_pack import emit_packs_from_violations, list_packs
+from auditor.agent_pack import (
+    emit_packs_from_extraction_candidates,
+    emit_packs_from_violations,
+    emit_world_model_packs,
+    list_packs,
+    rebuild_index,
+)
 from auditor.config import load_architecture_rules, load_ecosystem_config
 from auditor.repo_resolver import resolve_repo_path
 from auditor.repo_scanner import scan_repo
@@ -29,22 +35,50 @@ from patterns.service_role_violations import detect_competing_providers, detect_
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--limit", type=int, default=40)
+    parser.add_argument("--limit", type=int, default=40, help="Max specialist packs from violations")
     parser.add_argument("--ingest-rag", action="store_true")
     parser.add_argument(
         "--quick",
         action="store_true",
         help="Skip per-repo call-graph / role scans (graph rules only)",
     )
+    parser.add_argument(
+        "--no-world",
+        action="store_true",
+        help="Skip compressed world-model packs",
+    )
     args = parser.parse_args()
 
     cfg = load_ecosystem_config()
+    base = public_base_url()
+    out = Path(cfg.output_dir)
+    packs_root = out / "agent_packs"
+    if packs_root.exists():
+        for stale in packs_root.glob("pack-*"):
+            stale.unlink(missing_ok=True)
+        idx = packs_root / "INDEX.json"
+        if idx.exists():
+            idx.unlink()
+
+    print("=== 1. Compressed world model ===")
+    world: list = []
+    if not args.no_world:
+        world = emit_world_model_packs(
+            output_dir=out,
+            run_id="emit-packs-manual",
+            public_base_url=base,
+            ingest_rag=False,
+            include_repos=True,
+        )
+        print(f"  world_model packs: {len(world)}")
+
+    print("=== 2. Specialist packs (architecture) ===")
     rules = load_architecture_rules()
     graph = GraphBuilder(cfg.graph_db_path)
     try:
         engine = ArchitectureEngine(graph=graph, rules=rules)
         violations = engine.evaluate()
-        print(f"Graph rule violations: {len(violations)}")
+        print(f"  graph rule violations: {len(violations)}")
 
         if not args.quick:
             repo_files: dict[str, list[Path]] = {}
@@ -55,7 +89,6 @@ def main() -> None:
                     files = scan_repo(repo)
                     if files:
                         repo_files[repo.name] = files
-                        print(f"  scanned {repo.name}: {len(files)} files")
                 except Exception as exc:
                     print(f"  skip scan {repo.name}: {exc}")
 
@@ -73,7 +106,7 @@ def main() -> None:
                     service_roles=rules.get("service_roles", []),
                 )
                 violations = violations + call_v + role_v
-                print(f"Call-graph violations: {len(call_v)}; role violations: {len(role_v)}")
+                print(f"  call-graph: {len(call_v)}; role: {len(role_v)}")
 
         repo_paths = {}
         for r in cfg.repos:
@@ -82,32 +115,52 @@ def main() -> None:
             except Exception:
                 continue
 
-        packs_root = Path(cfg.output_dir) / "agent_packs"
-        if packs_root.exists():
-            for stale in packs_root.glob("pack-*"):
-                stale.unlink(missing_ok=True)
-            idx = packs_root / "INDEX.json"
-            if idx.exists():
-                idx.unlink()
-
-        packs = emit_packs_from_violations(
+        arch = emit_packs_from_violations(
             violations,
-            output_dir=cfg.output_dir,
+            output_dir=out,
             run_id="emit-packs-manual",
-            public_base_url=public_base_url(),
-            ingest_rag=args.ingest_rag,
+            public_base_url=base,
+            ingest_rag=False,
             repo_paths=repo_paths,
             limit=args.limit,
         )
-        print(f"Emitted {len(packs)} packs → {cfg.output_dir}/agent_packs/")
-        for entry in list_packs(cfg.output_dir, limit=min(10, args.limit)):
-            print(
-                f"  {entry.get('severity', '?'):8} {entry.get('repo', ''):22} "
-                f"{entry.get('id')}  {entry.get('title', '')[:50]}"
-            )
-        print(f"Discover: {public_base_url()}/audit/packs")
+        print(f"  architecture packs: {len(arch)}")
     finally:
         graph.close()
+
+    print("=== 3. Specialist packs (extraction) ===")
+    extraction = emit_packs_from_extraction_candidates(
+        output_dir=out,
+        run_id="emit-packs-manual",
+        public_base_url=base,
+        ingest_rag=args.ingest_rag,
+        limit=args.limit,
+    )
+    print(f"  extraction packs: {len(extraction)}")
+
+    if args.ingest_rag and world:
+        from auditor.agent_pack import ingest_packs_to_rag
+
+        ingest_packs_to_rag(world + arch + extraction)
+
+    idx = rebuild_index(out, public_base_url=base)
+    print(
+        f"\nDone. total={idx['count']} "
+        f"world_model={len(idx.get('layers', {}).get('world_model', []))} "
+        f"specialist={len(idx.get('layers', {}).get('specialist', []))} "
+        f"kinds={idx.get('kind_counts')}"
+    )
+    print("World model samples:")
+    for entry in list_packs(out, layer="world_model", limit=5):
+        print(f"  [world] {entry.get('id')}  {entry.get('title', '')[:60]}")
+    print("Specialist samples:")
+    for entry in list_packs(out, layer="specialist", limit=8):
+        print(
+            f"  [{entry.get('kind')}] {entry.get('severity', '?'):8} "
+            f"{entry.get('repo', ''):20} {entry.get('id')}"
+        )
+    print(f"Discover: {base}/audit/packs")
+    print(f"World model: {base}/audit/packs?kind=world_model")
 
 
 if __name__ == "__main__":

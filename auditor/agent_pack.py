@@ -51,10 +51,15 @@ class AgentCodingPack:
         d["pack_version"] = self.pack_version
         return d
 
+    def layer(self) -> str:
+        """world_model = compressed topology/memory; specialist = actionable coding work."""
+        return "world_model" if self.kind == "world_model" else "specialist"
+
     def to_index_entry(self, *, path: str, url: str = "") -> dict[str, Any]:
         return {
             "id": self.work_item_id,
             "kind": self.kind,
+            "layer": self.layer(),
             "severity": (self.priority or {}).get("severity", "MEDIUM"),
             "score": (self.priority or {}).get("score", 0.0),
             "repo": (self.repo or {}).get("name", ""),
@@ -399,12 +404,35 @@ def rebuild_index(output_dir: str | Path, *, public_base_url: str = "") -> dict[
             url = str(pack.repair["pack_url"])
         entries.append(pack.to_index_entry(path=rel, url=url))
 
-    entries.sort(key=lambda e: (-float(e.get("score") or 0), e.get("repo", ""), e.get("id", "")))
+    # World model first (ecosystem, then repos), then specialists by score.
+    def _sort_key(e: dict[str, Any]) -> tuple:
+        layer = e.get("layer") or "specialist"
+        layer_rank = 0 if layer == "world_model" else 1
+        kind = e.get("kind") or ""
+        # ecosystem overview before per-repo world packs
+        kind_rank = 0 if e.get("id") == "pack-world-ecosystem" else 1
+        return (layer_rank, kind_rank, -float(e.get("score") or 0), e.get("repo", ""), e.get("id", ""))
+
+    entries.sort(key=_sort_key)
+    by_kind: dict[str, int] = {}
+    for e in entries:
+        k = str(e.get("kind") or "unknown")
+        by_kind[k] = by_kind.get(k, 0) + 1
+    world_ids = [e["id"] for e in entries if e.get("layer") == "world_model"]
+    specialist_ids = [e["id"] for e in entries if e.get("layer") != "world_model"]
     payload = {
         "updated_at": utc_now_iso(),
         "count": len(entries),
+        "loop": "scan → compressed world model → specialist coding packs",
+        "layers": {
+            "world_model": world_ids,
+            "specialist": specialist_ids,
+        },
+        "kind_counts": by_kind,
         "discovery": {
             "list": "/audit/packs",
+            "world_model": "/audit/packs?kind=world_model",
+            "specialist": "/audit/packs?kind=architecture",
             "get": "/audit/packs/{id}",
             "brief": "/audit/packs/{id}/brief",
             "index_file": "agent_packs/INDEX.json",
@@ -440,6 +468,7 @@ def list_packs(
     repo: str = "",
     severity: str = "",
     kind: str = "",
+    layer: str = "",
     q: str = "",
     run_id: str = "",
     limit: int = 50,
@@ -457,22 +486,31 @@ def list_packs(
     repo_l = repo.lower().strip()
     sev_l = severity.upper().strip()
     kind_l = kind.lower().strip()
+    layer_l = layer.lower().strip()
     q_l = q.lower().strip()
     run_l = run_id.strip()
 
     out: list[dict[str, Any]] = []
     for entry in entries:
         if repo_l and repo_l not in str(entry.get("repo", "")).lower():
-            continue
+            # World-model ecosystem pack applies to all repos
+            if not (
+                entry.get("kind") == "world_model"
+                and entry.get("id") == "pack-world-ecosystem"
+            ):
+                continue
         if sev_l and str(entry.get("severity", "")).upper() != sev_l:
             continue
         if kind_l and kind_l not in str(entry.get("kind", "")).lower():
+            continue
+        if layer_l and layer_l != str(entry.get("layer", "")).lower():
             continue
         if run_l and run_l != str(entry.get("run_id", "")):
             continue
         if q_l:
             hay = " ".join(
-                str(entry.get(k, "")) for k in ("id", "title", "repo", "file_path", "kind")
+                str(entry.get(k, ""))
+                for k in ("id", "title", "repo", "file_path", "kind", "layer")
             ).lower()
             if q_l not in hay:
                 continue
@@ -637,6 +675,289 @@ def emit_packs_from_violations(
     )
 
 
+def emit_world_model_packs(
+    *,
+    output_dir: str | Path,
+    run_id: str = "",
+    public_base_url: str = "",
+    ingest_rag: bool = False,
+    include_repos: bool = True,
+) -> list[AgentCodingPack]:
+    """Compressed world model: ecosystem overview + per-repo briefings + architecture memory."""
+    from auditor.config import load_ecosystem_config
+    from auditor.ecosystem_briefing import (
+        _get_repo_roles,
+        build_ecosystem_overview,
+        build_repo_briefing,
+    )
+    from auditor.repo_resolver import resolve_repo_path
+    from ecosystem.graph_builder import GraphBuilder
+
+    cfg = load_ecosystem_config()
+    base = public_base_url.rstrip("/") if public_base_url else ""
+    packs: list[AgentCodingPack] = []
+    now = utc_now_iso()
+
+    overview = build_ecosystem_overview(max_chars=8000)
+    eco = AgentCodingPack(
+        work_item_id="pack-world-ecosystem",
+        kind="world_model",
+        priority={"severity": "INFO", "score": 1.0},
+        repo={"name": "ecosystem", "path": "", "base_branch": "dev"},
+        location={"file_path": "ecosystem/ecosystem.md", "line": 1, "symbol": "", "code_snippet": "", "evidence": ""},
+        narrative={
+            "title": "Argus ecosystem world model",
+            "description": overview,
+            "recommendation": (
+                "Load this pack before specialist work. Respect cortex ownership, "
+                "agent-composer for RAG/chat, voluptas for ComfyUI, scan branch dev."
+            ),
+            "acceptance_criteria": [
+                "Do not reimplement argus-cortex contracts in demo UIs",
+                "Route chat/RAG through agent-composer; generation workers call voluptas",
+            ],
+            "missing_evidence": "",
+        },
+        impact={"impacted_repos": [r.name for r in cfg.repos if r.enabled]},
+        governance={"architecture_rules_hit": [], "related_findings": []},
+        verification={"suggested_test_commands": [], "tool": "skipped", "max_iterations": 0},
+        repair={
+            "pack_url": f"{base}/audit/packs/pack-world-ecosystem" if base else "",
+            "intent_markdown": "",
+        },
+        provenance={
+            "source": "ecosystem_briefing",
+            "run_id": run_id,
+            "task_id": "",
+            "detected_at": now,
+            "handoff_path": "ecosystem/ecosystem.md",
+        },
+    )
+    write_pack(eco, output_dir)
+    packs.append(eco)
+
+    mem_path = Path(cfg.architecture_memory_path)
+    if mem_path.exists():
+        mem_text = mem_path.read_text(encoding="utf-8", errors="replace")[:6000]
+        mem = AgentCodingPack(
+            work_item_id="pack-world-architecture-memory",
+            kind="world_model",
+            priority={"severity": "INFO", "score": 0.95},
+            repo={"name": "ecosystem", "path": "", "base_branch": "dev"},
+            location={
+                "file_path": str(mem_path),
+                "line": 1,
+                "symbol": "",
+                "code_snippet": "",
+                "evidence": mem_text[:1500],
+            },
+            narrative={
+                "title": "Architecture memory (durable decisions)",
+                "description": mem_text,
+                "recommendation": "Treat these decisions as constraints unless explicitly superseded.",
+                "acceptance_criteria": ["Do not revive out-of-scope legacy stacks"],
+                "missing_evidence": "",
+            },
+            verification={"suggested_test_commands": [], "tool": "skipped", "max_iterations": 0},
+            repair={"pack_url": f"{base}/audit/packs/pack-world-architecture-memory" if base else ""},
+            provenance={
+                "source": "architecture_memory",
+                "run_id": run_id,
+                "detected_at": now,
+                "handoff_path": str(mem_path),
+            },
+        )
+        write_pack(mem, output_dir)
+        packs.append(mem)
+
+    if include_repos:
+        graph = GraphBuilder(cfg.graph_db_path)
+        try:
+            roles = _get_repo_roles()
+            for repo in cfg.repos:
+                if not repo.enabled:
+                    continue
+                try:
+                    root = resolve_repo_path(repo)
+                except Exception:
+                    continue
+                if not root.exists():
+                    continue
+                briefing = build_repo_briefing(repo.name, root, graph=graph, max_chars=4000)
+                role = roles.get(repo.name, {})
+                pack_id = f"pack-world-{repo.name}"
+                tool, cmds = suggest_test_commands(root)
+                pack = AgentCodingPack(
+                    work_item_id=pack_id,
+                    kind="world_model",
+                    priority={"severity": "INFO", "score": 0.9},
+                    repo={"name": repo.name, "path": str(root), "base_branch": repo.branch or "dev"},
+                    location={
+                        "file_path": "ecosystem/ecosystem.md",
+                        "line": 0,
+                        "symbol": "",
+                        "code_snippet": "",
+                        "evidence": role.get("role", ""),
+                    },
+                    narrative={
+                        "title": f"World model: {repo.name}",
+                        "description": briefing,
+                        "recommendation": (
+                            f"Use as compressed context when working in {repo.name}. "
+                            f"Role: {role.get('label', '')} — {role.get('role', '')}"
+                        ),
+                        "acceptance_criteria": [
+                            f"Stay within {repo.name} ownership unless cross-repo pack says otherwise",
+                        ],
+                        "missing_evidence": "",
+                    },
+                    impact={"impacted_repos": [repo.name]},
+                    verification={
+                        "suggested_test_commands": cmds[:2],
+                        "tool": tool,
+                        "max_iterations": 0,
+                    },
+                    repair={"pack_url": f"{base}/audit/packs/{pack_id}" if base else ""},
+                    provenance={
+                        "source": "repo_briefing",
+                        "run_id": run_id,
+                        "detected_at": now,
+                        "handoff_path": str(root),
+                    },
+                )
+                write_pack(pack, output_dir)
+                packs.append(pack)
+        finally:
+            graph.close()
+
+    rebuild_index(output_dir, public_base_url=public_base_url)
+    if ingest_rag and packs:
+        ingest_packs_to_rag(packs)
+    return packs
+
+
+def emit_packs_from_extraction_candidates(
+    candidates: list[dict[str, Any]] | None = None,
+    *,
+    output_dir: str | Path,
+    candidates_path: str | Path | None = None,
+    run_id: str = "",
+    public_base_url: str = "",
+    ingest_rag: bool = False,
+    limit: int = 20,
+) -> list[AgentCodingPack]:
+    """Specialist packs for shared-logic extraction / feature consolidation work."""
+    items: list[dict[str, Any]] = list(candidates or [])
+    if not items:
+        path = Path(candidates_path or Path(output_dir) / "extraction_candidates.yaml")
+        if not path.exists():
+            return []
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            logger.warning("cannot read extraction candidates: %s", exc)
+            return []
+        items = list(payload.get("candidates") or [])
+
+    base = public_base_url.rstrip("/") if public_base_url else ""
+    packs: list[AgentCodingPack] = []
+    for cand in items[: max(1, limit)]:
+        if not isinstance(cand, dict):
+            continue
+        cid = str(cand.get("id") or "")
+        if not cid:
+            continue
+        pack_id = cid if cid.startswith("pack-") else f"pack-{cid}"
+        repos = list(cand.get("repos_involved") or [])
+        score = float(cand.get("extraction_score") or 0.0)
+        title = str(cand.get("title") or f"Extraction {cid}")
+        rationale = cand.get("rationale") or []
+        plan = cand.get("migration_plan") or {}
+        risks = cand.get("risks") or []
+        source_units = cand.get("source_units") or []
+        first = source_units[0] if source_units else {}
+        desc_parts = [
+            title,
+            "",
+            "Rationale:",
+            *[f"- {r}" for r in rationale],
+            "",
+            f"Proposed library: {(cand.get('proposed_library') or {}).get('name', '')}",
+            f"Public API: {(cand.get('proposed_library') or {}).get('public_api', [])}",
+            "",
+            "Migration plan:",
+            yaml.safe_dump(plan, sort_keys=False)[:2000] if plan else "(none)",
+            "",
+            "Risks:",
+            *[f"- {r}" for r in (risks if isinstance(risks, list) else [risks])],
+        ]
+        pack = AgentCodingPack(
+            work_item_id=pack_id,
+            kind="extraction",
+            priority={
+                "severity": "HIGH" if score >= 0.75 else "MEDIUM" if score >= 0.5 else "LOW",
+                "score": min(1.0, score if score > 0 else 0.4),
+            },
+            repo={
+                "name": repos[0] if repos else str(first.get("repo") or "ecosystem"),
+                "path": "",
+                "base_branch": "dev",
+            },
+            location={
+                "file_path": str(first.get("path") or ""),
+                "line": 0,
+                "symbol": ",".join(first.get("symbols") or []),
+                "code_snippet": "",
+                "evidence": json.dumps(source_units[:5], ensure_ascii=False)[:2000],
+            },
+            narrative={
+                "title": title,
+                "description": "\n".join(str(p) for p in desc_parts),
+                "recommendation": f"Execute phased extraction for {cid}; validate adapters before rollout.",
+                "acceptance_criteria": [
+                    "Create shared package / adapters without behavior change",
+                    f"Migrate repos in order: {', '.join(repos)}",
+                    "Add/confirm architecture rule requiring the shared package",
+                ],
+                "missing_evidence": "",
+            },
+            impact={
+                "impacted_repos": repos,
+                "call_path": [],
+                "directly_changed": [str(u.get("path") or "") for u in source_units if u.get("path")],
+            },
+            governance={
+                "architecture_rules_hit": [],
+                "related_findings": [],
+                "extraction_candidate_id": cid,
+            },
+            verification={
+                "suggested_test_commands": ["pytest -q --tb=short"],
+                "tool": "pytest",
+                "max_iterations": 3,
+                "validate_endpoint": "POST /audit/validate_patch",
+            },
+            repair={
+                "pack_url": f"{base}/audit/packs/{pack_id}" if base else "",
+                "slug": f"repair/{cid}",
+            },
+            provenance={
+                "source": "extraction_candidates",
+                "run_id": run_id,
+                "detected_at": utc_now_iso(),
+                "handoff_path": str(candidates_path or Path(output_dir) / "extraction_candidates.yaml"),
+            },
+        )
+        write_pack(pack, output_dir)
+        packs.append(pack)
+
+    if packs:
+        rebuild_index(output_dir, public_base_url=public_base_url)
+        if ingest_rag:
+            ingest_packs_to_rag(packs)
+    return packs
+
+
 def ingest_packs_to_rag(packs: list[AgentCodingPack]) -> dict[str, Any]:
     """Upsert slim pack summaries into audit_docs for agent retrieval."""
     import requests
@@ -645,7 +966,7 @@ def ingest_packs_to_rag(packs: list[AgentCodingPack]) -> dict[str, Any]:
     secret = os.getenv("INGEST_SHARED_SECRET", "")
     collection = os.getenv("AI_AUDIT_RAG_COLLECTION", "audit_docs")
     documents = []
-    for pack in packs[:40]:
+    for pack in packs[:80]:
         documents.append(
             {
                 "id": f"agent-pack::{pack.work_item_id}",
@@ -653,6 +974,8 @@ def ingest_packs_to_rag(packs: list[AgentCodingPack]) -> dict[str, Any]:
                 "metadata": {
                     "source": "ai-code-auditor",
                     "kind": "agent_coding_pack",
+                    "pack_kind": pack.kind,
+                    "layer": pack.layer(),
                     "pack_id": pack.work_item_id,
                     "repo": (pack.repo or {}).get("name", ""),
                     "severity": (pack.priority or {}).get("severity", ""),

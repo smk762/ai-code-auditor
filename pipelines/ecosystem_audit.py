@@ -299,22 +299,45 @@ def run() -> None:
             meta.violations = len(violations)
             write_architecture_violations(violations, output_dir=cfg.output_dir)
             try:
-                from auditor.agent_pack import emit_packs_from_violations
+                from auditor.agent_pack import (
+                    emit_packs_from_extraction_candidates,
+                    emit_packs_from_violations,
+                    emit_world_model_packs,
+                )
                 from auditor.repo_resolver import resolve_repo_path
                 from conductor.publish import public_base_url
 
+                base = public_base_url()
+                world = emit_world_model_packs(
+                    output_dir=cfg.output_dir,
+                    run_id=meta.run_id,
+                    public_base_url=base,
+                    ingest_rag=False,
+                )
                 repo_paths = {r.name: resolve_repo_path(r) for r in cfg.repos}
                 packs = emit_packs_from_violations(
                     violations,
                     output_dir=cfg.output_dir,
                     run_id=meta.run_id,
-                    public_base_url=public_base_url(),
+                    public_base_url=base,
                     ingest_rag=False,
                     repo_paths=repo_paths,
                 )
-                logger.info("emitted %d agent coding packs from architecture violations", len(packs))
+                ext = emit_packs_from_extraction_candidates(
+                    extraction_candidates if isinstance(extraction_candidates, list) else None,
+                    output_dir=cfg.output_dir,
+                    run_id=meta.run_id,
+                    public_base_url=base,
+                    ingest_rag=False,
+                )
+                logger.info(
+                    "agent packs: world_model=%d architecture=%d extraction=%d",
+                    len(world),
+                    len(packs),
+                    len(ext),
+                )
             except Exception:
-                logger.exception("agent pack emission from violations failed")
+                logger.exception("agent pack emission failed")
             write_service_topology(
                 rules=rules,
                 observed_edges=observed_call_edges,

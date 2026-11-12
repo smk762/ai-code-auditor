@@ -102,12 +102,12 @@ All written to `reports/` (overwritten each run): `nightly_repo_report.md`, `sec
 
 ## Agent coding packs (Cursor / Claude)
 
-Before fixing audit issues, agents should **look up packs** themselves (`AGENTS.md` and `.cursor/rules/agent-coding-packs.mdc`):
+Loop: **scan → compressed world model → specialist coding packs**. Agents look packs up themselves (`AGENTS.md`, `.cursor/rules/agent-coding-packs.mdc`):
 
 ```bash
-ai-audit packs --repo <name> --json
-# or GET http://192.168.1.198:8765/audit/packs?q=...
+ai-audit packs --kind world_model --json          # ecosystem + per-repo memory
+ai-audit packs --layer specialist --repo <name> --json
 ai-audit packs --id <pack-id> --brief
 ```
 
-Refresh packs: `python scripts/emit_agent_packs.py`. Nightly / ecosystem / conductor / diff-audit also emit packs.
+Refresh full loop: `python scripts/emit_agent_packs.py`. Ecosystem / nightly / conductor / diff-audit also emit packs.
