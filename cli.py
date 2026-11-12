@@ -86,8 +86,21 @@ def _build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--auth-token", default="", help="JWT token with admin role")
 
     repair_cmd = sub.add_parser("repair", help="Run agentic repair loop via rag-chat repair API")
-    repair_cmd.add_argument("--repo", required=True, help="Repo name from ecosystem config")
-    _repair_src = repair_cmd.add_mutually_exclusive_group(required=True)
+    repair_cmd.add_argument(
+        "--repo", default="",
+        help="Repo name from ecosystem config (optional with --pack-id: taken from the pack)",
+    )
+    repair_cmd.add_argument(
+        "--pack-id", dest="repair_pack_id", default="", metavar="ID",
+        help="Drive the repair from an agent pack: rag-chat fetches GET /audit/packs/ID (+ brief) "
+             "and injects acceptance criteria, tests and constraints. A diff source is then optional.",
+    )
+    repair_cmd.add_argument(
+        "--audit-api-base", dest="repair_audit_api_base", default="", metavar="URL",
+        help="Audit API base rag-chat uses to fetch --pack-id "
+             "(default: rag-chat's AI_AUDIT_PUBLIC_BASE_URL / AUDIT_API_URL)",
+    )
+    _repair_src = repair_cmd.add_mutually_exclusive_group(required=False)
     _repair_src.add_argument("--diff", dest="repair_diff_file", metavar="FILE", help="Path to a unified diff file")
     _repair_src.add_argument("--stdin", dest="repair_stdin", action="store_true", help="Read unified diff from stdin")
     _repair_src.add_argument("--compare-branch", dest="repair_compare_branch", metavar="BRANCH", help="Compare HEAD against BRANCH")
@@ -259,6 +272,8 @@ def _run_repair(
     repair_api_url: str = "",
     auth_code: str = "",
     auth_token: str = "",
+    pack_id: str = "",
+    audit_api_base: str = "",
 ) -> None:
     """Forward a repair request to the rag-chat repair API and stream SSE output."""
     import sys
@@ -267,6 +282,11 @@ def _run_repair(
     cfg = load_ecosystem_config()
     provided_auth = auth_code or os.getenv("AI_AUDIT_AUTH_CODE_INPUT", "")
     require_auth(cfg.auth_mode, cfg.auth_code_env, provided_code=provided_auth)
+
+    if not (repair_diff_file or repair_stdin or repair_compare_branch or pack_id):
+        raise SystemExit("Provide one of --diff, --stdin, --compare-branch, or --pack-id.")
+    if not (repo_name or pack_id):
+        raise SystemExit("Provide --repo (or --pack-id to take the repo from the pack).")
 
     # --commit / --push only make sense when --apply is also set; without it the
     # repair API has no patch to commit and would either no-op or commit empty.
@@ -288,8 +308,10 @@ def _run_repair(
         diff_text = ""  # the repair API will generate this from compare_branch
     elif repair_diff_file:
         diff_text = Path(repair_diff_file).read_text(encoding="utf-8")
-    else:
+    elif repair_stdin:
         diff_text = sys.stdin.read()
+    else:
+        diff_text = ""  # pack-only: rag-chat works from the pack's context
 
     base_url = repair_api_url or os.getenv("RAG_CHAT_URL", "http://127.0.0.1:9150")
 
@@ -317,6 +339,8 @@ def _run_repair(
         "apply": apply,
         "validate_tests": validate_tests,
         **({"git_ops": git_ops} if git_ops else {}),
+        **({"pack_id": pack_id} if pack_id else {}),
+        **({"audit_api_base": audit_api_base} if pack_id and audit_api_base else {}),
     }
 
     headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -329,15 +353,22 @@ def _run_repair(
             timeout=600,
         ) as resp:
             resp.raise_for_status()
+            event_name = ""
             for line in resp.iter_lines(decode_unicode=True):
                 if not line:
                     continue
                 if line.startswith("event:"):
-                    print(f"\n[{line[7:].strip()}]")
+                    event_name = line[6:].strip()
+                    print(f"\n[{event_name}]")
                 elif line.startswith("data:"):
                     try:
                         data = json.loads(line[5:].strip())
-                        if "fixer_response" in data:
+                        if event_name == "pack_loaded":
+                            print(f"  Pack:          {data.get('pack_id')} — {data.get('title')}")
+                            print(f"  Repo:          {data.get('repo')}")
+                        elif event_name == "warning":
+                            print(f"  Warning: {data.get('message')}")
+                        elif "fixer_response" in data:
                             it = data.get("iteration", "?")
                             print(f"  Iteration {it} — patch extracted: {bool(data.get('patch'))}")
                             v = data.get("validation_passed")
@@ -605,6 +636,8 @@ def main() -> None:
             repair_api_url=args.repair_api_url,
             auth_code=args.auth_code,
             auth_token=args.auth_token,
+            pack_id=args.repair_pack_id,
+            audit_api_base=args.repair_audit_api_base,
         )
     elif args.command == "diff-audit":
         _run_diff_audit(
