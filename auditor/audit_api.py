@@ -16,6 +16,9 @@ GET  /audit/topology.json             Return the latest service topology JSON si
 GET  /reports/mithrandir/LATEST.json  Atomic rest-session status for mithrandir (Jarrah)
 GET  /reports/mithrandir/LATEST.md    TTS-safe companion briefing for Holly
 POST /audit/ingest                    Trigger RAG briefing ingest to the audit_docs collection
+POST /audit/merge                     Schedule lightweight merge-to-dev pack/RAG refresh (debounced)
+GET  /audit/merge                     Pending/running merge-hook status
+POST /audit/hooks/github              GitHub push webhook (dev branch → merge refresh)
 GET  /audit/packs                     List/search agent coding packs (repo, severity, kind, layer, status, q)
 GET  /audit/packs/bundle              Mission bundle: world model + ranked specialists, token-capped briefs
 GET  /audit/packs/{pack_id}           Full agent coding pack (YAML-backed JSON)
@@ -40,7 +43,7 @@ from typing import Any, Literal
 
 from dataclasses import asdict
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, select
@@ -669,6 +672,111 @@ class _DiffAuditRequest(BaseModel):
     repo: str
     diff: str = ""
     compare_branch: str = ""
+
+
+class _MergeRefreshRequest(BaseModel):
+    repo: str
+    before: str = ""
+    after: str = ""
+    ref: str = ""
+    force: bool = False  # skip debounce (still serialised behind any running job)
+    sync_mirror: bool = True
+
+
+@app.get("/audit/merge")
+def merge_hook_status() -> JSONResponse:
+    """Pending / running / recent lightweight merge-to-dev refreshes."""
+    from auditor.merge_hook import get_scheduler
+
+    return JSONResponse(get_scheduler().status())
+
+
+@app.post("/audit/merge", status_code=202, dependencies=[Depends(_require_mutating_auth)])
+def schedule_merge_refresh(request: _MergeRefreshRequest) -> JSONResponse:
+    """Queue a single-repo mirror sync + diff pack/RAG refresh after a merge to ``dev``.
+
+    Close pushes to the same repo are coalesced for ``AI_AUDIT_MERGE_DEBOUNCE_S``
+    (default 900s). Distinct repos wait ``AI_AUDIT_MERGE_GLOBAL_GAP_S`` (default 120s)
+    between runs. Pass ``force=true`` to skip the per-repo quiet window.
+    """
+    from auditor.merge_hook import MergeEvent, get_scheduler, merge_hook_enabled
+
+    if not merge_hook_enabled() and not request.force:
+        raise HTTPException(status_code=503, detail="Merge hook disabled (AI_AUDIT_MERGE_HOOK_ENABLED=0)")
+
+    event = MergeEvent(
+        repo=request.repo.strip(),
+        before=request.before,
+        after=request.after,
+        ref=request.ref,
+        source="api",
+        force=bool(request.force),
+        sync_mirror=bool(request.sync_mirror),
+    )
+    result = get_scheduler().enqueue(event)
+    if not result.get("accepted"):
+        raise HTTPException(status_code=400, detail=result.get("reason") or "rejected")
+    return JSONResponse(result, status_code=202)
+
+
+@app.post("/audit/hooks/github")
+async def github_merge_webhook(
+    request: Request,
+    x_hub_signature_256: str | None = Header(default=None, alias="X-Hub-Signature-256"),
+    x_github_event: str | None = Header(default=None, alias="X-GitHub-Event"),
+) -> JSONResponse:
+    """GitHub push webhook → debounced merge refresh when ``refs/heads/<branch>``.
+
+    Auth: ``AI_AUDIT_MERGE_WEBHOOK_SECRET`` via ``X-Hub-Signature-256``. When the
+    secret is unset, falls back to the normal mutating API auth (or open if none).
+    """
+    from auditor.merge_hook import (
+        get_scheduler,
+        merge_hook_enabled,
+        merge_webhook_secret,
+        parse_github_push_event,
+        verify_github_signature,
+    )
+
+    body = await request.body()
+    secret = merge_webhook_secret()
+    if secret:
+        if not verify_github_signature(body, x_hub_signature_256, secret):
+            raise HTTPException(status_code=401, detail="Invalid GitHub webhook signature")
+    else:
+        # No dedicated webhook secret — require mutating auth headers if configured.
+        _require_mutating_auth(
+            authorization=request.headers.get("authorization"),
+            x_auth_code=request.headers.get("x-auth-code"),
+            x_api_token=request.headers.get("x-api-token"),
+        )
+
+    if not merge_hook_enabled():
+        return JSONResponse({"accepted": False, "reason": "merge hook disabled"})
+
+    event_name = (x_github_event or "").strip().lower()
+    if event_name and event_name != "push":
+        return JSONResponse({"accepted": False, "reason": f"ignored event {event_name}"})
+
+    try:
+        payload = json.loads(body.decode("utf-8") or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Webhook payload must be a JSON object")
+
+    event = parse_github_push_event(payload)
+    if event is None:
+        return JSONResponse(
+            {
+                "accepted": False,
+                "reason": "ignored (not push to configured merge branch, or missing repo)",
+            }
+        )
+
+    result = get_scheduler().enqueue(event)
+    return JSONResponse(result, status_code=202 if result.get("accepted") else 200)
 
 
 @app.post("/audit/diff")

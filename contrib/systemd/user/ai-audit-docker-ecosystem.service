@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 # Path to your clone (must match .env and compose file location).
-WorkingDirectory=%h/GITHUB/smk762/ai-code-auditor
+WorkingDirectory=%h/ai-code-auditor
 # User must be in the `docker` group (or use root — not recommended).
 # --no-deps: do not start audit-api; only run the auditor container.
 ExecStart=/usr/bin/docker compose run --rm --no-deps auditor

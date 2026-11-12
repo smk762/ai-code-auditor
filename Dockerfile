@@ -10,6 +10,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md /app/
 COPY auditor /app/auditor
+COPY conductor /app/conductor
 COPY ecosystem /app/ecosystem
 COPY patterns /app/patterns
 COPY semantic /app/semantic

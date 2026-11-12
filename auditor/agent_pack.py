@@ -1057,8 +1057,15 @@ def emit_world_model_packs(
     public_base_url: str = "",
     ingest_rag: bool = False,
     include_repos: bool = True,
+    include_ecosystem: bool = True,
+    include_memory: bool = True,
+    repos: list[str] | None = None,
 ) -> list[AgentCodingPack]:
-    """Compressed world model: ecosystem overview + per-repo briefings + architecture memory."""
+    """Compressed world model: ecosystem overview + per-repo briefings + architecture memory.
+
+    Pass ``repos=["argus-cortex"]`` (and usually ``include_ecosystem=False``,
+    ``include_memory=False``) for a lightweight single-repo refresh after a merge.
+    """
     from auditor.config import load_ecosystem_config
     from auditor.ecosystem_briefing import (
         _get_repo_roles,
@@ -1072,47 +1079,49 @@ def emit_world_model_packs(
     base = public_base_url.rstrip("/") if public_base_url else ""
     packs: list[AgentCodingPack] = []
     now = utc_now_iso()
+    repo_filter = {n.strip().lower() for n in (repos or []) if n and n.strip()}
 
-    overview = build_ecosystem_overview(max_chars=8000)
-    eco = AgentCodingPack(
-        work_item_id="pack-world-ecosystem",
-        kind="world_model",
-        priority={"severity": "INFO", "score": 1.0},
-        repo={"name": "ecosystem", "path": "", "base_branch": "dev"},
-        location={"file_path": "ecosystem/ecosystem.md", "line": 1, "symbol": "", "code_snippet": "", "evidence": ""},
-        narrative={
-            "title": "Argus ecosystem world model",
-            "description": overview,
-            "recommendation": (
-                "Load this pack before specialist work. Respect cortex ownership, "
-                "agent-composer for RAG/chat, voluptas for ComfyUI, scan branch dev."
-            ),
-            "acceptance_criteria": [
-                "Do not reimplement argus-cortex contracts in demo UIs",
-                "Route chat/RAG through agent-composer; generation workers call voluptas",
-            ],
-            "missing_evidence": "",
-        },
-        impact={"impacted_repos": [r.name for r in cfg.repos if r.enabled]},
-        governance={"architecture_rules_hit": [], "related_findings": []},
-        verification={"suggested_test_commands": [], "tool": "skipped", "max_iterations": 0},
-        repair={
-            "pack_url": f"{base}/audit/packs/pack-world-ecosystem" if base else "",
-            "intent_markdown": "",
-        },
-        provenance={
-            "source": "ecosystem_briefing",
-            "run_id": run_id,
-            "task_id": "",
-            "detected_at": now,
-            "handoff_path": "ecosystem/ecosystem.md",
-        },
-    )
-    write_pack(eco, output_dir)
-    packs.append(eco)
+    if include_ecosystem:
+        overview = build_ecosystem_overview(max_chars=8000)
+        eco = AgentCodingPack(
+            work_item_id="pack-world-ecosystem",
+            kind="world_model",
+            priority={"severity": "INFO", "score": 1.0},
+            repo={"name": "ecosystem", "path": "", "base_branch": "dev"},
+            location={"file_path": "ecosystem/ecosystem.md", "line": 1, "symbol": "", "code_snippet": "", "evidence": ""},
+            narrative={
+                "title": "Argus ecosystem world model",
+                "description": overview,
+                "recommendation": (
+                    "Load this pack before specialist work. Respect cortex ownership, "
+                    "agent-composer for RAG/chat, voluptas for ComfyUI, scan branch dev."
+                ),
+                "acceptance_criteria": [
+                    "Do not reimplement argus-cortex contracts in demo UIs",
+                    "Route chat/RAG through agent-composer; generation workers call voluptas",
+                ],
+                "missing_evidence": "",
+            },
+            impact={"impacted_repos": [r.name for r in cfg.repos if r.enabled]},
+            governance={"architecture_rules_hit": [], "related_findings": []},
+            verification={"suggested_test_commands": [], "tool": "skipped", "max_iterations": 0},
+            repair={
+                "pack_url": f"{base}/audit/packs/pack-world-ecosystem" if base else "",
+                "intent_markdown": "",
+            },
+            provenance={
+                "source": "ecosystem_briefing",
+                "run_id": run_id,
+                "task_id": "",
+                "detected_at": now,
+                "handoff_path": "ecosystem/ecosystem.md",
+            },
+        )
+        write_pack(eco, output_dir)
+        packs.append(eco)
 
     mem_path = Path(cfg.architecture_memory_path)
-    if mem_path.exists():
+    if include_memory and mem_path.exists():
         mem_text = mem_path.read_text(encoding="utf-8", errors="replace")[:6000]
         mem = AgentCodingPack(
             work_item_id="pack-world-architecture-memory",
@@ -1151,6 +1160,8 @@ def emit_world_model_packs(
             roles = _get_repo_roles()
             for repo in cfg.repos:
                 if not repo.enabled:
+                    continue
+                if repo_filter and repo.name.lower() not in repo_filter:
                     continue
                 try:
                     root = resolve_repo_path(repo)

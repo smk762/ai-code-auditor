@@ -47,26 +47,32 @@ systemctl --user disable --now sshfs-gothmog.service
 
 ---
 
-## Optional: daily ecosystem audit via Docker
+## Overnight timers (rest + ecosystem)
 
-The **`auditor`** compose service is a **batch** job (runs once, exits). To run it on a schedule while **`audit-api`** stays up separately:
+Preferred install (idempotent):
 
 ```bash
-# API (continuous)
-docker compose up -d audit-api
-
-# Timer triggers one-off container (see files below)
+bash scripts/install_overnight_timers.sh
+systemctl --user list-timers | grep ai-audit
 ```
 
-Copy and edit paths, then:
+| Timer | When (local) | What |
+|-------|--------------|------|
+| `ai-audit-rest.timer` | 00:30 | Night conductor `rest-run` (host venv) |
+| `ai-audit-docker-ecosystem.timer` | 02:00 | Full ecosystem audit via `docker compose run auditor` |
+| `ai-audit-merge-poll.timer` | hourly | GitHub API `dev` tip poll → pack/RAG refresh |
+
+`loginctl enable-linger "$USER"` so timers fire without an interactive login.
+
+Manual copy:
 
 ```bash
-cp contrib/systemd/user/ai-audit-docker-ecosystem.service ~/.config/systemd/user/
-cp contrib/systemd/user/ai-audit-docker-ecosystem.timer ~/.config/systemd/user/
-# Edit WorkingDirectory in the .service file if needed.
+cp contrib/systemd/user/ai-audit-rest.{service,timer} ~/.config/systemd/user/
+cp contrib/systemd/user/ai-audit-docker-ecosystem.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now ai-audit-docker-ecosystem.timer
-systemctl --user list-timers | grep ai-audit-docker
+systemctl --user enable --now ai-audit-rest.timer ai-audit-docker-ecosystem.timer
 ```
 
-`loginctl enable-linger "$USER"` if the timer should fire without an interactive login.
+Between nights, merges to **`dev`** can refresh packs/RAG via the lightweight merge hook
+(`POST /audit/hooks/github` / `ai-audit merge-refresh`) — see
+[`contrib/github/merge-refresh-webhook.md`](../../github/merge-refresh-webhook.md).

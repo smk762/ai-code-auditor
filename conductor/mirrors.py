@@ -77,6 +77,88 @@ def load_mirrors_config(path: str | Path = "config/repo_mirrors.yaml") -> dict[s
     return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
 
 
+def _sync_mirror_item(
+    item: dict[str, Any],
+    *,
+    preferred: str,
+) -> MirrorSyncResult:
+    """Clone/fetch one mirrors.yaml entry and check out *preferred*."""
+    name = str(item.get("name") or "")
+    path = Path(item.get("path") or "")
+    url = str(item.get("url") or "").strip()
+    if not path:
+        return MirrorSyncResult(name=name, path="", ok=False, action="skip", error="empty path")
+    try:
+        if path.exists() and (path / ".git").exists():
+            checked = checkout_scan_branch(path, preferred)
+            return MirrorSyncResult(
+                name=name, path=str(path), ok=True, branch=checked, action="fetch"
+            )
+        if url:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            clone = subprocess.run(
+                ["git", "clone", "--branch", preferred, url, str(path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if clone.returncode != 0:
+                # Preferred branch may not exist yet — clone default then checkout
+                subprocess.run(
+                    ["git", "clone", url, str(path)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            if path.exists() and (path / ".git").exists():
+                checked = checkout_scan_branch(path, preferred)
+                return MirrorSyncResult(
+                    name=name, path=str(path), ok=True, branch=checked, action="clone"
+                )
+            return MirrorSyncResult(
+                name=name,
+                path=str(path),
+                ok=False,
+                action="clone",
+                error=(clone.stderr or "clone failed")[:300],
+            )
+        return MirrorSyncResult(
+            name=name,
+            path=str(path),
+            ok=False,
+            action="skip",
+            error="no url and path missing",
+        )
+    except Exception as exc:
+        logger.exception("mirror sync failed for %s", name)
+        return MirrorSyncResult(name=name, path=str(path), ok=False, action="error", error=str(exc))
+
+
+def sync_one_mirror(
+    name: str,
+    config_path: str | Path = "config/repo_mirrors.yaml",
+    *,
+    branch: str = "dev",
+) -> MirrorSyncResult:
+    """Clone/fetch a single named mirror and check out *branch* (default ``dev``)."""
+    cfg = load_mirrors_config(config_path)
+    root = Path(cfg.get("mirror_root") or "/home/smk/mirrors")
+    root.mkdir(parents=True, exist_ok=True)
+    preferred = str(cfg.get("default_branch") or branch)
+    needle = name.strip().lower()
+    for item in cfg.get("mirrors") or []:
+        item_name = str(item.get("name") or "")
+        if item_name.lower() == needle:
+            return _sync_mirror_item(item, preferred=preferred)
+    return MirrorSyncResult(
+        name=name,
+        path="",
+        ok=False,
+        action="skip",
+        error=f"mirror {name!r} not found in {config_path}",
+    )
+
+
 def sync_mirrors(
     config_path: str | Path = "config/repo_mirrors.yaml",
     *,
@@ -90,65 +172,5 @@ def sync_mirrors(
     results: list[MirrorSyncResult] = []
 
     for item in cfg.get("mirrors") or []:
-        name = str(item.get("name") or "")
-        path = Path(item.get("path") or "")
-        url = str(item.get("url") or "").strip()
-        if not path:
-            continue
-        try:
-            if path.exists() and (path / ".git").exists():
-                checked = checkout_scan_branch(path, preferred)
-                results.append(
-                    MirrorSyncResult(
-                        name=name, path=str(path), ok=True, branch=checked, action="fetch"
-                    )
-                )
-            elif url:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                clone = subprocess.run(
-                    ["git", "clone", "--branch", preferred, url, str(path)],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                if clone.returncode != 0:
-                    # Preferred branch may not exist yet — clone default then checkout
-                    subprocess.run(
-                        ["git", "clone", url, str(path)],
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
-                if path.exists() and (path / ".git").exists():
-                    checked = checkout_scan_branch(path, preferred)
-                    results.append(
-                        MirrorSyncResult(
-                            name=name, path=str(path), ok=True, branch=checked, action="clone"
-                        )
-                    )
-                else:
-                    results.append(
-                        MirrorSyncResult(
-                            name=name,
-                            path=str(path),
-                            ok=False,
-                            action="clone",
-                            error=(clone.stderr or "clone failed")[:300],
-                        )
-                    )
-            else:
-                results.append(
-                    MirrorSyncResult(
-                        name=name,
-                        path=str(path),
-                        ok=False,
-                        action="skip",
-                        error="no url and path missing",
-                    )
-                )
-        except Exception as exc:
-            logger.exception("mirror sync failed for %s", name)
-            results.append(
-                MirrorSyncResult(name=name, path=str(path), ok=False, action="error", error=str(exc))
-            )
+        results.append(_sync_mirror_item(item, preferred=preferred))
     return results

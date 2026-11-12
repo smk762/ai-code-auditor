@@ -104,4 +104,17 @@ After a fix: pack `suggested_test_commands` or `POST /audit/validate_patch` (inc
 
 Refresh full loop: `python scripts/emit_agent_packs.py`
 
+### Merge-to-dev refresh (lightweight)
+
+Nightly timers own the full world model. On LAN, an **hourly GitHub API poll**
+detects `dev` tip moves and enqueues single-repo pack/RAG refreshes (2m gap
+between repos in a burst — no inbound webhook required):
+
+```bash
+ai-audit merge-poll --baseline-only          # first run: record tips only
+ai-audit merge-poll --schedule               # hourly via systemd timer
+ai-audit merge-refresh --repo argus-cortex --schedule
+# details: contrib/github/merge-refresh-webhook.md
+```
+
 See `.cursor/rules/agent-coding-packs.mdc`, `ecosystem/ecosystem.md`, `CLAUDE.md`.

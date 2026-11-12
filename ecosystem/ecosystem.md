@@ -60,8 +60,8 @@ Night conductor scans `dev` on every `smk762/argus-*` repo, plus shared dependen
 
 | Host | Role |
 |------|------|
-| Dragon `192.168.1.198` | `ai-code-auditor`, `agent-composer` (Ollama/Qdrant/rag-ingest), local argus checkouts / mirrors |
-| Jarrah `192.168.1.109` | `mithrandir` companion; Ollama for embeddings (`:11434`) so RAG ingest need not wake Dragon GPU |
+| Dragon `192.168.1.198` | `ai-code-auditor`, `agent-composer` (rag-chat/rag-ingest), local argus checkouts / mirrors |
+| Jarrah `192.168.1.109` | Stateful node: Postgres `:5432`, Redis `:6379`, MinIO `:9000`, Qdrant `:6333`, Ollama `:11434`; `mithrandir` `:8400` |
 | Voluptas host | ComfyUI `:8188` (see voluptas compose); Argus darkroom/studio call into it |
 
 Branch policy: all `argus-*` repos use **`dev` as default**. Night conductor syncs mirrors and checks out `dev` before each rest session.
@@ -107,7 +107,7 @@ Loop: **scan → compressed world model → specialist coding packs** (no paste 
 | CLI | `ai-audit packs --bundle --repo <name>` · `--kind world_model` · `--layer specialist` · `--status open` |
 | Refresh | `python scripts/emit_agent_packs.py` |
 
-Ecosystem audit, nightly audit, night conductor, and `POST /audit/diff` emit packs; slim summaries (with `layer`, `pack_kind`, `status` metadata) land in `audit_docs` by default (`AI_AUDIT_PACK_RAG_INGEST=0` or `--no-rag` to skip). Agents call the bundle once, claim a pack, then `POST /audit/validate_patch` with `pack_id` — a passing run marks the pack `resolved`; a conductor draft PR marks its pack `in_progress` with `repair.draft_pr_url`.
+Ecosystem audit, nightly audit, night conductor, and `POST /audit/diff` emit packs; slim summaries (with `layer`, `pack_kind`, `status` metadata) land in `audit_docs` by default (`AI_AUDIT_PACK_RAG_INGEST=0` or `--no-rag` to skip). Merges to `dev` are picked up by an **hourly GitHub API poll** (`ai-audit merge-poll` / `ai-audit-merge-poll.timer`) that enqueues a lightweight single-repo refresh when a tip SHA moves (global gap between repos — see `contrib/github/merge-refresh-webhook.md`); the overnight timers remain the full-suite source of truth. Agents call the bundle once, claim a pack, then `POST /audit/validate_patch` with `pack_id` — a passing run marks the pack `resolved`; a conductor draft PR marks its pack `in_progress` with `repair.draft_pr_url`.
 
 ---
 

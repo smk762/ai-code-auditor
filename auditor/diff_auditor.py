@@ -43,6 +43,37 @@ def get_diff_from_branch(repo_path: Path, compare_branch: str) -> str:
     return result.stdout
 
 
+def get_diff_between_refs(repo_path: Path, before: str, after: str = "HEAD") -> str:
+    """Unified diff between two commits/refs (``git diff before..after``).
+
+    Null / zero SHAs (GitHub ``before`` on a new branch) fall back to empty-tree
+    vs *after*.
+    """
+    zero = "0" * 40
+    before_ref = (before or "").strip()
+    after_ref = (after or "HEAD").strip() or "HEAD"
+    if not before_ref or before_ref == zero:
+        # Empty tree object — all files in *after* appear as added.
+        before_ref = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "diff", f"{before_ref}..{after_ref}"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"git diff {before_ref!r}..{after_ref!r} timed out after 60s"
+        ) from exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git diff {before_ref!r}..{after_ref!r} failed: "
+            f"{result.stderr.strip()[:400]}"
+        )
+    return result.stdout
+
+
 def run_diff_audit(
     repo: RepoConfig,
     diff_text: str,
