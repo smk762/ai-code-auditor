@@ -22,6 +22,8 @@ ai-audit ecosystem-run         # full multi-repo ecosystem audit
 ai-audit ask "question"        # copilot Q&A over indexed code
 ai-audit ask "..." --deep --iterations 4 --enable-subagents --agent-brief
 ai-audit packs --json          # discover agent coding packs (no paste)
+ai-audit packs --bundle --repo argus-cortex   # one-call mission bundle (world model + specialists)
+ai-audit packs --set-status claimed --id pack-…  # lifecycle: open|claimed|in_progress|resolved|wontfix
 ai-audit packs --id pack-… --brief
 ai-audit qa-benchmark --json
 ai-audit approve-extraction --candidate-id ext-retry-core-001
@@ -107,7 +109,10 @@ Loop: **scan → compressed world model → specialist coding packs**. Agents lo
 ```bash
 ai-audit packs --kind world_model --json          # ecosystem + per-repo memory
 ai-audit packs --layer specialist --repo <name> --json
+ai-audit packs --bundle --repo <name>                   # == GET /audit/packs/bundle?repo=<name>&token_budget=2500
 ai-audit packs --id <pack-id> --brief
 ```
+
+Lifecycle: `POST /audit/packs/{id}/status {status, note?}` (mutating auth); `validate_patch` with `pack_id` auto-resolves on pass; conductor draft PRs set `in_progress`. Pack RAG ingest is on by default (`AI_AUDIT_PACK_RAG_INGEST=0` to disable).
 
 Refresh full loop: `python scripts/emit_agent_packs.py`. Ecosystem / nightly / conductor / diff-audit also emit packs.

@@ -9,7 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from auditor.agent_pack import emit_packs_from_worker_results, stable_pack_id
+from auditor.agent_pack import (
+    emit_packs_from_worker_results,
+    pack_rag_ingest_enabled,
+    stable_pack_id,
+)
 from auditor.config import load_ecosystem_config
 from conductor.code_review import review_draft_pr
 from conductor.draft_pr import create_draft_pr, finding_to_pr_body
@@ -45,6 +49,7 @@ class SessionState:
     run_id: str
     tasks_done: list[WorkerResult] = field(default_factory=list)
     draft_prs: list[DraftPr] = field(default_factory=list)
+    draft_pr_by_pack: dict[str, str] = field(default_factory=dict)
     decisions: list[DecisionNeeded] = field(default_factory=list)
     scanner_counts: dict[str, int] = field(default_factory=dict)
     repos: list[str] = field(default_factory=list)
@@ -237,6 +242,8 @@ def run_rest_session(
                         skip=_cancel() and not force,
                     )
                 state.draft_prs.append(draft)
+                if draft.url and not dry_run:  # dry-run URLs are placeholders
+                    state.draft_pr_by_pack[pack_id] = draft.url
             elif pr_res.error:
                 state.decisions.append(
                     DecisionNeeded(
@@ -291,15 +298,15 @@ def run_rest_session(
         next_rest_window=next_window_start_label(rest),
     )
 
-    draft_by_repo = {d.repo: d.url for d in state.draft_prs if d.repo and d.url}
     packs = emit_packs_from_worker_results(
         output_dir=out,
         run_id=run_id,
         tasks=pending_tasks,
         results_by_id=by_id,
-        draft_pr_by_repo=draft_by_repo,
+        # Only the pack the draft PR targets is in_progress (not every pack in the repo).
+        draft_pr_by_pack=state.draft_pr_by_pack,
         public_base_url=public_base_url(),
-        ingest_rag=ingest_rag,
+        ingest_rag=pack_rag_ingest_enabled(ingest_rag),
     )
     logger.info("emitted %d agent coding packs for run %s", len(packs), run_id)
 

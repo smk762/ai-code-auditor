@@ -101,11 +101,13 @@ Loop: **scan → compressed world model → specialist coding packs** (no paste 
 | Discovery index | `reports/agent_packs/INDEX.json` (`layers`, `kind_counts`) |
 | World model | `GET http://192.168.1.198:8765/audit/packs?kind=world_model` |
 | Specialists | `GET /audit/packs?layer=specialist&repo=&q=` |
+| **Mission bundle** | `GET /audit/packs/bundle?repo=<name>&token_budget=2500&limit_specialists=5` (world model + ranked specialists + capped `briefs_markdown`) |
 | Full pack / brief | `GET /audit/packs/{id}` · `/brief` |
-| CLI | `ai-audit packs --kind world_model` · `--layer specialist` |
+| Status lifecycle | `POST /audit/packs/{id}/status` `{status, note?}` — `open → claimed → in_progress → resolved \| wontfix`; filter with `?status=` |
+| CLI | `ai-audit packs --bundle --repo <name>` · `--kind world_model` · `--layer specialist` · `--status open` |
 | Refresh | `python scripts/emit_agent_packs.py` |
 
-Ecosystem audit, night conductor, and `POST /audit/diff` emit packs; slim summaries land in `audit_docs`. Agents load world model first, then a specialist pack by id.
+Ecosystem audit, nightly audit, night conductor, and `POST /audit/diff` emit packs; slim summaries (with `layer`, `pack_kind`, `status` metadata) land in `audit_docs` by default (`AI_AUDIT_PACK_RAG_INGEST=0` or `--no-rag` to skip). Agents call the bundle once, claim a pack, then `POST /audit/validate_patch` with `pack_id` — a passing run marks the pack `resolved`; a conductor draft PR marks its pack `in_progress` with `repair.draft_pr_url`.
 
 ---
 

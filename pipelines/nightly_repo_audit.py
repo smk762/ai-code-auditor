@@ -67,7 +67,7 @@ def run() -> None:
             write_security_report(deduped, output_dir=cfg.output_dir)
             store_findings(meta.run_id, deduped)
             try:
-                from auditor.agent_pack import emit_packs_from_findings
+                from auditor.agent_pack import emit_packs_from_findings, pack_rag_ingest_enabled
                 from auditor.repo_resolver import resolve_repo_path
                 from conductor.publish import public_base_url
 
@@ -78,7 +78,7 @@ def run() -> None:
                     kind="nightly",
                     run_id=meta.run_id,
                     public_base_url=public_base_url(),
-                    ingest_rag=False,
+                    ingest_rag=pack_rag_ingest_enabled(),
                     repo_paths=repo_paths,
                 )
                 logger.info("emitted %d agent coding packs from nightly findings", len(packs))

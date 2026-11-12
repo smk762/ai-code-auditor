@@ -303,16 +303,18 @@ def run() -> None:
                     emit_packs_from_extraction_candidates,
                     emit_packs_from_violations,
                     emit_world_model_packs,
+                    pack_rag_ingest_enabled,
                 )
                 from auditor.repo_resolver import resolve_repo_path
                 from conductor.publish import public_base_url
 
                 base = public_base_url()
+                rag_ingest = pack_rag_ingest_enabled()
                 world = emit_world_model_packs(
                     output_dir=cfg.output_dir,
                     run_id=meta.run_id,
                     public_base_url=base,
-                    ingest_rag=False,
+                    ingest_rag=rag_ingest,
                 )
                 repo_paths = {r.name: resolve_repo_path(r) for r in cfg.repos}
                 packs = emit_packs_from_violations(
@@ -320,7 +322,7 @@ def run() -> None:
                     output_dir=cfg.output_dir,
                     run_id=meta.run_id,
                     public_base_url=base,
-                    ingest_rag=False,
+                    ingest_rag=rag_ingest,
                     repo_paths=repo_paths,
                 )
                 ext = emit_packs_from_extraction_candidates(
@@ -328,7 +330,7 @@ def run() -> None:
                     output_dir=cfg.output_dir,
                     run_id=meta.run_id,
                     public_base_url=base,
-                    ingest_rag=False,
+                    ingest_rag=rag_ingest,
                 )
                 logger.info(
                     "agent packs: world_model=%d architecture=%d extraction=%d",

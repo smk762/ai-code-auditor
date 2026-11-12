@@ -16,9 +16,11 @@ GET  /audit/topology.json             Return the latest service topology JSON si
 GET  /reports/mithrandir/LATEST.json  Atomic rest-session status for mithrandir (Jarrah)
 GET  /reports/mithrandir/LATEST.md    TTS-safe companion briefing for Holly
 POST /audit/ingest                    Trigger RAG briefing ingest to the audit_docs collection
-GET  /audit/packs                     List/search agent coding packs (repo, severity, kind, q)
+GET  /audit/packs                     List/search agent coding packs (repo, severity, kind, layer, status, q)
+GET  /audit/packs/bundle              Mission bundle: world model + ranked specialists, token-capped briefs
 GET  /audit/packs/{pack_id}           Full agent coding pack (YAML-backed JSON)
 GET  /audit/packs/{pack_id}/brief     Markdown brief for coding agents
+POST /audit/packs/{pack_id}/status    Set pack lifecycle status (open|claimed|in_progress|resolved|wontfix)
 
 Start:
     .venv/bin/uvicorn auditor.audit_api:app --host 0.0.0.0 --port 8765
@@ -34,7 +36,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dataclasses import asdict
 
@@ -45,6 +47,7 @@ from sqlalchemy import delete, select
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from auditor.agent_pack import CHARS_PER_TOKEN, DEFAULT_BUNDLE_TOKEN_BUDGET, PACK_DISCOVERY
 from auditor.config import load_ecosystem_config
 from auditor.db import AuditRun, FindingRecord, PipelineCheckpoint, RepoRun, as_utc, db_session, utcnow
 from auditor.gpu_scheduler import get_vram_info
@@ -753,6 +756,36 @@ class _ValidatePatchRequest(BaseModel):
     repo: str
     patch: str
     timeout_s: int = 120
+    pack_id: str | None = None  # when set and validation passes, the pack is marked resolved
+
+
+def _resolve_pack_after_validation(
+    pack_id: str, *, repo: str, tool: str
+) -> dict[str, Any]:
+    """Mark *pack_id* resolved after a passing validate_patch. Never raises."""
+    from auditor.agent_pack import load_pack, update_pack_status
+    from conductor.publish import public_base_url
+
+    out = _output_dir()
+    try:
+        data = load_pack(out, pack_id)
+        if data is None:
+            return {"id": pack_id, "updated": False, "reason": "pack not found"}
+        pack_repo = str((data.get("repo") or {}).get("name") or "")
+        impacted = list((data.get("impact") or {}).get("impacted_repos") or [])
+        if data.get("kind") == "world_model" or repo not in {pack_repo, *impacted}:
+            return {"id": pack_id, "updated": False, "reason": "pack does not apply to this repo"}
+        updated = update_pack_status(
+            out,
+            pack_id,
+            "resolved",
+            f"validate_patch passed (repo={repo}, tool={tool})",
+            public_base_url=public_base_url(),
+        )
+        return {"id": pack_id, "updated": updated is not None, "status": "resolved"}
+    except Exception as exc:  # closure is best-effort; the validation result stands
+        logger.warning("could not mark pack %s resolved: %s", pack_id, exc)
+        return {"id": pack_id, "updated": False, "reason": str(exc)}
 
 
 @app.post("/audit/validate_patch", dependencies=[Depends(_require_mutating_auth)])
@@ -856,7 +889,7 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
                 val_result.errors[:3],
             )
 
-        return JSONResponse({
+        response: dict[str, Any] = {
             "repo":            request.repo,
             "patch_applied":   patch_applied,
             "patch_error":     patch_error,
@@ -868,7 +901,16 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
             "failure_summary": summary,
             "raw_output":      val_result.raw_output[-2000:],
             "skipped_reason":  val_result.skipped_reason,
-        })
+        }
+        if request.pack_id:
+            response["pack"] = (
+                _resolve_pack_after_validation(
+                    request.pack_id, repo=request.repo, tool=val_result.tool
+                )
+                if passed
+                else {"id": request.pack_id, "updated": False, "reason": "validation did not pass"}
+            )
+        return JSONResponse(response)
     except Exception as exc:
         logger.exception("validate_patch failed for repo %r", request.repo)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -1234,12 +1276,17 @@ def list_agent_packs(
     layer: str = Query(default="", description="world_model | specialist"),
     q: str = Query(default="", description="Substring match on id/title/repo/path"),
     run_id: str = Query(default=""),
+    status: str = Query(
+        default="",
+        description="open | claimed | in_progress | resolved | wontfix (comma-separated allowed)",
+    ),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> JSONResponse:
     """Discover agent packs: world model first, then specialist coding packs.
 
     Coding agents should load ``kind=world_model`` (or ``layer=world_model``) for
     the target repo, then fetch specialist packs — no pasted brief required.
+    Prefer ``GET /audit/packs/bundle?repo=…`` for a single-call mission bundle.
     """
     from auditor.agent_pack import index_path, list_packs, rebuild_index
     from conductor.publish import public_base_url
@@ -1255,6 +1302,7 @@ def list_agent_packs(
         layer=layer,
         q=q,
         run_id=run_id,
+        status=status,
         limit=limit,
     )
     idx_meta: dict[str, Any] = {}
@@ -1267,14 +1315,86 @@ def list_agent_packs(
         "loop": idx_meta.get("loop", "scan → compressed world model → specialist coding packs"),
         "layers": idx_meta.get("layers", {}),
         "kind_counts": idx_meta.get("kind_counts", {}),
+        "status_counts": idx_meta.get("status_counts", {}),
         "packs": packs,
-        "discovery": idx_meta.get("discovery")
-        or {
-            "get": "/audit/packs/{id}",
-            "brief": "/audit/packs/{id}/brief",
-            "world_model": "/audit/packs?kind=world_model",
-            "index_file": f"{out}/agent_packs/INDEX.json",
-        },
+        # Always serve current discovery (older INDEX.json files point specialist at kind=architecture).
+        "discovery": {**PACK_DISCOVERY, "index_file": f"{out}/agent_packs/INDEX.json"},
+    })
+
+
+@app.get("/audit/packs/bundle")
+def get_agent_pack_bundle(
+    repo: str = Query(..., min_length=1, description="Target repo name (e.g. argus-cortex)"),
+    token_budget: int = Query(
+        default=DEFAULT_BUNDLE_TOKEN_BUDGET,
+        ge=100,
+        le=32000,
+        description=f"Approx. token cap for briefs_markdown (~{CHARS_PER_TOKEN} chars/token)",
+    ),
+    q: str = Query(default="", description="Boost specialists matching id/title/path/kind"),
+    limit_specialists: int = Query(default=5, ge=0, le=50),
+    status: str = Query(
+        default="open,claimed,in_progress",
+        description="Specialist statuses to include (comma-separated)",
+    ),
+) -> JSONResponse:
+    """One-call mission bundle: world model + ranked specialist packs + capped briefs."""
+    from auditor.agent_pack import build_pack_bundle, index_path, rebuild_index
+    from conductor.publish import public_base_url
+
+    out = _output_dir()
+    if not index_path(out).exists():
+        rebuild_index(out, public_base_url=public_base_url())
+    return JSONResponse(
+        build_pack_bundle(
+            out,
+            repo=repo,
+            token_budget=token_budget,
+            q=q,
+            limit_specialists=limit_specialists,
+            status=status,
+            public_base_url=public_base_url(),
+        )
+    )
+
+
+class _PackStatusRequest(BaseModel):
+    status: Literal["open", "claimed", "in_progress", "resolved", "wontfix"]
+    note: str = ""
+
+
+@app.post("/audit/packs/{pack_id}/status", dependencies=[Depends(_require_mutating_auth)])
+def set_agent_pack_status(pack_id: str, request: _PackStatusRequest) -> JSONResponse:
+    """Update a pack's lifecycle status (persisted in YAML and reflected in INDEX.json)."""
+    from auditor.agent_pack import (
+        AgentCodingPack,
+        ingest_packs_to_rag,
+        pack_rag_ingest_enabled,
+        update_pack_status,
+    )
+    from conductor.publish import public_base_url
+
+    updated = update_pack_status(
+        _output_dir(),
+        pack_id,
+        request.status,
+        request.note,
+        public_base_url=public_base_url(),
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Pack {pack_id!r} not found.")
+    if pack_rag_ingest_enabled():
+        # Refresh the slim RAG doc so retrieval reflects the new status (best-effort).
+        try:
+            ingest_packs_to_rag([AgentCodingPack.from_dict(updated)])
+        except Exception as exc:
+            logger.warning("pack status RAG refresh failed for %s: %s", pack_id, exc)
+    return JSONResponse({
+        "id": pack_id,
+        "status": updated["status"],
+        "status_note": updated["status_note"],
+        "status_updated_at": updated["status_updated_at"],
+        "draft_pr_url": (updated.get("repair") or {}).get("draft_pr_url"),
     })
 
 
@@ -1301,19 +1421,7 @@ def get_agent_pack_brief(pack_id: str) -> PlainTextResponse:
     data = load_pack(out, pack_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Pack {pack_id!r} not found.")
-    pack = AgentCodingPack(
-        work_item_id=str(data.get("work_item_id") or pack_id),
-        kind=str(data.get("kind") or "finding"),
-        priority=dict(data.get("priority") or {}),
-        repo=dict(data.get("repo") or {}),
-        location=dict(data.get("location") or {}),
-        narrative=dict(data.get("narrative") or {}),
-        impact=dict(data.get("impact") or {}),
-        governance=dict(data.get("governance") or {}),
-        verification=dict(data.get("verification") or {}),
-        repair=dict(data.get("repair") or {}),
-        provenance=dict(data.get("provenance") or {}),
-    )
+    pack = AgentCodingPack.from_dict(data, fallback_id=pack_id)
     return PlainTextResponse(pack.to_brief_md())
 
 

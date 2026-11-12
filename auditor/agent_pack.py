@@ -28,6 +28,31 @@ PACK_VERSION = 1
 _SNIPPET_RADIUS = 12
 _SEVERITY_SCORE = {"CRITICAL": 1.0, "HIGH": 0.85, "MEDIUM": 0.55, "LOW": 0.3, "INFO": 0.1}
 
+PACK_STATUSES = ("open", "claimed", "in_progress", "resolved", "wontfix")
+DEFAULT_PACK_STATUS = "open"
+# Statuses a consuming agent should still pick up (resolved/wontfix are closed).
+ACTIVE_PACK_STATUSES = ("open", "claimed", "in_progress")
+_STATUS_HISTORY_MAX = 20
+
+# Bundle sizing: token_budget is approximated as chars / CHARS_PER_TOKEN.
+CHARS_PER_TOKEN = 4
+DEFAULT_BUNDLE_TOKEN_BUDGET = 2500
+WORLD_ECOSYSTEM_ID = "pack-world-ecosystem"
+WORLD_MEMORY_ID = "pack-world-architecture-memory"
+_RAG_BATCH_SIZE = 80
+_TRUNCATION_MARK = "\n…[truncated]"
+
+PACK_DISCOVERY: dict[str, str] = {
+    "list": "/audit/packs",
+    "bundle": "/audit/packs/bundle?repo={repo}",
+    "world_model": "/audit/packs?kind=world_model",
+    "specialist": "/audit/packs?layer=specialist",
+    "get": "/audit/packs/{id}",
+    "brief": "/audit/packs/{id}/brief",
+    "status": "/audit/packs/{id}/status",
+    "index_file": "agent_packs/INDEX.json",
+}
+
 
 @dataclass
 class AgentCodingPack:
@@ -45,11 +70,56 @@ class AgentCodingPack:
     repair: dict[str, Any] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
     pack_version: int = PACK_VERSION
+    status: str = DEFAULT_PACK_STATUS
+    status_note: str = ""
+    status_updated_at: str = ""
+    status_history: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["pack_version"] = self.pack_version
         return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], *, fallback_id: str = "") -> "AgentCodingPack":
+        """Rebuild a pack from its YAML/JSON dict (tolerates legacy packs without status)."""
+        status = str(data.get("status") or DEFAULT_PACK_STATUS)
+        if status not in PACK_STATUSES:
+            status = DEFAULT_PACK_STATUS
+        history = data.get("status_history")
+        return cls(
+            work_item_id=str(data.get("work_item_id") or fallback_id),
+            kind=str(data.get("kind") or "finding"),
+            priority=dict(data.get("priority") or {}),
+            repo=dict(data.get("repo") or {}),
+            location=dict(data.get("location") or {}),
+            narrative=dict(data.get("narrative") or {}),
+            impact=dict(data.get("impact") or {}),
+            governance=dict(data.get("governance") or {}),
+            verification=dict(data.get("verification") or {}),
+            repair=dict(data.get("repair") or {}),
+            provenance=dict(data.get("provenance") or {}),
+            pack_version=int(data.get("pack_version") or PACK_VERSION),
+            status=status,
+            status_note=str(data.get("status_note") or ""),
+            status_updated_at=str(data.get("status_updated_at") or ""),
+            status_history=(
+                [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+            ),
+        )
+
+    def apply_status(self, status: str, note: str = "") -> None:
+        """Set lifecycle status in place and append a bounded history entry."""
+        if status not in PACK_STATUSES:
+            raise ValueError(f"invalid pack status {status!r}; expected one of {PACK_STATUSES}")
+        now = utc_now_iso()
+        self.status = status
+        self.status_note = note
+        self.status_updated_at = now
+        self.status_history = [
+            *self.status_history,
+            {"status": status, "note": note, "at": now},
+        ][-_STATUS_HISTORY_MAX:]
 
     def layer(self) -> str:
         """world_model = compressed topology/memory; specialist = actionable coding work."""
@@ -62,7 +132,9 @@ class AgentCodingPack:
             "layer": self.layer(),
             "severity": (self.priority or {}).get("severity", "MEDIUM"),
             "score": (self.priority or {}).get("score", 0.0),
+            "status": self.status or DEFAULT_PACK_STATUS,
             "repo": (self.repo or {}).get("name", ""),
+            "impacted_repos": list((self.impact or {}).get("impacted_repos") or []),
             "title": (self.narrative or {}).get("title", ""),
             "file_path": (self.location or {}).get("file_path", ""),
             "run_id": (self.provenance or {}).get("run_id", ""),
@@ -82,6 +154,7 @@ class AgentCodingPack:
             f"- **id:** `{self.work_item_id}`",
             f"- **kind:** {self.kind}",
             f"- **severity:** {sev}",
+            f"- **status:** {self.status or DEFAULT_PACK_STATUS}",
             f"- **repo:** {repo}",
             f"- **location:** `{loc.get('file_path', '')}`:{loc.get('line', 0)}"
             + (f" (`{loc.get('symbol')}`)" if loc.get("symbol") else ""),
@@ -132,12 +205,34 @@ class AgentCodingPack:
         lines.append("Do not auto-merge. Prefer minimal patches with citations.")
         return "\n".join(lines)
 
+    def to_compact_md(self) -> str:
+        """Short brief (no snippet/evidence) used by bundles under a token budget."""
+        title = (self.narrative or {}).get("title", self.work_item_id)
+        loc = self.location or {}
+        lines = [
+            f"## {title}",
+            f"`{self.work_item_id}` · {self.kind} · "
+            f"{(self.priority or {}).get('severity', 'MEDIUM')} · status={self.status or DEFAULT_PACK_STATUS}",
+            f"repo: {(self.repo or {}).get('name', '')} · "
+            f"`{loc.get('file_path', '')}`:{loc.get('line', 0)}",
+            "",
+            (self.narrative or {}).get("recommendation") or (self.narrative or {}).get("description") or title,
+        ]
+        criteria = (self.narrative or {}).get("acceptance_criteria") or []
+        if criteria:
+            lines.extend(["", "Acceptance:", *[f"- {c}" for c in criteria[:4]]])
+        cmds = (self.verification or {}).get("suggested_test_commands") or []
+        if cmds:
+            lines.extend(["", "Verify: " + "; ".join(f"`{c}`" for c in cmds[:2])])
+        return "\n".join(lines)
+
     def to_rag_text(self) -> str:
         """Slim text for audit_docs retrieval (not a full dump)."""
         entry = self.to_index_entry(path="")
         parts = [
             f"Agent coding pack {self.work_item_id}",
-            f"kind={self.kind} severity={entry['severity']} repo={entry['repo']}",
+            f"kind={self.kind} layer={entry['layer']} status={entry['status']} "
+            f"severity={entry['severity']} repo={entry['repo']}",
             f"title={entry['title']}",
             f"file={entry['file_path']}",
             (self.narrative or {}).get("recommendation") or "",
@@ -354,10 +449,42 @@ def build_pack_from_worker_finding(
     return pack
 
 
-def write_pack(pack: AgentCodingPack, output_dir: str | Path) -> Path:
+def _read_pack_yaml(path: Path) -> dict[str, Any] | None:
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _carry_over_lifecycle(pack: AgentCodingPack, existing: dict[str, Any]) -> None:
+    """Re-emitting a pack must not reset an agent-set status back to ``open``."""
+    prev = AgentCodingPack.from_dict(existing, fallback_id=pack.work_item_id)
+    if prev.status == DEFAULT_PACK_STATUS and not prev.status_history:
+        return
+    if pack.status != DEFAULT_PACK_STATUS:
+        return  # caller set an explicit status (e.g. conductor in_progress)
+    pack.status = prev.status
+    pack.status_note = prev.status_note
+    pack.status_updated_at = prev.status_updated_at
+    pack.status_history = prev.status_history
+    if not pack.repair.get("draft_pr_url") and prev.repair.get("draft_pr_url"):
+        pack.repair["draft_pr_url"] = prev.repair["draft_pr_url"]
+
+
+def write_pack(
+    pack: AgentCodingPack,
+    output_dir: str | Path,
+    *,
+    preserve_status: bool = True,
+) -> Path:
     root = packs_dir(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     path = pack_file_path(output_dir, pack.work_item_id)
+    if preserve_status and path.exists():
+        existing = _read_pack_yaml(path)
+        if existing:
+            _carry_over_lifecycle(pack, existing)
     if not pack.repair.get("intent_markdown"):
         pack.repair["intent_markdown"] = pack.to_brief_md()
     path.write_text(
@@ -382,20 +509,7 @@ def rebuild_index(output_dir: str | Path, *, public_base_url: str = "") -> dict[
             continue
         if not isinstance(data, dict) or not data.get("work_item_id"):
             continue
-        pack = AgentCodingPack(
-            work_item_id=str(data["work_item_id"]),
-            kind=str(data.get("kind") or "finding"),
-            priority=dict(data.get("priority") or {}),
-            repo=dict(data.get("repo") or {}),
-            location=dict(data.get("location") or {}),
-            narrative=dict(data.get("narrative") or {}),
-            impact=dict(data.get("impact") or {}),
-            governance=dict(data.get("governance") or {}),
-            verification=dict(data.get("verification") or {}),
-            repair=dict(data.get("repair") or {}),
-            provenance=dict(data.get("provenance") or {}),
-            pack_version=int(data.get("pack_version") or PACK_VERSION),
-        )
+        pack = AgentCodingPack.from_dict(data)
         rel = str(yaml_path.relative_to(Path(output_dir)))
         url = ""
         if public_base_url:
@@ -420,6 +534,10 @@ def rebuild_index(output_dir: str | Path, *, public_base_url: str = "") -> dict[
         by_kind[k] = by_kind.get(k, 0) + 1
     world_ids = [e["id"] for e in entries if e.get("layer") == "world_model"]
     specialist_ids = [e["id"] for e in entries if e.get("layer") != "world_model"]
+    by_status: dict[str, int] = {}
+    for e in entries:
+        st = str(e.get("status") or DEFAULT_PACK_STATUS)
+        by_status[st] = by_status.get(st, 0) + 1
     payload = {
         "updated_at": utc_now_iso(),
         "count": len(entries),
@@ -429,14 +547,8 @@ def rebuild_index(output_dir: str | Path, *, public_base_url: str = "") -> dict[
             "specialist": specialist_ids,
         },
         "kind_counts": by_kind,
-        "discovery": {
-            "list": "/audit/packs",
-            "world_model": "/audit/packs?kind=world_model",
-            "specialist": "/audit/packs?kind=architecture",
-            "get": "/audit/packs/{id}",
-            "brief": "/audit/packs/{id}/brief",
-            "index_file": "agent_packs/INDEX.json",
-        },
+        "status_counts": by_status,
+        "discovery": dict(PACK_DISCOVERY),
         "packs": entries,
     }
     index_path(output_dir).write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -471,8 +583,10 @@ def list_packs(
     layer: str = "",
     q: str = "",
     run_id: str = "",
+    status: str = "",
     limit: int = 50,
 ) -> list[dict[str, Any]]:
+    """Filter INDEX entries. ``status`` may be comma-separated (e.g. ``open,claimed``)."""
     idx_file = index_path(output_dir)
     if idx_file.exists():
         try:
@@ -489,9 +603,12 @@ def list_packs(
     layer_l = layer.lower().strip()
     q_l = q.lower().strip()
     run_l = run_id.strip()
+    status_set = {s.strip().lower() for s in status.split(",") if s.strip()}
 
     out: list[dict[str, Any]] = []
     for entry in entries:
+        if status_set and str(entry.get("status") or DEFAULT_PACK_STATUS).lower() not in status_set:
+            continue
         if repo_l and repo_l not in str(entry.get("repo", "")).lower():
             # World-model ecosystem pack applies to all repos
             if not (
@@ -520,6 +637,254 @@ def list_packs(
     return out
 
 
+def update_pack_status(
+    output_dir: str | Path,
+    pack_id: str,
+    status: str,
+    note: str = "",
+    *,
+    public_base_url: str = "",
+    repair_updates: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Persist a lifecycle status on the pack YAML and refresh INDEX.json.
+
+    Returns the updated pack dict, or ``None`` when the pack does not exist.
+    Raises ``ValueError`` for an unknown status.
+    """
+    if status not in PACK_STATUSES:
+        raise ValueError(f"invalid pack status {status!r}; expected one of {PACK_STATUSES}")
+    data = load_pack(output_dir, pack_id)
+    if data is None:
+        return None
+    pack = AgentCodingPack.from_dict(data, fallback_id=pack_id)
+    pack.apply_status(status, (note or "")[:2000])
+    if repair_updates:
+        pack.repair.update(repair_updates)
+    write_pack(pack, output_dir, preserve_status=False)
+    rebuild_index(output_dir, public_base_url=public_base_url)
+    return pack.to_dict()
+
+
+def snapshot_pack_lifecycle(output_dir: str | Path) -> dict[str, dict[str, Any]]:
+    """Capture non-default lifecycle state so a full re-emit can restore it."""
+    snap: dict[str, dict[str, Any]] = {}
+    for yaml_path in packs_dir(output_dir).glob("*.yaml"):
+        data = _read_pack_yaml(yaml_path)
+        if not data or not data.get("work_item_id"):
+            continue
+        pack = AgentCodingPack.from_dict(data)
+        if pack.status == DEFAULT_PACK_STATUS and not pack.status_history:
+            continue
+        snap[pack.work_item_id] = {
+            "status": pack.status,
+            "status_note": pack.status_note,
+            "status_updated_at": pack.status_updated_at,
+            "status_history": pack.status_history,
+            "draft_pr_url": pack.repair.get("draft_pr_url"),
+        }
+    return snap
+
+
+def restore_pack_lifecycle(
+    output_dir: str | Path,
+    snapshot: dict[str, dict[str, Any]],
+    *,
+    public_base_url: str = "",
+) -> int:
+    """Re-apply a :func:`snapshot_pack_lifecycle` onto packs that were re-emitted."""
+    restored = 0
+    for pack_id, state in snapshot.items():
+        data = load_pack(output_dir, pack_id)
+        if data is None:
+            continue
+        pack = AgentCodingPack.from_dict(data, fallback_id=pack_id)
+        pack.status = state.get("status") or DEFAULT_PACK_STATUS
+        pack.status_note = str(state.get("status_note") or "")
+        pack.status_updated_at = str(state.get("status_updated_at") or "")
+        pack.status_history = list(state.get("status_history") or [])
+        if state.get("draft_pr_url") and not pack.repair.get("draft_pr_url"):
+            pack.repair["draft_pr_url"] = state["draft_pr_url"]
+        write_pack(pack, output_dir, preserve_status=False)
+        restored += 1
+    if restored:
+        rebuild_index(output_dir, public_base_url=public_base_url)
+    return restored
+
+
+def pack_rag_ingest_enabled(explicit: bool | None = None) -> bool:
+    """Resolve whether packs should be pushed to RAG.
+
+    Default on. ``AI_AUDIT_PACK_RAG_INGEST=0`` (or false/no/off) is a kill switch that
+    wins over everything; otherwise an explicit ``True``/``False`` (``--no-rag``) is honored.
+    """
+    env = os.getenv("AI_AUDIT_PACK_RAG_INGEST", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    return True if explicit is None else bool(explicit)
+
+
+def _truncate_text(text: str, cap: int) -> tuple[str, bool]:
+    if len(text) <= cap:
+        return text, False
+    keep = max(0, cap - len(_TRUNCATION_MARK))
+    return text[:keep].rstrip() + _TRUNCATION_MARK, True
+
+
+def _world_brief_md(data: dict[str, Any], cap: int) -> tuple[str, bool]:
+    narrative = data.get("narrative") or {}
+    title = narrative.get("title") or data.get("work_item_id", "")
+    text = "\n".join(
+        (
+            f"# {title} (`{data.get('work_item_id', '')}`)",
+            str(narrative.get("recommendation") or ""),
+            "",
+            str(narrative.get("description") or ""),
+        )
+    )
+    return _truncate_text(text, cap)
+
+
+def _specialist_rank(entry: dict[str, Any], *, repo: str, q: str) -> float | None:
+    """Higher is better; ``None`` means the pack is unrelated to *repo*."""
+    primary = str(entry.get("repo") or "") == repo
+    impacted = repo in (entry.get("impacted_repos") or [])
+    if not (primary or impacted):
+        return None
+    sev = _SEVERITY_SCORE.get(str(entry.get("severity") or "MEDIUM").upper(), 0.3)
+    score = 0.5 * sev + 0.5 * float(entry.get("score") or 0.0)
+    score += 1.0 if primary else 0.3
+    if q:
+        hay = " ".join(
+            str(entry.get(k, "")) for k in ("id", "title", "file_path", "kind")
+        ).lower()
+        if q.lower() in hay:
+            score += 0.25
+    # Prefer work nobody has picked up yet.
+    status = str(entry.get("status") or DEFAULT_PACK_STATUS)
+    if status == "claimed":
+        score -= 0.15
+    elif status == "in_progress":
+        score -= 0.3
+    return score
+
+
+def build_pack_bundle(
+    output_dir: str | Path,
+    *,
+    repo: str,
+    token_budget: int = DEFAULT_BUNDLE_TOKEN_BUDGET,
+    q: str = "",
+    limit_specialists: int = 5,
+    status: str = ",".join(ACTIVE_PACK_STATUSES),
+    public_base_url: str = "",
+) -> dict[str, Any]:
+    """One-call mission bundle for a consuming agent working in *repo*.
+
+    World model (ecosystem + architecture memory + ``pack-world-<repo>``) plus the
+    top-ranked specialist packs, with ``briefs_markdown`` capped at roughly
+    ``token_budget`` tokens (``CHARS_PER_TOKEN`` chars each). Lowest-ranked specialists
+    are dropped first; the ecosystem world pack is never dropped (only truncated).
+    """
+    repo = repo.strip()
+    char_budget = max(400, int(token_budget) * CHARS_PER_TOKEN)
+    index_entries = list_packs(output_dir, status=status, layer="specialist", limit=10_000)
+    ranked = sorted(
+        (
+            (rank, entry)
+            for entry in index_entries
+            if (rank := _specialist_rank(entry, repo=repo, q=q)) is not None
+        ),
+        key=lambda t: (-t[0], str(t[1].get("id", ""))),
+    )
+    candidates = len(ranked)
+    ranked = ranked[: max(0, limit_specialists)]
+
+    sections: list[str] = []
+    used = 0
+    truncated = False
+    world_model: list[dict[str, Any]] = []
+    # (pack id, share of the char budget it may use)
+    for pack_id, share in (
+        (WORLD_ECOSYSTEM_ID, 0.30),
+        (f"pack-world-{repo}", 0.25),
+        (WORLD_MEMORY_ID, 0.15),
+    ):
+        data = load_pack(output_dir, pack_id)
+        if data is None:
+            continue
+        world_model.append(data)
+        cap = min(int(char_budget * share), char_budget - used)
+        if pack_id != WORLD_ECOSYSTEM_ID and cap < 200:
+            truncated = True
+            continue
+        md, cut = _world_brief_md(data, max(cap, 200))
+        sections.append(md)
+        used += len(md) + 2
+        truncated = truncated or cut
+    # Stable world-model order for consumers: ecosystem, architecture memory, repo.
+    order = {WORLD_ECOSYSTEM_ID: 0, WORLD_MEMORY_ID: 1}
+    world_model.sort(key=lambda d: order.get(str(d.get("work_item_id")), 2))
+
+    specialists: list[dict[str, Any]] = []
+    included: list[str] = []
+    dropped: list[str] = []
+    budget_exhausted = False
+    for position, (rank, entry) in enumerate(ranked, start=1):
+        data = load_pack(output_dir, str(entry.get("id") or ""))
+        if data is None:
+            continue
+        pack = AgentCodingPack.from_dict(data, fallback_id=str(entry.get("id") or ""))
+        in_brief = False
+        if not budget_exhausted:
+            remaining = char_budget - used
+            full = pack.to_brief_md()
+            compact = pack.to_compact_md()
+            if len(full) <= remaining:
+                md = full
+            elif len(compact) <= remaining:
+                md, truncated = compact, True
+            else:
+                md = ""
+                budget_exhausted = True  # drop this and every lower-ranked pack
+            if md:
+                sections.append(md)
+                used += len(md) + 2
+                in_brief = True
+        if not in_brief:
+            truncated = True
+            dropped.append(pack.work_item_id)
+        else:
+            included.append(pack.work_item_id)
+        specialists.append(
+            {**pack.to_dict(), "bundle_rank": position, "rank_score": round(rank, 3), "in_brief": in_brief}
+        )
+
+    base = public_base_url.rstrip("/")
+    discovery = {k: f"{base}{v}" if base else v for k, v in PACK_DISCOVERY.items()}
+    discovery["bundle"] = discovery["bundle"].replace("{repo}", repo)
+    briefs_markdown = "\n\n".join(sections)
+    return {
+        "repo": repo,
+        "world_model": world_model,
+        "specialists": specialists,
+        "briefs_markdown": briefs_markdown,
+        "truncated": truncated,
+        "token_budget": int(token_budget),
+        "char_budget": char_budget,
+        "approx_tokens": len(briefs_markdown) // CHARS_PER_TOKEN,
+        "candidates": candidates,
+        "included_ids": included,
+        "dropped_ids": dropped,
+        "discovery": discovery,
+        "hints": [
+            "Read briefs_markdown first; fetch GET /audit/packs/{id} for full evidence.",
+            "Claim work: POST /audit/packs/{id}/status {\"status\": \"claimed\"} (mutating auth).",
+            "After a fix: POST /audit/validate_patch with pack_id to auto-resolve the pack.",
+            "Mark non-actionable packs: POST /audit/packs/{id}/status {\"status\": \"wontfix\", \"note\": \"…\"}.",
+        ],
+    }
+
+
 def emit_packs_from_worker_results(
     *,
     output_dir: str | Path,
@@ -527,12 +892,18 @@ def emit_packs_from_worker_results(
     tasks: list[Any],
     results_by_id: dict[str, Any],
     draft_pr_by_repo: dict[str, str] | None = None,
+    draft_pr_by_pack: dict[str, str] | None = None,
     public_base_url: str = "",
     ingest_rag: bool = False,
 ) -> list[AgentCodingPack]:
-    """Write one pack per confirmed worker finding and refresh INDEX.json."""
+    """Write one pack per confirmed worker finding and refresh INDEX.json.
+
+    ``draft_pr_by_pack`` maps pack id → draft PR URL; those packs are marked
+    ``in_progress`` with ``repair.draft_pr_url`` set.
+    """
     packs: list[AgentCodingPack] = []
     draft_pr_by_repo = draft_pr_by_repo or {}
+    draft_pr_by_pack = draft_pr_by_pack or {}
     for task in tasks:
         result = results_by_id.get(task.id)
         if result is None:
@@ -554,6 +925,10 @@ def emit_packs_from_worker_results(
                 handoff_path=handoff,
                 public_base_url=public_base_url,
             )
+            pr_url = draft_pr_by_pack.get(pack.work_item_id)
+            if pr_url:
+                pack.repair["draft_pr_url"] = pr_url
+                pack.apply_status("in_progress", f"Draft PR opened: {pr_url}")
             write_pack(pack, output_dir)
             packs.append(pack)
 
@@ -966,7 +1341,7 @@ def ingest_packs_to_rag(packs: list[AgentCodingPack]) -> dict[str, Any]:
     secret = os.getenv("INGEST_SHARED_SECRET", "")
     collection = os.getenv("AI_AUDIT_RAG_COLLECTION", "audit_docs")
     documents = []
-    for pack in packs[:80]:
+    for pack in packs:
         documents.append(
             {
                 "id": f"agent-pack::{pack.work_item_id}",
@@ -979,26 +1354,31 @@ def ingest_packs_to_rag(packs: list[AgentCodingPack]) -> dict[str, Any]:
                     "pack_id": pack.work_item_id,
                     "repo": (pack.repo or {}).get("name", ""),
                     "severity": (pack.priority or {}).get("severity", ""),
+                    "status": pack.status or DEFAULT_PACK_STATUS,
                 },
             }
         )
     if not documents:
         return {"ingested": False, "skipped": True, "count": 0}
 
-    body = {"collection": collection, "documents": documents}
-    payload = json.dumps(body).encode()
-    ts = int(time.time())
-    headers = {"Content-Type": "application/json", "X-Timestamp": str(ts)}
-    if secret:
-        headers["X-Signature"] = hmac.new(
-            secret.encode(), f"{ts}:".encode() + payload, hashlib.sha256
-        ).hexdigest()
-    try:
-        resp = requests.post(url, data=payload, headers=headers, timeout=30)
-        ok = 200 <= resp.status_code < 300
-        if not ok:
+    result: dict[str, Any] = {"ingested": True, "skipped": False, "count": 0}
+    for start in range(0, len(documents), _RAG_BATCH_SIZE):
+        batch = documents[start : start + _RAG_BATCH_SIZE]
+        payload = json.dumps({"collection": collection, "documents": batch}).encode()
+        ts = int(time.time())
+        headers = {"Content-Type": "application/json", "X-Timestamp": str(ts)}
+        if secret:
+            headers["X-Signature"] = hmac.new(
+                secret.encode(), f"{ts}:".encode() + payload, hashlib.sha256
+            ).hexdigest()
+        try:
+            resp = requests.post(url, data=payload, headers=headers, timeout=30)
+        except requests.RequestException as exc:
+            logger.warning("pack RAG ingest failed: %s", exc)
+            return {**result, "ingested": False, "error": str(exc)}
+        if not 200 <= resp.status_code < 300:
             logger.warning("pack RAG ingest HTTP %s: %s", resp.status_code, (resp.text or "")[:300])
-        return {"ingested": ok, "skipped": False, "status_code": resp.status_code, "count": len(documents)}
-    except requests.RequestException as exc:
-        logger.warning("pack RAG ingest failed: %s", exc)
-        return {"ingested": False, "skipped": False, "error": str(exc), "count": len(documents)}
+            return {**result, "ingested": False, "status_code": resp.status_code}
+        result["count"] += len(batch)
+        result["status_code"] = resp.status_code
+    return result

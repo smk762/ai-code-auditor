@@ -2,7 +2,41 @@
 
 ## Loop: scan → compressed world model → specialist coding packs
 
-Do **not** wait for a pasted brief. Fetch packs in this order:
+Do **not** wait for a pasted brief.
+
+### Quick start: mission bundle (one call)
+
+```bash
+ai-audit packs --bundle --repo argus-cortex            # markdown briefs
+ai-audit packs --bundle --repo argus-cortex --json
+curl -s 'http://192.168.1.198:8765/audit/packs/bundle?repo=argus-cortex&token_budget=2500&limit_specialists=5'
+```
+
+Returns `world_model` (ecosystem + architecture memory + `pack-world-<repo>`), ranked
+`specialists`, `briefs_markdown` capped at ~`token_budget` tokens (~4 chars/token), `truncated`,
+and `discovery`. Lowest-ranked specialists are dropped first; the ecosystem pack is never dropped.
+Optional: `q=<keyword>` boosts matches, `status=open,claimed,in_progress` (default) hides closed packs.
+
+### Status lifecycle (claim → fix → close)
+
+Statuses: `open` (default) · `claimed` · `in_progress` · `resolved` · `wontfix`.
+
+```bash
+curl -X POST 'http://192.168.1.198:8765/audit/packs/<id>/status' \
+  -H 'Content-Type: application/json' -H "X-API-Token: $AI_AUDIT_API_TOKEN" \
+  -d '{"status":"claimed","note":"agent X working"}'
+ai-audit packs --set-status claimed --id <id> --note "…"   # local, no HTTP
+ai-audit packs --status open --layer specialist --json       # filter
+```
+
+Closure is automatic where possible: `POST /audit/validate_patch` with `"pack_id": "<id>"` marks
+the pack `resolved` when `passed=true`; a conductor draft PR marks its pack `in_progress` and stores
+`repair.draft_pr_url`. Status survives re-emits. Pack docs are slim-ingested to RAG by default
+(`AI_AUDIT_PACK_RAG_INGEST=0` / `--no-rag` to disable).
+
+### Manual path
+
+Fetch packs in this order:
 
 1. **World model** (topology / ownership / durable decisions)
 2. **Specialist pack** for the concrete fix or feature
@@ -35,12 +69,14 @@ Kinds: `architecture`, `security`, `bughunt`, `nightly`, `diff_audit`, `extracti
 HTTP:
 
 - `GET /audit/packs?layer=world_model`
-- `GET /audit/packs?layer=specialist&repo=…&q=…`
+- `GET /audit/packs?layer=specialist&repo=…&q=…&status=open`
+- `GET /audit/packs/bundle?repo=…&token_budget=2500`
+- `POST /audit/packs/{id}/status` `{status, note?}`
 - `GET /audit/packs/{id}` / `/brief`
 
-On disk: `reports/agent_packs/INDEX.json` (includes `layers` + `kind_counts`).
+On disk: `reports/agent_packs/INDEX.json` (includes `layers`, `kind_counts`, `status_counts`).
 
-After a fix: pack `suggested_test_commands` or `POST /audit/validate_patch`.
+After a fix: pack `suggested_test_commands` or `POST /audit/validate_patch` (include `pack_id`).
 
 Refresh full loop: `python scripts/emit_agent_packs.py`
 

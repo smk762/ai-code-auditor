@@ -148,6 +148,25 @@ def _build_parser() -> argparse.ArgumentParser:
     packs.add_argument("--id", dest="pack_id", default="", help="Fetch one pack by id")
     packs.add_argument("--brief", action="store_true", help="Print markdown brief (with --id)")
     packs.add_argument("--json", action="store_true", help="JSON output")
+    packs.add_argument(
+        "--status",
+        default="",
+        help="Filter by status: open|claimed|in_progress|resolved|wontfix (comma-separated)",
+    )
+    packs.add_argument(
+        "--bundle",
+        action="store_true",
+        help="Mission bundle for --repo NAME: world model + ranked specialists, token-capped",
+    )
+    packs.add_argument("--token-budget", type=int, default=2500, help="Bundle brief cap (~4 chars/token)")
+    packs.add_argument("--limit-specialists", type=int, default=5, help="Max specialists in bundle")
+    packs.add_argument(
+        "--set-status",
+        default="",
+        choices=["", "open", "claimed", "in_progress", "resolved", "wontfix"],
+        help="Set lifecycle status on --id PACK_ID",
+    )
+    packs.add_argument("--note", default="", help="Optional note with --set-status")
 
     return parser
 
@@ -456,26 +475,52 @@ def main() -> None:
 
         cfg = load_ecosystem_config()
         out = cfg.output_dir
-        if args.pack_id:
+        if args.bundle:
+            from auditor.agent_pack import build_pack_bundle
+
+            if not args.repo:
+                raise SystemExit("--bundle requires --repo NAME (exact repo name)")
+            bundle = build_pack_bundle(
+                out,
+                repo=args.repo,
+                token_budget=args.token_budget,
+                q=args.q,
+                limit_specialists=args.limit_specialists,
+                status=args.status or "open,claimed,in_progress",
+                public_base_url=public_base_url(),
+            )
+            if args.json:
+                print(json.dumps(bundle, indent=2))
+            else:
+                print(bundle["briefs_markdown"])
+                print(
+                    f"\n--- bundle repo={bundle['repo']} specialists={len(bundle['specialists'])} "
+                    f"~{bundle['approx_tokens']}/{bundle['token_budget']} tokens "
+                    f"truncated={bundle['truncated']} — GET {bundle['discovery']['bundle']}"
+                )
+        elif args.set_status:
+            from auditor.agent_pack import update_pack_status
+
+            if not args.pack_id:
+                raise SystemExit("--set-status requires --id PACK_ID")
+            updated = update_pack_status(
+                out,
+                args.pack_id,
+                args.set_status,
+                args.note,
+                public_base_url=public_base_url(),
+            )
+            if updated is None:
+                raise SystemExit(f"Pack not found: {args.pack_id}")
+            print(json.dumps({"id": args.pack_id, "status": updated["status"]}, indent=2))
+        elif args.pack_id:
             data = load_pack(out, args.pack_id)
             if data is None:
                 raise SystemExit(f"Pack not found: {args.pack_id}")
             if args.brief:
                 from auditor.agent_pack import AgentCodingPack
 
-                pack = AgentCodingPack(
-                    work_item_id=str(data.get("work_item_id") or args.pack_id),
-                    kind=str(data.get("kind") or "finding"),
-                    priority=dict(data.get("priority") or {}),
-                    repo=dict(data.get("repo") or {}),
-                    location=dict(data.get("location") or {}),
-                    narrative=dict(data.get("narrative") or {}),
-                    impact=dict(data.get("impact") or {}),
-                    governance=dict(data.get("governance") or {}),
-                    verification=dict(data.get("verification") or {}),
-                    repair=dict(data.get("repair") or {}),
-                    provenance=dict(data.get("provenance") or {}),
-                )
+                pack = AgentCodingPack.from_dict(data, fallback_id=args.pack_id)
                 print(pack.to_brief_md())
             elif args.json:
                 print(json.dumps(data, indent=2))
@@ -491,12 +536,14 @@ def main() -> None:
                 layer=getattr(args, "layer", "") or "",
                 q=args.q,
                 run_id=args.run_id,
+                status=args.status,
                 limit=args.limit,
             )
             payload = {
                 "count": len(entries),
                 "packs": entries,
                 "list_url": f"{public_base_url()}/audit/packs",
+                "bundle_url": f"{public_base_url()}/audit/packs/bundle?repo=<name>",
                 "world_model_url": f"{public_base_url()}/audit/packs?kind=world_model",
             }
             if args.json:
