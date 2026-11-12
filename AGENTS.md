@@ -17,6 +17,30 @@ Returns `world_model` (ecosystem + architecture memory + `pack-world-<repo>`), r
 and `discovery`. Lowest-ranked specialists are dropped first; the ecosystem pack is never dropped.
 Optional: `q=<keyword>` boosts matches, `status=open,claimed,in_progress` (default) hides closed packs.
 
+### Preferred consuming-agent flow
+
+1. **Bundle** — `GET /audit/packs/bundle?repo=<name>` (or `ai-audit packs --bundle --repo <name>`).
+2. **Claim** — `POST /audit/packs/<id>/status {"status":"claimed"}` for the specialist pack you pick.
+3. **Fix** — `ai-audit repair --pack-id <id>` (agent-composer repair loop; fetches the pack and injects
+   acceptance criteria / tests / constraints; `--audit-api-base` overrides the API base), **or** implement
+   directly from the pack brief (`GET /audit/packs/<id>/brief`).
+4. **Close** — `POST /audit/validate_patch {"repo","patch","pack_id":"<id>"}`; `passed=true` marks the pack `resolved`.
+
+```bash
+B=http://192.168.1.198:8765
+curl -s "$B/audit/packs/bundle?repo=argus-cortex&token_budget=2500"                      # 1
+curl -X POST "$B/audit/packs/<id>/status" -H 'Content-Type: application/json' \
+  -H "X-API-Token: $AI_AUDIT_API_TOKEN" -d '{"status":"claimed","note":"agent X"}'       # 2
+ai-audit repair --repo argus-cortex --pack-id <id> --mode review                        # 3
+curl -X POST "$B/audit/validate_patch" -H 'Content-Type: application/json' \
+  -H "X-API-Token: $AI_AUDIT_API_TOKEN" \
+  -d '{"repo":"argus-cortex","patch":"<unified diff>","pack_id":"<id>"}'                 # 4
+```
+
+Give up on a pack with `status: wontfix` (+ `note`). Other repos get this flow via
+`bash scripts/install_agent_pack_awareness.sh` (idempotent `AGENTS.md` section +
+`.cursor/rules/agent-coding-packs.mdc`; `--dry-run`, `--repo NAME`; local files only, no git).
+
 ### Status lifecycle (claim → fix → close)
 
 Statuses: `open` (default) · `claimed` · `in_progress` · `resolved` · `wontfix`.

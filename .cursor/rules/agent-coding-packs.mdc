@@ -9,10 +9,15 @@ Loop: **scan → compressed world model → specialist coding packs**.
 
 Before coding, fetch packs yourself (do not ask for a paste).
 
-**Fastest path — one call:** `GET http://192.168.1.198:8765/audit/packs/bundle?repo=<name>[&token_budget=2500&q=<kw>&limit_specialists=5]`
-(world model + ranked specialists + token-capped `briefs_markdown`). CLI: `ai-audit packs --bundle --repo <name>`.
-Then claim → fix → close: `POST /audit/packs/{id}/status {"status":"claimed"}` → patch →
-`POST /audit/validate_patch {..., "pack_id": "<id>"}` (passing run marks it `resolved`).
+**Preferred flow (consuming agent):**
+
+1. **Bundle:** `GET http://192.168.1.198:8765/audit/packs/bundle?repo=<name>[&token_budget=2500&q=<kw>&limit_specialists=5]`
+   (world model + ranked specialists + token-capped `briefs_markdown`). CLI: `ai-audit packs --bundle --repo <name>`.
+2. **Claim:** `POST /audit/packs/{id}/status {"status":"claimed"}` (`X-API-Token`).
+3. **Fix:** `ai-audit repair --pack-id <id>` (fetches the pack; no diff needed) — or implement from `GET /audit/packs/{id}/brief`.
+4. **Close:** `POST /audit/validate_patch {"repo": "...", "patch": "...", "pack_id": "<id>"}` — a passing run marks it `resolved`.
+
+Other repos receive this via `bash scripts/install_agent_pack_awareness.sh` (idempotent, local files only).
 
 Manual path:
 
