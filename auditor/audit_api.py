@@ -16,6 +16,9 @@ GET  /audit/topology.json             Return the latest service topology JSON si
 GET  /reports/mithrandir/LATEST.json  Atomic rest-session status for mithrandir (Jarrah)
 GET  /reports/mithrandir/LATEST.md    TTS-safe companion briefing for Holly
 POST /audit/ingest                    Trigger RAG briefing ingest to the audit_docs collection
+GET  /audit/packs                     List/search agent coding packs (repo, severity, kind, q)
+GET  /audit/packs/{pack_id}           Full agent coding pack (YAML-backed JSON)
+GET  /audit/packs/{pack_id}/brief     Markdown brief for coding agents
 
 Start:
     .venv/bin/uvicorn auditor.audit_api:app --host 0.0.0.0 --port 8765
@@ -713,12 +716,35 @@ def audit_diff(request: _DiffAuditRequest) -> JSONResponse:
         logger.exception("diff-audit failed for repo %r", request.repo)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    from auditor.agent_pack import emit_packs_from_findings
+    from conductor.publish import public_base_url
+
+    packs = []
+    try:
+        packs = emit_packs_from_findings(
+            result.findings,
+            output_dir=_output_dir(),
+            repo_path=resolve_repo_path(repo),
+            kind="diff_audit",
+            run_id=f"diff-{request.repo}",
+            directly_changed=sorted(result.impact.directly_changed),
+            transitively_affected=sorted(result.impact.transitively_affected),
+            public_base_url=public_base_url(),
+            ingest_rag=False,
+        )
+    except Exception:
+        logger.exception("failed to emit agent packs for diff-audit %r", request.repo)
+
     return JSONResponse({
         "repo": result.repo,
         "files_changed": len(result.impact.directly_changed),
         "files_affected": len(result.impact.transitively_affected),
+        "directly_changed": sorted(result.impact.directly_changed),
+        "transitively_affected": sorted(result.impact.transitively_affected)[:100],
         "units_analyzed": len(result.units_analyzed),
         "findings": [asdict(f) for f in result.findings],
+        "agent_packs": [p.work_item_id for p in packs],
+        "packs_url": f"{public_base_url()}/audit/packs?repo={request.repo}",
         "generated_at": result.generated_at,
     })
 
@@ -1198,6 +1224,79 @@ def mithrandir_latest_md() -> str:
     if not path.exists():
         raise HTTPException(status_code=404, detail="LATEST.md not published yet.")
     return path.read_text(encoding="utf-8")
+
+
+@app.get("/audit/packs")
+def list_agent_packs(
+    repo: str = Query(default=""),
+    severity: str = Query(default=""),
+    kind: str = Query(default=""),
+    q: str = Query(default="", description="Substring match on id/title/repo/path"),
+    run_id: str = Query(default=""),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> JSONResponse:
+    """Discover agent coding packs without a pasted brief.
+
+    Coding agents should call this (or RAG ``audit_docs`` with kind=agent_coding_pack)
+    then ``GET /audit/packs/{id}`` for the full compressed work item.
+    """
+    from auditor.agent_pack import index_path, list_packs, rebuild_index
+    from conductor.publish import public_base_url
+
+    out = _output_dir()
+    if not index_path(out).exists():
+        rebuild_index(out, public_base_url=public_base_url())
+    packs = list_packs(
+        out, repo=repo, severity=severity, kind=kind, q=q, run_id=run_id, limit=limit
+    )
+    return JSONResponse({
+        "count": len(packs),
+        "packs": packs,
+        "discovery": {
+            "get": "/audit/packs/{id}",
+            "brief": "/audit/packs/{id}/brief",
+            "index_file": f"{out}/agent_packs/INDEX.json",
+        },
+    })
+
+
+@app.get("/audit/packs/{pack_id}")
+def get_agent_pack(pack_id: str) -> JSONResponse:
+    """Return the full agent coding pack for *pack_id*."""
+    from auditor.agent_pack import load_pack
+
+    data = load_pack(_output_dir(), pack_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Pack {pack_id!r} not found.")
+    return JSONResponse(data)
+
+
+@app.get("/audit/packs/{pack_id}/brief", response_class=PlainTextResponse)
+def get_agent_pack_brief(pack_id: str) -> PlainTextResponse:
+    """Markdown brief for a coding agent (also written as ``.md`` beside the YAML)."""
+    from auditor.agent_pack import AgentCodingPack, load_pack, pack_file_path
+
+    out = _output_dir()
+    md_path = pack_file_path(out, pack_id).with_suffix(".md")
+    if md_path.exists():
+        return PlainTextResponse(md_path.read_text(encoding="utf-8"))
+    data = load_pack(out, pack_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Pack {pack_id!r} not found.")
+    pack = AgentCodingPack(
+        work_item_id=str(data.get("work_item_id") or pack_id),
+        kind=str(data.get("kind") or "finding"),
+        priority=dict(data.get("priority") or {}),
+        repo=dict(data.get("repo") or {}),
+        location=dict(data.get("location") or {}),
+        narrative=dict(data.get("narrative") or {}),
+        impact=dict(data.get("impact") or {}),
+        governance=dict(data.get("governance") or {}),
+        verification=dict(data.get("verification") or {}),
+        repair=dict(data.get("repair") or {}),
+        provenance=dict(data.get("provenance") or {}),
+    )
+    return PlainTextResponse(pack.to_brief_md())
 
 
 @app.post("/audit/ingest", dependencies=[Depends(_require_mutating_auth)])

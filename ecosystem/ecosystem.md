@@ -86,6 +86,21 @@ Branch policy: all `argus-*` repos use **`dev` as default**. Night conductor syn
 - Ingest slim `LATEST.md` + short JSON only (not full SARIF).
 - Prefer Jarrah Ollama for embeddings: `http://192.168.1.109:11434`.
 
+## Agent coding packs
+
+Compressed work items for coding agents (no paste required):
+
+| Artifact | Location |
+|----------|----------|
+| Pack YAML + markdown brief | `reports/agent_packs/<id>.yaml` / `.md` |
+| Discovery index | `reports/agent_packs/INDEX.json` |
+| List/search | `GET http://192.168.1.198:8765/audit/packs?repo=&severity=&q=` |
+| Full pack | `GET /audit/packs/{id}` |
+| Markdown brief | `GET /audit/packs/{id}/brief` |
+| CLI | `ai-audit packs [--repo …] [--q …] [--id … --brief]` |
+
+Night conductor and `POST /audit/diff` emit packs; slim summaries also land in `audit_docs` (`kind=agent_coding_pack`). Agents should search the index/API (or RAG), then fetch the pack by id.
+
 ---
 
 ## Architecture governance (summary)

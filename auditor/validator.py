@@ -191,6 +191,32 @@ def _detect_language(repo_path: Path) -> str | None:
     return None
 
 
+def suggest_test_commands(repo_path: Path, file_path: str = "") -> tuple[str, list[str]]:
+    """Return ``(tool, commands)`` agents should run to verify a fix.
+
+    Does not execute tests — only suggests commands based on project type.
+    """
+    lang = _detect_language(repo_path)
+    rel = (file_path or "").lstrip("./")
+    if lang == "python":
+        cmds = ["pytest -x --tb=short -q"]
+        if rel.endswith(".py"):
+            cmds.insert(0, f"pytest {rel} -q --tb=short")
+        return "pytest", cmds
+    if lang == "node":
+        return "npm_test", ["npm test -- --passWithNoTests"]
+    if lang == "go":
+        cmds = ["go test ./..."]
+        if rel.endswith(".go"):
+            parent = str(Path(rel).parent).replace("\\", "/")
+            if parent and parent != ".":
+                cmds.insert(0, f"go test ./{parent}/...")
+        return "go_test", cmds
+    if lang == "rust":
+        return "cargo_test", ["cargo test"]
+    return "skipped", []
+
+
 def _find_python_runner(repo_path: Path) -> list[str] | None:
     """Return the pytest invocation to use, or None if no runner is found."""
     # Prefer the venv's pytest

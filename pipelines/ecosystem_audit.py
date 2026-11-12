@@ -298,6 +298,23 @@ def run() -> None:
             violations = violations + boundary_violations + call_graph_violations + service_role_violations
             meta.violations = len(violations)
             write_architecture_violations(violations, output_dir=cfg.output_dir)
+            try:
+                from auditor.agent_pack import emit_packs_from_violations
+                from auditor.repo_resolver import resolve_repo_path
+                from conductor.publish import public_base_url
+
+                repo_paths = {r.name: resolve_repo_path(r) for r in cfg.repos}
+                packs = emit_packs_from_violations(
+                    violations,
+                    output_dir=cfg.output_dir,
+                    run_id=meta.run_id,
+                    public_base_url=public_base_url(),
+                    ingest_rag=False,
+                    repo_paths=repo_paths,
+                )
+                logger.info("emitted %d agent coding packs from architecture violations", len(packs))
+            except Exception:
+                logger.exception("agent pack emission from violations failed")
             write_service_topology(
                 rules=rules,
                 observed_edges=observed_call_edges,

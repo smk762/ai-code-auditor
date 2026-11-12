@@ -1,0 +1,28 @@
+---
+description: Discover ai-code-auditor agent coding packs before fixing issues or features
+alwaysApply: true
+---
+
+# Agent coding packs
+
+Before implementing fixes or feature work from audit findings, **fetch a pack** — do not wait for a pasted brief.
+
+## Discovery (pick one)
+
+1. `GET http://192.168.1.198:8765/audit/packs?repo=<name>&q=<keyword>`
+2. `GET http://127.0.0.1:8765/audit/packs?...` (local)
+3. CLI: `ai-audit packs --repo <name> --json` then `ai-audit packs --id <id> --brief`
+4. On disk: `reports/agent_packs/INDEX.json` and `reports/agent_packs/<id>.yaml`
+5. RAG collection `audit_docs` with `kind=agent_coding_pack` (slim pointer → fetch full pack by id)
+
+## After selecting an id
+
+- Full JSON: `GET /audit/packs/{id}`
+- Markdown brief: `GET /audit/packs/{id}/brief`
+- Verify fixes with suggested commands in the pack, or `POST /audit/validate_patch`
+
+## Rules of use
+
+- Prefer pack evidence, snippets, and acceptance criteria over full-repo dumps.
+- Keep changes scoped to pack location/impact unless the pack says otherwise.
+- Do not auto-merge draft PRs from the night conductor.

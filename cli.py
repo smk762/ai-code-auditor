@@ -126,6 +126,20 @@ def _build_parser() -> argparse.ArgumentParser:
     diff_cmd.add_argument("--auth-code", default="", help="Auth code when auth mode is enabled")
     diff_cmd.add_argument("--auth-token", default="", help="JWT token with analyst role")
 
+    packs = sub.add_parser(
+        "packs",
+        help="List/search agent coding packs (discoverable work items for coding agents)",
+    )
+    packs.add_argument("--repo", default="", help="Filter by repo name substring")
+    packs.add_argument("--severity", default="", help="Filter by severity (CRITICAL/HIGH/...)")
+    packs.add_argument("--kind", default="", help="Filter by kind (security/bughunt/diff_audit/...)")
+    packs.add_argument("--q", default="", help="Substring match on id/title/repo/path")
+    packs.add_argument("--run-id", default="", help="Filter by conductor/diff run id")
+    packs.add_argument("--limit", type=int, default=50)
+    packs.add_argument("--id", dest="pack_id", default="", help="Fetch one pack by id")
+    packs.add_argument("--brief", action="store_true", help="Print markdown brief (with --id)")
+    packs.add_argument("--json", action="store_true", help="JSON output")
+
     return parser
 
 
@@ -425,7 +439,64 @@ def main() -> None:
             "requires_ack": (result.get("status") or {}).get("requires_ack"),
             "latest_url": (result.get("status") or {}).get("latest_url"),
             "webhook": result.get("webhook"),
+            "agent_packs": result.get("agent_packs"),
         }, indent=2))
+    elif args.command == "packs":
+        from auditor.agent_pack import list_packs, load_pack, rebuild_index
+        from conductor.publish import public_base_url
+
+        cfg = load_ecosystem_config()
+        out = cfg.output_dir
+        if args.pack_id:
+            data = load_pack(out, args.pack_id)
+            if data is None:
+                raise SystemExit(f"Pack not found: {args.pack_id}")
+            if args.brief:
+                from auditor.agent_pack import AgentCodingPack
+
+                pack = AgentCodingPack(
+                    work_item_id=str(data.get("work_item_id") or args.pack_id),
+                    kind=str(data.get("kind") or "finding"),
+                    priority=dict(data.get("priority") or {}),
+                    repo=dict(data.get("repo") or {}),
+                    location=dict(data.get("location") or {}),
+                    narrative=dict(data.get("narrative") or {}),
+                    impact=dict(data.get("impact") or {}),
+                    governance=dict(data.get("governance") or {}),
+                    verification=dict(data.get("verification") or {}),
+                    repair=dict(data.get("repair") or {}),
+                    provenance=dict(data.get("provenance") or {}),
+                )
+                print(pack.to_brief_md())
+            elif args.json:
+                print(json.dumps(data, indent=2))
+            else:
+                print(yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
+        else:
+            rebuild_index(out, public_base_url=public_base_url())
+            entries = list_packs(
+                out,
+                repo=args.repo,
+                severity=args.severity,
+                kind=args.kind,
+                q=args.q,
+                run_id=args.run_id,
+                limit=args.limit,
+            )
+            payload = {
+                "count": len(entries),
+                "packs": entries,
+                "list_url": f"{public_base_url()}/audit/packs",
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2))
+            else:
+                for e in entries:
+                    print(
+                        f"{e.get('severity', '?'):8}  {e.get('repo', ''):20}  "
+                        f"{e.get('id', '')}  {e.get('title', '')[:60]}"
+                    )
+                print(f"\n{len(entries)} packs — GET {payload['list_url']}")
     elif args.command == "ask":
         _run_ask(
             args.query,

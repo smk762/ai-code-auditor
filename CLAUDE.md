@@ -21,6 +21,8 @@ ai-audit repo-run              # nightly single-repo audit
 ai-audit ecosystem-run         # full multi-repo ecosystem audit
 ai-audit ask "question"        # copilot Q&A over indexed code
 ai-audit ask "..." --deep --iterations 4 --enable-subagents --agent-brief
+ai-audit packs --json          # discover agent coding packs (no paste)
+ai-audit packs --id pack-… --brief
 ai-audit qa-benchmark --json
 ai-audit approve-extraction --candidate-id ext-retry-core-001
 
@@ -96,4 +98,16 @@ Supports `ollama` (POST `/api/generate`) and `openai-compatible` (POST `/v1/chat
 
 ## Generated artifacts
 
-All written to `reports/` (overwritten each run): `nightly_repo_report.md`, `security_report.md`, `ecosystem_report.md`, `architecture_violations.md`, `pattern_proposals.md`, `extraction_candidates.yaml/md`. Graph: `graph/ecosystem_graph.db`. Embeddings: `index/code_embeddings.faiss`.
+All written to `reports/` (overwritten each run): `nightly_repo_report.md`, `security_report.md`, `ecosystem_report.md`, `architecture_violations.md`, `pattern_proposals.md`, `extraction_candidates.yaml/md`. Agent coding packs: `reports/agent_packs/` (+ `INDEX.json`; discover via `GET /audit/packs`). Graph: `graph/ecosystem_graph.db`. Embeddings: `index/code_embeddings.faiss`.
+
+## Agent coding packs (Cursor / Claude)
+
+Before fixing audit issues, agents should **look up packs** themselves (`AGENTS.md` and `.cursor/rules/agent-coding-packs.mdc`):
+
+```bash
+ai-audit packs --repo <name> --json
+# or GET http://192.168.1.198:8765/audit/packs?q=...
+ai-audit packs --id <pack-id> --brief
+```
+
+Refresh packs: `python scripts/emit_agent_packs.py`. Nightly / ecosystem / conductor / diff-audit also emit packs.

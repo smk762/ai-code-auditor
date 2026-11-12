@@ -133,12 +133,27 @@ def annotate_pr_review(draft: DraftPr, review: CodeReviewSummary) -> DraftPr:
     return draft
 
 
-def finding_to_pr_body(finding: dict[str, Any], worker_summary: str) -> str:
+def finding_to_pr_body(
+    finding: dict[str, Any],
+    worker_summary: str,
+    *,
+    pack_id: str = "",
+    pack_url: str = "",
+) -> str:
+    pack_lines = ""
+    if pack_url or pack_id:
+        pack_lines = (
+            "\n### Agent work pack\n"
+            + (f"- URL: {pack_url}\n" if pack_url else "")
+            + (f"- id: `{pack_id}`\n" if pack_id else "")
+            + "- Discover: `GET /audit/packs?q=<repo-or-title>`\n"
+        )
     return (
         "## Night conductor remediation\n\n"
         f"{worker_summary}\n\n"
         "### Finding\n"
-        f"```json\n{json.dumps(finding, indent=2)[:3000]}\n```\n\n"
+        f"```json\n{json.dumps(finding, indent=2)[:3000]}\n```\n"
+        f"{pack_lines}\n"
         "Draft PR — do not auto-merge.\n"
     )
 

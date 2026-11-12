@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from auditor.agent_pack import emit_packs_from_worker_results, stable_pack_id
 from auditor.config import load_ecosystem_config
 from conductor.code_review import review_draft_pr
 from conductor.draft_pr import create_draft_pr, finding_to_pr_body
@@ -20,6 +21,7 @@ from conductor.github_awareness import (
 )
 from conductor.mirrors import sync_mirrors
 from conductor.missions import WorkerResult, WorkerTask, build_tasks_from_scanners
+from conductor.publish import public_base_url
 from conductor.rest_window import (
     load_rest_windows,
     next_window_start_label,
@@ -200,7 +202,20 @@ def run_rest_session(
                 logger.info("skip draft PR for %s: %s", task.repo, clash)
                 state.dismissed += 1
                 continue
-            body = finding_to_pr_body(top, result.summary)
+            # Pack id is deterministic from finding fields; emit_packs later writes the file.
+            pack_id = stable_pack_id(
+                repo=task.repo,
+                file_path=str(top.get("file") or top.get("file_path") or ""),
+                title=str(top.get("title") or task.title),
+                source=f"conductor-{task.mission}",
+                run_id=run_id,
+                finding_id=str(top.get("id") or ""),
+            )
+            base = public_base_url()
+            pack_url = f"{base}/audit/packs/{pack_id}"
+            body = finding_to_pr_body(
+                top, result.summary, pack_id=pack_id, pack_url=pack_url
+            )
             pr_res = create_draft_pr(
                 Path(task.repo_path),
                 repo_name=task.repo,
@@ -275,9 +290,29 @@ def run_rest_session(
         cost_usd_est=state.cost_usd_est,
         next_rest_window=next_window_start_label(rest),
     )
-    return wrap_up(
+
+    draft_by_repo = {d.repo: d.url for d in state.draft_prs if d.repo and d.url}
+    packs = emit_packs_from_worker_results(
+        output_dir=out,
+        run_id=run_id,
+        tasks=pending_tasks,
+        results_by_id=by_id,
+        draft_pr_by_repo=draft_by_repo,
+        public_base_url=public_base_url(),
+        ingest_rag=ingest_rag,
+    )
+    logger.info("emitted %d agent coding packs for run %s", len(packs), run_id)
+
+    wrapped = wrap_up(
         status,
         output_dir=out,
         send_webhook=send_webhook,
         ingest_rag=ingest_rag,
     )
+    wrapped["agent_packs"] = {
+        "count": len(packs),
+        "ids": [p.work_item_id for p in packs],
+        "index": "agent_packs/INDEX.json",
+        "list_url": f"{public_base_url()}/audit/packs",
+    }
+    return wrapped
