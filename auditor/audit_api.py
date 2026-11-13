@@ -616,6 +616,24 @@ def get_service_topology() -> FileResponse:
     return FileResponse(path, media_type="text/html")
 
 
+@app.get("/audit/usage")
+def get_usage_dashboard() -> FileResponse:
+    """Claude API usage dashboard (spend by lane, model, process, day and hour)."""
+    from auditor.usage_dashboard import HTML_PATH
+
+    return FileResponse(HTML_PATH, media_type="text/html")
+
+
+@app.get("/audit/usage.json")
+def get_usage_json(range: str = "month") -> JSONResponse:
+    """Spend-ledger aggregates for the usage dashboard. range: month | 7d | 14d | 30d."""
+    from auditor.usage_dashboard import usage_data
+
+    if range not in {"month", "7d", "14d", "30d", "90d"}:
+        raise HTTPException(status_code=400, detail="range must be month, 7d, 14d, 30d or 90d")
+    return JSONResponse(usage_data(range))
+
+
 @app.get("/audit/topology.json")
 def get_service_topology_json() -> FileResponse:
     """Return the structured JSON sidecar for the latest topology.  404 if absent."""

@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude API Usage</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #f4f4f2;
+    --surface-1: #fcfcfb;
+    --surface-2: #efeeeb;
+    --border: #e2e1dc;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #7a7974;
+    --grid: #e7e6e1;
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+    --series-5: #e87ba4; --series-6: #008300; --series-7: #6250d6; --series-8: #e34948;
+    --neutral: #a3a29c;
+    --seq-1: #cde2fb; --seq-2: #9ec5f4; --seq-3: #6da7ec; --seq-4: #3987e5;
+    --seq-5: #256abf; --seq-6: #184f95; --seq-7: #0d366b;
+    --warn: #b86e00; --critical: #c42b2b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-0: #121211; --surface-1: #1a1a19; --surface-2: #242423; --border: #31312f;
+      --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86; --grid: #2c2c2a;
+      --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+      --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+      --neutral: #6c6b66;
+      --seq-1: #104281; --seq-2: #184f95; --seq-3: #1c5cab; --seq-4: #256abf;
+      --seq-5: #3987e5; --seq-6: #6da7ec; --seq-7: #b7d3f6;
+      --warn: #e09a2b; --critical: #f07070;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-0: #121211; --surface-1: #1a1a19; --surface-2: #242423; --border: #31312f;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86; --grid: #2c2c2a;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+    --neutral: #6c6b66;
+    --seq-1: #104281; --seq-2: #184f95; --seq-3: #1c5cab; --seq-4: #256abf;
+    --seq-5: #3987e5; --seq-6: #6da7ec; --seq-7: #b7d3f6;
+    --warn: #e09a2b; --critical: #f07070;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--surface-0); color: var(--text-primary);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1240px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  .sub { color: var(--text-secondary); font-size: 13px; }
+  .filters { margin-left: auto; display: flex; gap: 4px; align-items: center; }
+  .filters button {
+    font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+    background: var(--surface-1); color: var(--text-secondary); border: 1px solid var(--border);
+  }
+  .filters button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface-1); border-color: var(--text-primary); }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(12, 1fr); }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .card h2 { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
+  .card .hint { font-size: 12px; color: var(--text-muted); margin: 0 0 10px; }
+  .span-3 { grid-column: span 3; } .span-4 { grid-column: span 4; } .span-5 { grid-column: span 5; }
+  .span-6 { grid-column: span 6; } .span-7 { grid-column: span 7; } .span-8 { grid-column: span 8; }
+  .span-12 { grid-column: span 12; }
+  @media (max-width: 900px) { .grid > * { grid-column: span 12 !important; } }
+  @media (min-width: 901px) and (max-width: 1100px) { .span-3 { grid-column: span 6; } }
+  .kpi .label { font-size: 12px; color: var(--text-secondary); }
+  .kpi .value { font-size: 28px; font-weight: 650; letter-spacing: -0.01em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .kpi .note { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .kpi .status { font-weight: 600; }
+  .status.warn { color: var(--warn); } .status.critical { color: var(--critical); }
+  .chart-box { position: relative; height: 240px; }
+  .chart-box.tall { height: 300px; }
+  .donut-box { position: relative; height: 220px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .lane-bars { display: grid; gap: 10px; }
+  .lane-row .top { display: flex; justify-content: space-between; font-size: 13px; }
+  .lane-row .top b { font-weight: 600; }
+  .lane-row .top span { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+  .track { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; margin-top: 4px; }
+  .fill { height: 100%; border-radius: 4px; }
+  .heat-wrap { overflow-x: auto; }
+  .heat { display: grid; grid-template-columns: 74px repeat(24, minmax(18px, 1fr)); gap: 2px; min-width: 560px; }
+  .heat .h { font-size: 10px; color: var(--text-muted); text-align: center; }
+  .heat .d { font-size: 11px; color: var(--text-secondary); white-space: nowrap; padding-right: 6px; align-self: center; }
+  .heat .c { height: 18px; border-radius: 3px; background: var(--surface-2); position: relative; }
+  .heat .c:hover { outline: 2px solid var(--text-primary); outline-offset: -1px; }
+  .scale { display: flex; align-items: center; gap: 2px; font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+  .scale i { width: 22px; height: 10px; border-radius: 2px; display: inline-block; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { font-weight: 600; color: var(--text-secondary); font-size: 12px; }
+  td.num, th.num { text-align: right; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .tip {
+    position: fixed; pointer-events: none; z-index: 10; background: var(--surface-1); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.15); display: none; max-width: 260px;
+  }
+  .empty { color: var(--text-muted); font-size: 13px; padding: 24px 0; text-align: center; }
+  .err { color: var(--critical); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Claude API usage</h1>
+    <div class="sub" id="sub">Loading…</div>
+    <div class="filters" role="group" aria-label="Time range">
+      <button data-range="7d">7 days</button>
+      <button data-range="14d">14 days</button>
+      <button data-range="30d">30 days</button>
+      <button data-range="month" aria-pressed="true">Budget month</button>
+    </div>
+  </header>
+
+  <section class="grid" id="kpis" aria-label="Headline numbers"></section>
+
+  <section class="grid" style="margin-top:12px">
+    <div class="card span-8">
+      <h2>Spend per day, by lane</h2>
+      <p class="hint">Which days were hungry, and which process drove them.</p>
+      <div class="chart-box"><canvas id="daily" aria-label="Stacked bar chart of daily spend by lane"></canvas></div>
+      <div class="legend" id="daily-legend"></div>
+    </div>
+    <div class="card span-4">
+      <h2>Lane budgets this month</h2>
+      <p class="hint">Spend against each lane's monthly cap.</p>
+      <div class="lane-bars" id="lanes"></div>
+    </div>
+
+    <div class="card span-12">
+      <h2>Spend by hour of day</h2>
+      <p class="hint">Darker = more spend in that hour (local time). Spikes line up with the 00:30 conductor, 01:30 batch review and hourly merge audits.</p>
+      <div class="heat-wrap"><div class="heat" id="heat" role="img" aria-label="Heatmap of spend by day and hour"></div></div>
+      <div class="scale" id="scale"></div>
+    </div>
+
+    <div class="card span-4">
+      <h2>Share by lane</h2>
+      <p class="hint" id="lane-hint">Selected range.</p>
+      <div class="donut-box"><canvas id="by-lane" aria-label="Donut chart of spend by lane"></canvas></div>
+      <div class="legend" id="lane-legend"></div>
+    </div>
+    <div class="card span-4">
+      <h2>Share by model</h2>
+      <p class="hint">Selected range.</p>
+      <div class="donut-box"><canvas id="by-model" aria-label="Donut chart of spend by model"></canvas></div>
+      <div class="legend" id="model-legend"></div>
+    </div>
+    <div class="card span-4">
+      <h2>Month burn vs cap</h2>
+      <p class="hint">Cumulative spend; dashed = projection at the last-7-day burn rate.</p>
+      <div class="donut-box"><canvas id="burn" aria-label="Line chart of cumulative spend against the monthly cap"></canvas></div>
+    </div>
+
+    <div class="card span-7">
+      <h2>Hungriest processes</h2>
+      <p class="hint">Lane · repo or conductor mission, selected range.</p>
+      <div class="chart-box tall"><canvas id="procs" aria-label="Bar chart of spend by process"></canvas></div>
+    </div>
+    <div class="card span-5">
+      <h2>Hungriest hours</h2>
+      <p class="hint">Top 10 single hours in the selected range.</p>
+      <table id="hours"><thead><tr><th>When</th><th>Mostly</th><th class="num">Calls</th><th class="num">Spend</th></tr></thead><tbody></tbody></table>
+    </div>
+
+    <div class="card span-12">
+      <h2>Processes (table)</h2>
+      <p class="hint">Same data as the bar chart, with token counts.</p>
+      <table id="proc-table"><thead><tr><th>Process</th><th class="num">Calls</th><th class="num">Input tokens</th><th class="num">Output tokens</th><th class="num">Spend</th><th class="num">$/call</th></tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+</main>
+<div class="tip" id="tip" role="tooltip"></div>
+
+<script>
+const LANE_ORDER = ["audit", "audit_batch", "conductor", "eval"];
+const LANE_LABEL = { audit: "Merge audits (Haiku)", audit_batch: "Nightly batch review", conductor: "Conductor", eval: "Evals / manual" };
+const MODEL_ORDER = ["claude-opus-5-5", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-4-5"];
+let range = "month";
+let data = null;
+const charts = {};
+
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const money = (x) => x == null ? "—" : (x >= 100 ? "$" + x.toFixed(0) : x >= 1 ? "$" + x.toFixed(2) : "$" + x.toFixed(3));
+const int = (x) => (x || 0).toLocaleString();
+const laneLabel = (l) => LANE_LABEL[l] || l;
+
+// Color follows the entity: fixed slot per lane / model, never by rank.
+function laneColor(lane) {
+  const i = LANE_ORDER.indexOf(lane);
+  if (lane === "other") return css("--neutral");
+  return css(`--series-${i >= 0 ? i + 1 : 5 + (hash(lane) % 3)}`);
+}
+function modelColor(model) {
+  if (model === "manual") return css("--neutral");
+  const i = MODEL_ORDER.indexOf(model);
+  return css(`--series-${i >= 0 ? [1, 3, 7, 4][i] : 5}`);
+}
+function hash(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; }
+
+function baseOptions() {
+  Chart.defaults.color = css("--text-secondary");
+  Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+  Chart.defaults.font.size = 12;
+  return {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: css("--surface-1"), titleColor: css("--text-primary"), bodyColor: css("--text-secondary"),
+        borderColor: css("--border"), borderWidth: 1, padding: 10, boxPadding: 4, usePointStyle: true,
+      },
+    },
+  };
+}
+
+function legend(el, items) {
+  el.innerHTML = items.map(([label, color]) => `<span><i style="background:${color}"></i>${label}</span>`).join("");
+}
+
+function kpis() {
+  const m = data.month;
+  const pct = m.cap ? m.spent / m.cap : 0;
+  const projPct = m.cap ? m.projected / m.cap : 0;
+  const status = projPct >= 1 ? ["critical", "Over cap at this rate"] : projPct >= 0.85 ? ["warn", "Close to cap"] : ["", ""];
+  const today = data.days.length ? Object.values(data.daily[data.days[data.days.length - 1]] || {}).reduce((a, b) => a + b, 0) : 0;
+  const tiles = [
+    ["Spent this budget month", money(m.spent), m.cap ? `${(pct * 100).toFixed(0)}% of ${money(m.cap)} cap` : "no total cap"],
+    ["Left this month", m.cap ? money(m.cap - m.spent) : "—", `resets ${m.resets} · ${m.days_left} days`],
+    ["Burn rate", money(m.burn_per_day) + "/day", `last 7 days · today ${money(today)}`],
+    ["Projected at reset", money(m.projected), status[1] ? `<span class="status ${status[0]}">⚠ ${status[1]}</span>` : `${(projPct * 100).toFixed(0)}% of cap`],
+  ];
+  document.getElementById("kpis").innerHTML = tiles.map(([l, v, n]) =>
+    `<div class="card kpi span-3"><div class="label">${l}</div><div class="value">${v}</div><div class="note">${n}</div></div>`).join("");
+  document.getElementById("sub").textContent =
+    `${int(data.range_totals.calls)} calls · ${int(data.range_totals.input_tokens)} in / ${int(data.range_totals.output_tokens)} out tokens in range · updated ${data.generated_at.slice(11, 16)}`;
+}
+
+function daily() {
+  const lanes = [...new Set(data.days.flatMap((d) => Object.keys(data.daily[d] || {})))]
+    .sort((a, b) => (LANE_ORDER.indexOf(a) + 99) % 99 - (LANE_ORDER.indexOf(b) + 99) % 99);
+  const surface = css("--surface-1");
+  const datasets = lanes.map((lane) => ({
+    label: laneLabel(lane), data: data.days.map((d) => (data.daily[d] || {})[lane] || 0),
+    backgroundColor: laneColor(lane), borderColor: surface, borderWidth: { top: 2 }, borderSkipped: "bottom",
+    borderRadius: 2, maxBarThickness: 28,
+  }));
+  const opts = baseOptions();
+  opts.scales = {
+    x: { stacked: true, grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, callback: (v, i) => data.days[i].slice(5) } },
+    y: { stacked: true, grid: { color: css("--grid") }, border: { display: false }, ticks: { callback: (v) => "$" + v } },
+  };
+  opts.plugins.tooltip.callbacks = {
+    label: (c) => ` ${c.dataset.label}: ${money(c.parsed.y)}`,
+    footer: (items) => `Total ${money(items.reduce((a, c) => a + c.parsed.y, 0))}`,
+  };
+  opts.interaction = { mode: "index", intersect: false };
+  draw("daily", "bar", { labels: data.days, datasets }, opts);
+  legend(document.getElementById("daily-legend"), lanes.map((l) => [laneLabel(l), laneColor(l)]));
+}
+
+function laneBars() {
+  document.getElementById("lanes").innerHTML = data.lanes.map((l) => {
+    const pct = l.cap ? Math.min(l.month_spent / l.cap, 1) : 0;
+    const over = l.cap && l.month_spent >= l.cap;
+    const near = l.cap && l.month_spent >= 0.85 * l.cap;
+    const right = l.cap ? `${money(l.month_spent)} of ${money(l.cap)}` : `${money(l.month_spent)} · no cap`;
+    const flag = over ? ` <span class="status critical">⛔ capped</span>` : near ? ` <span class="status warn">⚠ near cap</span>` : "";
+    return `<div class="lane-row"><div class="top"><b><span class="dot" style="background:${laneColor(l.lane)}"></span>${laneLabel(l.lane)}${flag}</b><span>${right}</span></div>
+      <div class="track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${(pct * 100).toFixed(0)}" aria-label="${laneLabel(l.lane)}">
+      <div class="fill" style="width:${l.cap ? pct * 100 : 0}%;background:${laneColor(l.lane)}"></div></div></div>`;
+  }).join("");
+}
+
+function heatmap() {
+  const el = document.getElementById("heat");
+  const days = [...data.days].reverse();
+  const max = Math.max(0, ...days.flatMap((d) => data.heatmap[d] || []));
+  const steps = [1, 2, 3, 4, 5, 6, 7].map((i) => css(`--seq-${i}`));
+  const colorFor = (v) => v <= 0 || max <= 0 ? css("--surface-2") : steps[Math.min(6, Math.floor((v / max) * 7 - 1e-9))];
+  let html = `<div></div>` + Array.from({ length: 24 }, (_, h) => `<div class="h">${h % 3 === 0 ? String(h).padStart(2, "0") : ""}</div>`).join("");
+  for (const d of days) {
+    html += `<div class="d">${new Date(d + "T00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}</div>`;
+    (data.heatmap[d] || Array(24).fill(0)).forEach((v, h) => {
+      html += `<div class="c" style="background:${colorFor(v)}" data-tip="${d} ${String(h).padStart(2, "0")}:00–${String(h).padStart(2, "0")}:59<br><b>${money(v)}</b>"></div>`;
+    });
+  }
+  el.innerHTML = html;
+  document.getElementById("scale").innerHTML = `<span style="margin-right:6px">$0</span>` +
+    steps.map((c) => `<i style="background:${c}"></i>`).join("") + `<span style="margin-left:6px">${money(max)}/hour</span>`;
+}
+
+function donut(id, legendId, entries, colorFn, labelFn) {
+  const total = entries.reduce((a, e) => a + e.cost, 0);
+  const opts = baseOptions();
+  opts.cutout = "62%";
+  opts.plugins.tooltip.callbacks = { label: (c) => ` ${labelFn(entries[c.dataIndex])}: ${money(c.parsed)} (${total ? ((c.parsed / total) * 100).toFixed(0) : 0}%)` };
+  const centre = {
+    id: "centre", afterDraw(chart) {
+      const { ctx, chartArea: a } = chart;
+      ctx.save(); ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillStyle = css("--text-primary"); ctx.font = `600 18px ${Chart.defaults.font.family}`;
+      ctx.fillText(money(total), (a.left + a.right) / 2, (a.top + a.bottom) / 2 - 6);
+      ctx.fillStyle = css("--text-muted"); ctx.font = `12px ${Chart.defaults.font.family}`;
+      ctx.fillText("total", (a.left + a.right) / 2, (a.top + a.bottom) / 2 + 14); ctx.restore();
+    },
+  };
+  draw(id, "doughnut", {
+    labels: entries.map(labelFn),
+    datasets: [{ data: entries.map((e) => e.cost), backgroundColor: entries.map(colorFn), borderColor: css("--surface-1"), borderWidth: 2, hoverOffset: 4 }],
+  }, opts, [centre]);
+  legend(document.getElementById(legendId), entries.map((e) =>
+    [`${labelFn(e)} · ${total ? ((e.cost / total) * 100).toFixed(0) : 0}%`, colorFn(e)]));
+}
+
+function burn() {
+  const cum = data.cumulative;
+  const opts = baseOptions();
+  opts.scales = {
+    x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 6, callback: (v, i) => cum[i].date.slice(5) } },
+    y: { grid: { color: css("--grid") }, border: { display: false }, beginAtZero: true, ticks: { callback: (v) => "$" + v } },
+  };
+  opts.interaction = { mode: "index", intersect: false };
+  opts.plugins.tooltip.callbacks = { label: (c) => c.parsed.y == null ? null : ` ${c.dataset.label}: ${money(c.parsed.y)}` };
+  const series1 = css("--series-1");
+  const datasets = [
+    { label: "Spent", data: cum.map((c) => c.actual), borderColor: series1, backgroundColor: series1, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, spanGaps: false },
+    { label: "Projected", data: cum.map((c) => c.projected), borderColor: series1, borderDash: [5, 4], borderWidth: 2, pointRadius: 0, pointHoverRadius: 4 },
+  ];
+  if (data.month.cap) datasets.push({ label: "Cap", data: cum.map(() => data.month.cap), borderColor: css("--critical"), borderWidth: 1, borderDash: [2, 3], pointRadius: 0 });
+  draw("burn", "line", { labels: cum.map((c) => c.date), datasets }, opts);
+}
+
+function processes() {
+  const ps = data.processes;
+  const opts = baseOptions();
+  opts.indexAxis = "y";
+  opts.scales = {
+    x: { grid: { color: css("--grid") }, border: { display: false }, ticks: { callback: (v) => "$" + v } },
+    y: { grid: { display: false }, ticks: { autoSkip: false } },
+  };
+  opts.plugins.tooltip.callbacks = { label: (c) => { const p = ps[c.dataIndex]; return ` ${money(p.cost)} · ${int(p.calls)} calls`; } };
+  draw("procs", "bar", {
+    labels: ps.map((p) => p.name.length > 42 ? p.name.slice(0, 41) + "…" : p.name),
+    datasets: [{ data: ps.map((p) => p.cost), backgroundColor: ps.map((p) => laneColor(p.lane)), borderRadius: 4, borderSkipped: "start", maxBarThickness: 18 }],
+  }, opts);
+  document.querySelector("#proc-table tbody").innerHTML = ps.length ? ps.map((p) =>
+    `<tr><td><span class="dot" style="background:${laneColor(p.lane)}"></span>${p.name}</td><td class="num">${int(p.calls)}</td>
+     <td class="num">${int(p.input_tokens)}</td><td class="num">${int(p.output_tokens)}</td><td class="num">${money(p.cost)}</td>
+     <td class="num">${money(p.calls ? p.cost / p.calls : 0)}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty">No spend recorded in this range yet.</td></tr>`;
+}
+
+function hours() {
+  document.querySelector("#hours tbody").innerHTML = data.top_hours.length ? data.top_hours.map((h) =>
+    `<tr><td>${h.date.slice(5)} ${String(h.hour).padStart(2, "0")}:00</td><td><span class="dot" style="background:${laneColor(h.top_lane)}"></span>${laneLabel(h.top_lane)}</td>
+     <td class="num">${int(h.calls)}</td><td class="num">${money(h.cost)}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="empty">No spend recorded in this range yet.</td></tr>`;
+}
+
+function draw(id, type, chartData, options, plugins = []) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(document.getElementById(id), { type, data: chartData, options, plugins });
+}
+
+function render() {
+  if (!data) return;
+  kpis(); daily(); laneBars(); heatmap(); burn(); processes(); hours();
+  const lanes = data.lanes.filter((l) => l.cost > 0);
+  donut("by-lane", "lane-legend", lanes, (e) => laneColor(e.lane), (e) => laneLabel(e.lane));
+  donut("by-model", "model-legend", data.models.filter((m) => m.cost > 0), (e) => modelColor(e.model), (e) => e.model === "manual" ? "manual entries" : e.model.replace("claude-", ""));
+}
+
+async function load() {
+  try {
+    const r = await fetch(`usage.json?range=${range}`);
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    data = await r.json();
+    render();
+  } catch (e) {
+    document.getElementById("sub").innerHTML = `<span class="err">Could not load usage data: ${e.message}</span>`;
+  }
+}
+
+document.querySelectorAll(".filters button").forEach((b) => b.addEventListener("click", () => {
+  range = b.dataset.range;
+  document.querySelectorAll(".filters button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  load();
+}));
+
+// Heatmap tooltip (cells are plain divs, so a lightweight shared tooltip).
+const tip = document.getElementById("tip");
+document.getElementById("heat").addEventListener("mousemove", (e) => {
+  const t = e.target.closest(".c");
+  if (!t) { tip.style.display = "none"; return; }
+  tip.innerHTML = t.dataset.tip; tip.style.display = "block";
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - 200) + "px"; tip.style.top = e.clientY + 14 + "px";
+});
+document.getElementById("heat").addEventListener("mouseleave", () => { tip.style.display = "none"; });
+
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>

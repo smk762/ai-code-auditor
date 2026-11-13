@@ -158,6 +158,15 @@ class SpendLedger:
                 f"(lane ${self.spent(lane):.2f}, total ${self.spent():.2f}; caps {self.caps()})"
             )
 
+    def rows_since(self, ts: float) -> list[tuple]:
+        """(ts, lane, model, note, input_tokens, output_tokens, batch, cost_usd) rows since ts."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT ts, lane, model, COALESCE(note,''), input_tokens, output_tokens, batch, cost_usd "
+                "FROM spend WHERE ts >= ? ORDER BY ts",
+                (ts,),
+            ).fetchall()
+
     def summary(self) -> dict[str, Any]:
         with self._lock:
             rows = self._conn.execute(
