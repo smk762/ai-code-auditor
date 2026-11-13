@@ -28,6 +28,34 @@ AUDIT_INSTRUCTIONS = (
     "Return [] if no issues. Return only the JSON array."
 )
 
+# v2: drops style/maintainability noise, adds a severity rubric and a confidence bar.
+# Default since the 2026-11-13 eval (precision 29%→76%, MEDIUM+ recall 11→10 of 13). AI_AUDIT_LLM_PROMPT=v1
+# selects the old prompt. Part of the cache key, so switching re-reviews.
+AUDIT_INSTRUCTIONS_V2 = """Review the code below as a senior engineer on this codebase. Report only defects that matter:
+- security vulnerabilities (auth bypass, injection, path traversal, hardcoded secrets, IDOR, SSRF, unsafe deserialization)
+- correctness bugs that will cause wrong results, crashes, data loss, or resource leaks in realistic use
+- violations of the cross-service contracts described in the context above
+
+Do NOT report: style, naming, missing docstrings/comments/type hints, refactoring ideas, or generic \
+"add validation/logging/error handling" advice. Do not report issues that depend entirely on code you \
+cannot see (callers, middleware, config) unless the code shown makes the problem evident. Test code, \
+fakes, stubs and fixtures are deliberately simplified: only report a problem there if it makes the \
+tests themselves wrong.
+
+Report a finding only if you can point to the line(s) that cause it and you are confident it is real. \
+If nothing qualifies, return [] — that is a normal, good outcome.
+
+Severity:
+- CRITICAL: exploitable without authentication, or loses/corrupts data in normal operation.
+- HIGH: exploitable security flaw, or a bug that breaks a main code path.
+- MEDIUM: real bug on an edge path, or a security weakness that needs unusual conditions.
+- LOW: minor real defect with limited impact.
+
+Return a JSON array of at most 5 findings, most important first. Each element: type (security|bug|contract), \
+severity (CRITICAL/HIGH/MEDIUM/LOW), title, description, line, recommendation. Return only the JSON array."""
+
+PROMPTS = {"v1": AUDIT_INSTRUCTIONS, "v2": AUDIT_INSTRUCTIONS_V2}
+
 
 def _safe_line(value: Any, default: int) -> int:
     try:
@@ -55,6 +83,7 @@ class LLMClient:
         self._parse_failures = 0
         # Effort only applies to Claude; it is part of the cache key so changing it re-reviews.
         self.effort = os.getenv("AI_AUDIT_LLM_EFFORT", "low") if self.provider == "anthropic" else ""
+        self.instructions = PROMPTS.get(os.getenv("AI_AUDIT_LLM_PROMPT", "v2"), AUDIT_INSTRUCTIONS_V2)
         self.cache = ReviewCache.from_env()
         self.cache_hits = 0
         # Pre-built ecosystem context injected into every audit prompt
@@ -152,8 +181,9 @@ class LLMClient:
             return False, f"{key_env} is not set"
         return True, "ok (key present; endpoint not probed)"
 
-    def build_prompt(self, unit: CodeUnit, repo_path: str = "") -> str:
+    def build_prompt(self, unit: CodeUnit, repo_path: str = "", instructions: str | None = None) -> str:
         """The per-unit audit prompt (shared by sync, batch, and model-eval paths)."""
+        instructions = self.instructions if instructions is None else instructions
         file_ctx = build_file_briefing(
             repo_name=unit.repo,
             file_path=__import__("pathlib").Path(unit.file_path),
@@ -165,14 +195,14 @@ class LLMClient:
             f"---\n{file_ctx}\n"
             f"File: {unit.file_path}\n"
             f"Symbol: {unit.symbol}\n\n"
-            f"{AUDIT_INSTRUCTIONS}\n\n"
+            f"{instructions}\n\n"
             f"```\n{unit.raw_text}\n```"
         )
 
     def cache_key(self, unit: CodeUnit) -> str:
         return review_key(
             provider=self.provider, model=self.model, effort=self.effort,
-            instructions=AUDIT_INSTRUCTIONS, unit=unit,
+            instructions=self.instructions, unit=unit,
         )
 
     def analyze_code(self, unit: CodeUnit, repo_path: str = "") -> list[Finding]:
