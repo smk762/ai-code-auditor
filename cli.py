@@ -32,6 +32,20 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Review uncached units via the Anthropic Batches API first (half price, slower)",
     )
+    repo.add_argument("--model", default="", help="Override AI_AUDIT_LLM_MODEL for this run (e.g. claude-opus-5-5)")
+    repo.add_argument("--effort", default="", help="Override AI_AUDIT_LLM_EFFORT (low|medium|high|xhigh|max)")
+    repo.add_argument(
+        "--estimate",
+        action="store_true",
+        help="With --batch: print how many units would be reviewed and the estimated cost, then exit",
+    )
+
+    budget = sub.add_parser("budget", help="Show this budget month's Claude API spend by lane and model")
+    budget.add_argument("--json", action="store_true", help="Machine-readable output")
+    budget.add_argument("--record", type=float, default=None, metavar="USD",
+                        help="Record spend made outside the auditor (e.g. evals) against --lane")
+    budget.add_argument("--lane", default="eval", help="Lane for --record (default: eval)")
+    budget.add_argument("--note", default="", help="Note for --record")
 
     eco = sub.add_parser("ecosystem-run", help="Run ecosystem audit pipeline")
     eco.add_argument("--auth-code", default="", help="Auth code when auth mode is enabled")
@@ -542,6 +556,29 @@ def _post_merge_refresh(api_base: str, payload: dict) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _budget(args: argparse.Namespace) -> None:
+    from auditor.spend_ledger import get_ledger
+
+    ledger = get_ledger()
+    if args.record is not None:
+        ledger.record_manual(args.lane, args.record, args.note)
+    summary = ledger.summary()
+    if args.json:
+        print(json.dumps(summary, indent=2))
+        return
+    cap = summary["total_cap"]
+    print(f"Budget month from {summary['month_start']}: ${summary['total_spent']:.2f} spent"
+          + (f" of ${cap:.2f} (${cap - summary['total_spent']:.2f} left)" if cap is not None else ""))
+    for lane, info in summary["lanes"].items():
+        lane_cap = f"${info['cap']:.2f}" if info["cap"] is not None else "no cap"
+        print(f"  {lane:12s} ${info['spent']:8.2f}  cap {lane_cap:>8s}  left ${info['remaining']:.2f}")
+    if summary["by_model"]:
+        print("By lane/model:")
+        for r in summary["by_model"]:
+            print(f"  {r['lane']:12s} {r['model']:20s} {r['calls']:6d} calls  "
+                  f"{r['input_tokens'] or 0:>11,} in  {r['output_tokens'] or 0:>10,} out  ${r['cost']:.2f}")
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
@@ -551,9 +588,23 @@ def main() -> None:
     token = getattr(args, "auth_token", "") or os.getenv("AI_AUDIT_AUTH_TOKEN", "")
     if token and args.command in {"repo-run", "ecosystem-run", "rest-run"}:
         enforce_role(token, "admin", f"cli:{args.command}")
+    if args.command == "budget":
+        _budget(args)
+        return
     if args.command == "repo-run":
+        if args.model:
+            os.environ["AI_AUDIT_LLM_MODEL"] = args.model
+        if args.effort:
+            os.environ["AI_AUDIT_LLM_EFFORT"] = args.effort
         if args.batch:
             os.environ["AI_AUDIT_LLM_BATCH"] = "1"
+            os.environ["AI_AUDIT_SPEND_LANE"] = "audit_batch"
+        if args.estimate:
+            from auditor.batch_review import prefetch_reviews
+
+            stats = prefetch_reviews(cfg.repos, dry_run=True)
+            print(json.dumps(stats.__dict__, indent=2, default=str))
+            return
         run_repo_audit()
     elif args.command == "ecosystem-run":
         run_ecosystem_audit()

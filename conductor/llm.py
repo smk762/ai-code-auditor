@@ -10,6 +10,8 @@ from typing import Any
 
 import yaml
 
+from auditor.spend_ledger import get_ledger
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,11 +57,15 @@ def completion(
     max_tokens: int = 4096,
     effort: str | None = None,
     use_fallbacks: bool = True,
+    lane: str = "conductor",
+    note: str = "",
 ) -> str:
     """Chat completion via LiteLLM when installed; otherwise Anthropic/OpenAI HTTP.
 
     temperature=None omits the parameter (required for Claude 5.x, which rejects
     sampling params). effort sets Anthropic output_config.effort (low|medium|high|xhigh|max).
+    lane is the spend-ledger budget lane; Anthropic calls raise BudgetExceeded once it is spent.
+    note labels the ledger row (e.g. mission:task id, repo) for the usage dashboard.
     """
     models = load_conductor_models()
     chosen = model or models.conductor
@@ -68,6 +74,7 @@ def completion(
         # Current Claude models reject sampling params with a 400 ("`temperature` is
         # deprecated for this model"), so never send it on the Anthropic path.
         temperature = None
+        get_ledger().check(lane)
     extra: dict[str, Any] = {}
     if temperature is not None:
         extra["temperature"] = temperature
@@ -82,11 +89,14 @@ def completion(
             max_tokens=max_tokens,
             **extra,
         )
+        if is_anthropic:
+            _record_litellm_usage(lane, chosen, resp, note)
         return str(resp.choices[0].message.content or "")
     except ImportError:
         logger.debug("litellm not installed; using requests fallback for %s", chosen)
         return _requests_completion(
-            chosen, messages, temperature=temperature, max_tokens=max_tokens, effort=effort
+            chosen, messages, temperature=temperature, max_tokens=max_tokens, effort=effort, lane=lane,
+            note=note,
         )
     except Exception as exc:
         if not use_fallbacks:
@@ -108,6 +118,19 @@ def completion(
         raise
 
 
+def _record_litellm_usage(lane: str, model: str, resp: Any, note: str = "") -> None:
+    try:
+        u = getattr(resp, "usage", None)
+        get_ledger().record(
+            lane, model,
+            int(getattr(u, "prompt_tokens", 0) or 0),
+            int(getattr(u, "completion_tokens", 0) or 0),
+            note=note,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("spend ledger record failed")
+
+
 def _requests_completion(
     model: str,
     messages: list[dict[str, str]],
@@ -115,6 +138,8 @@ def _requests_completion(
     temperature: float | None,
     max_tokens: int,
     effort: str | None = None,
+    lane: str = "conductor",
+    note: str = "",
 ) -> str:
     import requests
 
@@ -149,6 +174,10 @@ def _requests_completion(
             # Surface the API's error message (e.g. unknown model, rejected param).
             raise RuntimeError(f"Anthropic API {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
+        try:
+            get_ledger().record_usage(lane, name, data.get("usage") or {}, note=note)
+        except Exception:  # noqa: BLE001 — never fail a paid call over bookkeeping
+            logger.exception("spend ledger record failed")
         if data.get("stop_reason") == "refusal":
             raise RuntimeError(f"Anthropic refusal: {data.get('stop_details')}")
         parts = data.get("content") or []

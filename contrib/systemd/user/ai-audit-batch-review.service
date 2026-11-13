@@ -1,0 +1,17 @@
+[Unit]
+Description=AI Code Auditor — nightly Opus batch review of changed code units
+Documentation=file:///home/smk/ai-code-auditor/CLAUDE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/ai-code-auditor
+EnvironmentFile=-%h/ai-code-auditor/.env
+# Only units whose code changed since their last review are sent (content-hash cache);
+# requests are trimmed to the audit_batch budget lane (see `ai-audit budget`).
+ExecStart=%h/ai-code-auditor/.venv/bin/ai-audit repo-run --batch --model claude-opus-5-5 --effort medium
+TimeoutStartSec=8h
+
+[Install]
+WantedBy=default.target

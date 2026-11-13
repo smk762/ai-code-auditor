@@ -35,3 +35,4 @@ audit.db
 extraction-candidates-report.md
 tmp-chat.txt
 index/llm_review_cache.db*
+index/llm_spend.db*

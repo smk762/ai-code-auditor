@@ -41,13 +41,17 @@ def run() -> None:
             raise RuntimeError(f"LLM health check failed: {reason}")
 
         record_run_start(meta.run_id, "repo-audit")
-        with pipeline_lock("repo-audit", ttl_s=7200):
-            if os.getenv("AI_AUDIT_LLM_BATCH", "").strip().lower() in {"1", "true", "yes", "on"}:
+        batch_mode = os.getenv("AI_AUDIT_LLM_BATCH", "").strip().lower() in {"1", "true", "yes", "on"}
+        with pipeline_lock("repo-audit", ttl_s=8 * 3600 if batch_mode else 7200):
+            if batch_mode:
                 from auditor.batch_review import prefetch_reviews
 
                 # Review all uncached units via the Batches API first (half price); the
-                # per-repo pass below then reads them from the cache.
-                prefetch_reviews(cfg.repos)
+                # per-repo pass below then reads them from the cache and never calls the
+                # model synchronously (misses — oversize / over budget / failed — are skipped).
+                stats = prefetch_reviews(cfg.repos)
+                logger.info("batch prefetch stats: %s", stats)
+                os.environ["AI_AUDIT_LLM_CACHE_ONLY"] = "1"
             t0 = time.monotonic()
             for repo in cfg.repos:
                 attempts = 0

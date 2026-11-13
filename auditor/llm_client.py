@@ -86,6 +86,11 @@ class LLMClient:
         self.instructions = PROMPTS.get(os.getenv("AI_AUDIT_LLM_PROMPT", "v2"), AUDIT_INSTRUCTIONS_V2)
         self.cache = ReviewCache.from_env()
         self.cache_hits = 0
+        # Cache-only: never call the model (used after a batch prefetch so misses
+        # can't turn into full-price synchronous calls).
+        self.cache_only = os.getenv("AI_AUDIT_LLM_CACHE_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
+        self.cache_misses = 0
+        self._note = ""  # spend-ledger label for the call in flight (repo name)
         # Pre-built ecosystem context injected into every audit prompt
         self._ecosystem_overview = build_ecosystem_overview()
         self._repo_briefing = repo_briefing
@@ -142,6 +147,8 @@ class LLMClient:
             max_tokens=8192,
             effort=self.effort or None,
             use_fallbacks=False,
+            lane=os.getenv("AI_AUDIT_SPEND_LANE", "audit"),
+            note=self._note,
         )
 
     def _do_generate(self, payload: dict[str, Any], headers: dict[str, str]) -> str:
@@ -214,6 +221,10 @@ class LLMClient:
                 if parsed is not None:
                     self.cache_hits += 1
                     return parsed
+        if self.cache_only:
+            self.cache_misses += 1
+            return []
+        self._note = unit.repo
         response = self.generate(self.build_prompt(unit, repo_path))
         if self.cache and response and _parse_findings_json(response, unit) is not None:
             self.cache.put(key, self.model, response)

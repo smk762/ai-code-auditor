@@ -36,7 +36,7 @@ def run_worker(task: WorkerTask, *, dry_run: bool = False) -> WorkerResult:
     ]
     try:
         # Claude 5.x thinking counts toward max_tokens; 4096 can truncate the JSON reply.
-        raw = completion(messages, model=model, max_tokens=16000)
+        raw = completion(messages, model=model, max_tokens=16000, note=f"{task.mission}:{task.id}")
         return parse_worker_json(raw, task.id)
     except Exception as exc:
         logger.exception("worker %s failed", task.id)
