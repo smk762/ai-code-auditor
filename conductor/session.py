@@ -279,6 +279,7 @@ def run_rest_session(
         end=rest.end.strftime("%H:%M"),
         timezone=rest.timezone,
     )
+    _refresh_pr_intel(out)
     status = build_status(
         run_id=run_id,
         ended_reason=state.ended_reason,
@@ -323,3 +324,15 @@ def run_rest_session(
         "list_url": f"{public_base_url()}/audit/packs",
     }
     return wrapped
+
+
+def _refresh_pr_intel(output_dir: str | Path) -> None:
+    """Best-effort: fresh blocked-PR intel for the briefing (wrap_up reads the cache)."""
+    from auditor.pr_intel import pr_intel_enabled, refresh
+
+    if not pr_intel_enabled():
+        return
+    try:
+        refresh(output_dir=output_dir)
+    except Exception as exc:  # the briefing falls back to the hourly cache
+        logger.warning("pr intel refresh failed: %s", exc)

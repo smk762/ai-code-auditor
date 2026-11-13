@@ -25,7 +25,8 @@ ai-audit packs --json          # discover agent coding packs (no paste)
 ai-audit packs --bundle --repo argus-cortex   # one-call mission bundle (world model + specialists)
 ai-audit packs --set-status claimed --id pack-…  # lifecycle: open|claimed|in_progress|resolved|wontfix
 ai-audit packs --id pack-… --brief
-ai-audit merge-poll --schedule               # hourly GitHub API → pack/RAG on dev tip moves
+ai-audit merge-poll --schedule               # hourly GitHub API → pack/RAG on dev tip moves (+ PR intel refresh)
+ai-audit pr-intel                            # blocked PRs, why, suggested resolution path (read-only; --json, --cached)
 ai-audit merge-refresh --repo argus-cortex --schedule  # one-repo pack/RAG (or --now)
 ai-audit repair --pack-id pack-… --mode review   # agent-composer repair loop driven by a pack (fetches pack, no diff needed)
 ai-audit repair --pack-id pack-… --audit-api-base "$AI_AUDIT_PUBLIC_BASE_URL"   # real URL in local .env (see .env.example)
@@ -105,7 +106,7 @@ Supports `ollama` (POST `/api/generate`) and `openai-compatible` (POST `/v1/chat
 
 ## Generated artifacts
 
-All written to `reports/` (overwritten each run): `nightly_repo_report.md`, `security_report.md`, `ecosystem_report.md`, `architecture_violations.md`, `pattern_proposals.md`, `extraction_candidates.yaml/md`. Agent coding packs: `reports/agent_packs/` (+ `INDEX.json`; discover via `GET /audit/packs`). Graph: `graph/ecosystem_graph.db`. Embeddings: `index/code_embeddings.faiss`.
+All written to `reports/` (overwritten each run): `pr_intel.json` (blocked-PR intel, hourly; UI at `GET /audit/prs`, data `GET /audit/prs.json`, also spoken in the morning briefing), `nightly_repo_report.md`, `security_report.md`, `ecosystem_report.md`, `architecture_violations.md`, `pattern_proposals.md`, `extraction_candidates.yaml/md`. Agent coding packs: `reports/agent_packs/` (+ `INDEX.json`; discover via `GET /audit/packs`). Graph: `graph/ecosystem_graph.db`. Embeddings: `index/code_embeddings.faiss`.
 
 ## Branches
 

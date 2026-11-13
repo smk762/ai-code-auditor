@@ -634,6 +634,40 @@ def get_usage_json(range: str = "month") -> JSONResponse:
     return JSONResponse(usage_data(range))
 
 
+@app.get("/audit/prs")
+def get_pr_dashboard() -> FileResponse:
+    """Blocked-PR dashboard: what is stuck, why, and the suggested order to clear it."""
+    from auditor.pr_intel import HTML_PATH
+
+    return FileResponse(HTML_PATH, media_type="text/html")
+
+
+@app.get("/audit/prs.json")
+def get_pr_intel_json() -> JSONResponse:
+    """Cached PR intel (refreshed by the hourly merge poll). 404 until the first refresh."""
+    from auditor.pr_intel import load_report
+
+    report = load_report(_output_dir())
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No PR intel yet: run `ai-audit pr-intel` or POST /audit/prs/refresh.",
+        )
+    return JSONResponse(report)
+
+
+@app.post("/audit/prs/refresh", dependencies=[Depends(_require_mutating_auth)])
+def post_pr_intel_refresh() -> JSONResponse:
+    """Rebuild PR intel from GitHub now (read-only on GitHub; rewrites the cache)."""
+    from auditor.pr_intel import refresh
+
+    try:
+        report = refresh(output_dir=_output_dir())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return JSONResponse(report)
+
+
 @app.get("/audit/topology.json")
 def get_service_topology_json() -> FileResponse:
     """Return the structured JSON sidecar for the latest topology.  404 if absent."""

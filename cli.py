@@ -249,8 +249,78 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     poll.add_argument("--api-base", default="", help="Audit API base for --schedule")
     poll.add_argument("--json", action="store_true")
+    poll.add_argument(
+        "--no-pr-intel",
+        action="store_true",
+        help="Skip the blocked-PR intel refresh that follows each poll",
+    )
+
+    pri = sub.add_parser(
+        "pr-intel",
+        help="Blocked-PR intel across mirrors: blockers, resolution path, spoken brief (read-only)",
+    )
+    pri.add_argument("--json", action="store_true", help="Print the full report as JSON")
+    pri.add_argument("--cached", action="store_true", help="Show the last report instead of querying GitHub")
 
     return parser
+
+
+def _refresh_pr_intel_quietly() -> dict:
+    """merge-poll tail: refresh blocked-PR intel; never fails the poll."""
+    from auditor.pr_intel import pr_intel_enabled, refresh
+
+    if not pr_intel_enabled():
+        return {"skipped": "AI_AUDIT_PR_INTEL=0"}
+    try:
+        return {"counts": refresh()["counts"]}
+    except Exception as exc:  # noqa: BLE001 - the poll result matters more
+        return {"error": str(exc)[:300]}
+
+
+def _run_pr_intel(*, as_json: bool, cached: bool) -> None:
+    from auditor.pr_intel import load_report, refresh
+
+    if cached:
+        report = load_report()
+        if report is None:
+            raise SystemExit("No cached PR intel; run `ai-audit pr-intel` first.")
+    else:
+        try:
+            report = refresh()
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+    if as_json:
+        print(json.dumps(report, indent=2))
+        return
+    c = report["counts"]
+    print(
+        f"{c['open']} open · {c['blocked']} blocked · {c['waiting']} waiting · "
+        f"{c['ready']} ready · {c['draft']} draft   ({report['generated_at'][:16]}Z)"
+    )
+    for p in report["prs"]:
+        if p["state"] in ("blocked", "waiting", "pending"):
+            kinds = ", ".join(b["kind"] for b in p["blockers"] if b["kind"] != "review_required")
+            print(f"  {p['state']:8s} {p['ref']:26s} [{kinds}] → {p['next_action']}")
+    print("\nResolution path:")
+    merges: list[str] = []
+    for s in report["plan"]:
+        plain = s["action"] == "Merge" and not (s["release"] or s["unblocks"] or s["after"])
+        if plain:
+            merges.append(s["ref"])
+            continue
+        if merges:
+            print(f"  · merge {len(merges)} ready: {', '.join(merges)}")
+            merges = []
+        note = f"  (unblocks {', '.join(s['unblocks'])})" if s["unblocks"] else ""
+        if s["release"]:
+            note = "  (release)" + note
+        print(f"  {s['step']:>2}. {s['ref']}: {s['action']}{note}")
+    if merges:
+        print(f"  · merge {len(merges)} ready: {', '.join(merges)}")
+    if report.get("spoken"):
+        print(f"\nBriefing: {report['spoken']}")
+    for e in report.get("errors") or []:
+        print(f"  ! {e['repo']}: {e['error']}")
 
 
 def _run_ask(
@@ -892,7 +962,12 @@ def main() -> None:
         )
         if not args.schedule and result.queued:
             get_scheduler().wait_idle()
-        print(json.dumps(result.to_dict(), indent=2))
+        out = result.to_dict()
+        if not args.no_pr_intel:
+            out["pr_intel"] = _refresh_pr_intel_quietly()
+        print(json.dumps(out, indent=2))
+    elif args.command == "pr-intel":
+        _run_pr_intel(as_json=args.json, cached=args.cached)
     elif args.command == "diff-audit":
         _run_diff_audit(
             repo_name=args.repo,

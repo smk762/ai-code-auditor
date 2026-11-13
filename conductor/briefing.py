@@ -30,6 +30,18 @@ def _outcome_phrase(reason: str) -> str:
     return "The rest session finished."
 
 
+def _fit_pr_brief(brief: str, *, used: int, limit: int = 150) -> list[str]:
+    """Blocked-PR sentences that still fit under the spoken word limit, whole sentences only."""
+    out: list[str] = []
+    for sentence in re.split(r"(?<=\.)\s+", (brief or "").strip()):
+        n = count_words(sentence)
+        if not sentence or used + n > limit:
+            break
+        out.append(sentence)
+        used += n
+    return out
+
+
 def render_speakable_markdown(status: MithrandirStatus) -> str:
     """Produce ~150-word prose suitable for TTS. May set speakable false upstream if invalid."""
     confirmed = status.findings.confirmed
@@ -58,8 +70,9 @@ def render_speakable_markdown(status: MithrandirStatus) -> str:
     else:
         parts.append("No blocking decisions tonight.")
 
-    if status.next_rest_window:
-        parts.append(f"Next rest window starts {status.next_rest_window}.")
+    tail = [f"Next rest window starts {status.next_rest_window}."] if status.next_rest_window else []
+    parts.extend(_fit_pr_brief(status.pr_brief, used=count_words(" ".join(parts + tail))))
+    parts.extend(tail)
 
     text = " ".join(parts)
     # Trim to ~150 words if needed
