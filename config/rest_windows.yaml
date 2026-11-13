@@ -1,4 +1,6 @@
 # Rest windows for night conductor sessions (IANA timezone; default UTC).
+# A host can run the window in local time with AI_AUDIT_REST_TZ (e.g. Australia/Perth) in .env;
+# the env var overrides `timezone` below. Keep it equal to the host TZ the systemd timers use.
 timezone: UTC
 windows:
   - name: nightly

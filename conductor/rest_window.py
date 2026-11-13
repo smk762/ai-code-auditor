@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -22,7 +23,13 @@ class RestWindowConfig:
     name: str = "nightly"
 
 
+REST_TZ_ENV = "AI_AUDIT_REST_TZ"
+
+
 def load_rest_windows(path: str | Path = "config/rest_windows.yaml") -> RestWindowConfig:
+    """Load the rest window. ``AI_AUDIT_REST_TZ`` (an IANA name) overrides the file's
+    ``timezone`` so a host can run the window in local time while the checked-in default
+    stays UTC."""
     raw: dict[str, Any] = {}
     p = Path(path)
     if p.exists():
@@ -30,7 +37,12 @@ def load_rest_windows(path: str | Path = "config/rest_windows.yaml") -> RestWind
             raw = yaml.safe_load(f) or {}
     windows = raw.get("windows") or [{"name": "nightly", "start": "00:30", "end": "06:00"}]
     w0 = windows[0]
-    tz = str(raw.get("timezone") or "UTC")
+    tz = (os.getenv(REST_TZ_ENV) or "").strip() or str(raw.get("timezone") or "UTC")
+    try:
+        ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        source = REST_TZ_ENV if os.getenv(REST_TZ_ENV, "").strip() else f"{p} timezone"
+        raise ValueError(f"{source}: unknown IANA timezone {tz!r}") from exc
 
     def _parse(hhmm: str) -> time:
         h, m = hhmm.split(":")

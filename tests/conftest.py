@@ -27,3 +27,5 @@ def _isolate_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
         }:
             if name != "AI_AUDIT_LLM_CACHE":
                 monkeypatch.delenv(name, raising=False)
+    # the host's rest-window timezone override must not leak into tests
+    monkeypatch.delenv("AI_AUDIT_REST_TZ", raising=False)
