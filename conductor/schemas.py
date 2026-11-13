@@ -108,7 +108,7 @@ class DecisionNeeded:
 class RestWindowInfo:
     start: str
     end: str
-    timezone: str = "Australia/Perth"
+    timezone: str = "UTC"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -1,5 +1,5 @@
-# Rest windows for night conductor sessions (local timezone).
-timezone: Australia/Perth
+# Rest windows for night conductor sessions (IANA timezone; default UTC).
+timezone: UTC
 windows:
   - name: nightly
     start: "00:30"
