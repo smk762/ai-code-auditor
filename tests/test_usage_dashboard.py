@@ -29,6 +29,20 @@ def test_usage_data_aggregates_by_lane_process_and_hour(monkeypatch: pytest.Monk
     assert d["top_hours"][0]["top_lane"] == "conductor"
 
 
+
+def test_burn_rate_excludes_manual_and_baseline_one_offs() -> None:
+    led = get_ledger()
+    led.record_manual("eval", 15.0, note="evals")
+    led.record("audit_batch", "claude-opus-5-5", 5_000_000, 0, batch=True, note="baseline:argus-mask")  # $10
+    led.record("audit", "claude-haiku-5-5", 7_000_000, 0, note="argus-mask")  # $0.70
+
+    m = usage_data("month")["month"]
+    assert m["spent"] == pytest.approx(25.7)
+    assert m["one_off"] == pytest.approx(25.0)
+    burn_days = min(7, datetime.now().day)  # window is clipped to the budget-month start
+    assert m["burn_per_day"] == pytest.approx(0.7 / burn_days, abs=1e-4)
+
+
 def test_usage_endpoints() -> None:
     from fastapi.testclient import TestClient
 

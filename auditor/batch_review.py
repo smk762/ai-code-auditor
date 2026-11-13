@@ -87,7 +87,8 @@ def _harvest(client: Any, cache: ReviewCache, batch_id: str, units_by_id: dict[s
         msg = result.result.message
         unit = units_by_id.get(result.custom_id) or _placeholder_unit()
         stats.cost_usd += ledger.record_usage(LANE, getattr(msg, "model", model) or model,
-                                              msg.usage, batch=True, note=unit.repo)
+                                              msg.usage, batch=True,
+                                              note=os.getenv("AI_AUDIT_SPEND_NOTE_PREFIX", "") + unit.repo)
         text = "".join(b.text for b in msg.content if b.type == "text")
         if _parse_findings_json(text, unit) is None:
             stats.parse_failed += 1

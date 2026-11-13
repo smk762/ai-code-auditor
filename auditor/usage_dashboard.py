@@ -14,12 +14,17 @@ from auditor.spend_ledger import budget_month_start, get_ledger
 
 HTML_PATH = Path(__file__).parent / "static" / "usage_dashboard.html"
 TOP_PROCESSES = 12
+ONE_OFF_PREFIX = "baseline:"
 
 
 def _next_reset(start: date) -> date:
     month = start.month % 12 + 1
     year = start.year + (1 if start.month == 12 else 0)
     return date(year, month, start.day)
+
+
+def _recurring(row: tuple) -> bool:
+    return row[2] != "manual" and not str(row[3]).startswith(ONE_OFF_PREFIX)
 
 
 def usage_data(range_key: str = "month") -> dict[str, Any]:
@@ -40,12 +45,15 @@ def usage_data(range_key: str = "month") -> dict[str, Any]:
     month_spent = sum(r[7] for r in rows if datetime.fromtimestamp(r[0]).date() >= m_start)
     in_range = [r for r in rows if datetime.fromtimestamp(r[0]).date() >= r_start]
 
-    # Burn rate from the last 7 days (or since month start if shorter), excluding manual entries
-    # so one-off evals don't distort the projection.
+    # Burn rate from the last 7 days (or since month start if shorter), counting only recurring
+    # spend: manual entries (evals) and one-offs (note "baseline:…", e.g. a full-repo Opus sweep)
+    # still count against caps but would wildly inflate the projection.
     burn_from = max(m_start, today - timedelta(days=6))
     burn_days = (today - burn_from).days + 1
-    burn = sum(r[7] for r in rows if r[2] != "manual"
+    burn = sum(r[7] for r in rows if _recurring(r)
                and datetime.fromtimestamp(r[0]).date() >= burn_from) / burn_days
+    one_off = sum(r[7] for r in rows if not _recurring(r)
+                  and datetime.fromtimestamp(r[0]).date() >= m_start)
     days_left = max((m_reset - today).days, 0)
     caps = ledger.caps()
 
@@ -125,6 +133,7 @@ def usage_data(range_key: str = "month") -> dict[str, Any]:
             "spent": round(month_spent, 4),
             "cap": caps.get("total"),
             "burn_per_day": round(burn, 4),
+            "one_off": round(one_off, 4),
             "projected": round(month_spent + burn * days_left, 4),
         },
         "range_totals": {"cost": round(sum(by_lane.values()), 4), "calls": calls,

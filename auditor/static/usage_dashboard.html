@@ -159,7 +159,7 @@
     </div>
     <div class="card span-4">
       <h2>Month burn vs cap</h2>
-      <p class="hint">Cumulative spend; dashed = projection at the last-7-day burn rate.</p>
+      <p class="hint">Cumulative spend; dashed = projection at the recurring last-7-day burn rate (evals and baseline sweeps excluded).</p>
       <div class="donut-box"><canvas id="burn" aria-label="Line chart of cumulative spend against the monthly cap"></canvas></div>
     </div>
 
@@ -192,7 +192,7 @@ let data = null;
 const charts = {};
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-const money = (x) => x == null ? "—" : (x >= 100 ? "$" + x.toFixed(0) : x >= 1 ? "$" + x.toFixed(2) : "$" + x.toFixed(3));
+const money = (x) => x == null ? "—" : (x >= 100 ? "$" + x.toFixed(0) : (x === 0 || x >= 0.01) ? "$" + x.toFixed(2) : "$" + x.toFixed(3));
 const int = (x) => (x || 0).toLocaleString();
 const laneLabel = (l) => LANE_LABEL[l] || l;
 
@@ -234,11 +234,10 @@ function kpis() {
   const pct = m.cap ? m.spent / m.cap : 0;
   const projPct = m.cap ? m.projected / m.cap : 0;
   const status = projPct >= 1 ? ["critical", "Over cap at this rate"] : projPct >= 0.85 ? ["warn", "Close to cap"] : ["", ""];
-  const today = data.days.length ? Object.values(data.daily[data.days[data.days.length - 1]] || {}).reduce((a, b) => a + b, 0) : 0;
   const tiles = [
     ["Spent this budget month", money(m.spent), m.cap ? `${(pct * 100).toFixed(0)}% of ${money(m.cap)} cap` : "no total cap"],
     ["Left this month", m.cap ? money(m.cap - m.spent) : "—", `resets ${m.resets} · ${m.days_left} days`],
-    ["Burn rate", money(m.burn_per_day) + "/day", `last 7 days · today ${money(today)}`],
+    ["Burn rate", money(m.burn_per_day) + "/day", `recurring, last 7 days · ${money(m.one_off)} one-off excl.`],
     ["Projected at reset", money(m.projected), status[1] ? `<span class="status ${status[0]}">⚠ ${status[1]}</span>` : `${(projPct * 100).toFixed(0)}% of cap`],
   ];
   document.getElementById("kpis").innerHTML = tiles.map(([l, v, n]) =>

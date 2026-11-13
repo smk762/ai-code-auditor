@@ -14,6 +14,8 @@ x-auditor-base: &auditor-base
     - /home/smk/tmp/mnt:/home/smk/tmp/mnt:ro
     - /home/smk/agent-composer:/home/smk/agent-composer:ro
   environment:
+    # Match the host clock so ledger/dashboard hours line up with the systemd timers.
+    - TZ=${TZ:-Australia/Perth}
     - DATABASE_URL=${DATABASE_URL}
     - DB_POOL_SIZE=${DB_POOL_SIZE}
     - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW}
