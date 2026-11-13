@@ -107,6 +107,10 @@ Supports `ollama` (POST `/api/generate`) and `openai-compatible` (POST `/v1/chat
 
 All written to `reports/` (overwritten each run): `nightly_repo_report.md`, `security_report.md`, `ecosystem_report.md`, `architecture_violations.md`, `pattern_proposals.md`, `extraction_candidates.yaml/md`. Agent coding packs: `reports/agent_packs/` (+ `INDEX.json`; discover via `GET /audit/packs`). Graph: `graph/ecosystem_graph.db`. Embeddings: `index/code_embeddings.faiss`.
 
+## Branches
+
+`dev` is the default branch and the base for every PR. Cut feature branches from `origin/dev` and bring them up to date by merging `origin/dev`, never `main`. Never open a PR against `main` or push work to it directly: `main` must never be ahead of `dev`. A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`), then tags it. If `main` is protected and needs a PR, merge the release PR, then immediately merge `main` back into `dev` so the merge commit is not left on `main` alone.
+
 ## Agent coding packs (Cursor / Claude)
 
 Loop: **scan → compressed world model → specialist coding packs**. Agents look packs up themselves (`AGENTS.md`, `.cursor/rules/agent-coding-packs.mdc`):
