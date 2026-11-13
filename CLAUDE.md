@@ -28,7 +28,7 @@ ai-audit packs --id pack-… --brief
 ai-audit merge-poll --schedule               # hourly GitHub API → pack/RAG on dev tip moves
 ai-audit merge-refresh --repo argus-cortex --schedule  # one-repo pack/RAG (or --now)
 ai-audit repair --pack-id pack-… --mode review   # agent-composer repair loop driven by a pack (fetches pack, no diff needed)
-ai-audit repair --pack-id pack-… --audit-api-base http://192.168.1.198:8765
+ai-audit repair --pack-id pack-… --audit-api-base "$AI_AUDIT_PUBLIC_BASE_URL"   # real URL in local .env (see .env.example)
 ai-audit qa-benchmark --json
 ai-audit approve-extraction --candidate-id ext-retry-core-001
 bash scripts/install_overnight_timers.sh         # rest 00:30 + ecosystem 02:00 user timers

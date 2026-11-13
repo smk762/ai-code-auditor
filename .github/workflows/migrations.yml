@@ -24,7 +24,7 @@ jobs:
           --health-retries 10
     env:
       # CI uses the ephemeral Postgres service container on its default port.
-      # Prod Postgres is on Jarrah (192.168.1.109:5432); CI uses the service below.
+      # Prod Postgres is on Jarrah (<STATEFUL_HOST>:5432; real value in the local .env); CI uses the service below.
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/audit_ci
     steps:
       - name: Checkout

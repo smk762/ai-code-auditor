@@ -273,7 +273,7 @@ docker compose run --rm --no-deps auditor
 
 `config/ecosystem.yaml` uses **absolute host paths** under `/home/smk` and `/home/smk/mirrors`. Bind-mount those prefixes in compose so the container sees the same trees.
 
-**Redis / DB from the container:** `REDIS_URL` / `DATABASE_URL` must point at an address the **container** can open (Jarrah stateful node `192.168.1.109`, not `127.0.0.1` unless host networking).
+**Redis / DB from the container:** `REDIS_URL` / `DATABASE_URL` must point at an address the **container** can open (Jarrah stateful node `<STATEFUL_HOST>`, not `127.0.0.1` unless host networking).
 
 [Compose profiles](https://docs.docker.com/compose/how-tos/profiles/) are reserved for optional stacks (e.g. a future **`tests`** service); core services are not hidden behind profiles by default.
 

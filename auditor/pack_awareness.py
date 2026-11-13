@@ -10,13 +10,14 @@ CLI entry point: ``scripts/install_agent_pack_awareness.py`` (wrapped by the ``.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from auditor.config import load_ecosystem_config
 
-DEFAULT_API_BASE = "http://192.168.1.198:8765"
+# Committed files must not carry a real LAN address: agents read the base URL from the env
+# var at runtime (real value lives in each machine's local .env).
+DEFAULT_API_BASE = "$AI_AUDIT_PUBLIC_BASE_URL"
 MARKER_START = "<!-- ai-audit:agent-packs:start -->"
 MARKER_END = "<!-- ai-audit:agent-packs:end -->"
 RULE_RELPATH = Path(".cursor") / "rules" / "agent-coding-packs.mdc"
@@ -26,6 +27,9 @@ AGENTS_RELPATH = Path("AGENTS.md")
 def _body(repo: str, api_base: str) -> str:
     base = api_base.rstrip("/")
     return f"""Do not wait for a pasted brief — fetch the audit packs for `{repo}` yourself.
+
+The audit API base URL is `$AI_AUDIT_PUBLIC_BASE_URL`. The real host/IP is in the local `.env`
+(see `.env.example`, placeholder `http://<AUDIT_HOST>:8765`); read it there, don't guess.
 
 1. **Bundle (one call):** `GET {base}/audit/packs/bundle?repo={repo}`
    (world model + ranked specialist packs + token-capped `briefs_markdown`;
@@ -145,7 +149,9 @@ def install_all(
     force: bool = False,
 ) -> list[InstallResult]:
     """Install into enabled ecosystem repos that exist on disk (or just *repo*)."""
-    base = (api_base or os.getenv("AI_AUDIT_PUBLIC_BASE_URL") or DEFAULT_API_BASE).rstrip("/")
+    # Deliberately not os.getenv("AI_AUDIT_PUBLIC_BASE_URL"): that would bake the real LAN
+    # address into public repos. Pass --api-base explicitly to override.
+    base = (api_base or DEFAULT_API_BASE).rstrip("/")
     cfg = load_ecosystem_config(ecosystem_config)
     repos = cfg.repos
     if repo:

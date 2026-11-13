@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--repo", default="", metavar="NAME", help="Install into a single ecosystem repo")
     ap.add_argument("--config", default="config/ecosystem.yaml", help="Ecosystem config path")
     ap.add_argument("--api-base", default="", metavar="URL",
-                    help=f"Audit API base (default: $AI_AUDIT_PUBLIC_BASE_URL or {DEFAULT_API_BASE})")
+                    help=f"Audit API base written into the files (default: literal {DEFAULT_API_BASE}, resolved by agents from their local .env)")
     ap.add_argument("--force", action="store_true",
                     help="Overwrite an existing user-authored agent-coding-packs.mdc (no marker)")
     args = ap.parse_args(argv)
