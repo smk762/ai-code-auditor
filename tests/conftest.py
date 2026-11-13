@@ -29,3 +29,5 @@ def _isolate_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
                 monkeypatch.delenv(name, raising=False)
     # the host's rest-window timezone override must not leak into tests
     monkeypatch.delenv("AI_AUDIT_REST_TZ", raising=False)
+    # nor the host's rag-chat API key (cli repair sends it as a Bearer token)
+    monkeypatch.delenv("RAG_CHAT_API_KEY", raising=False)

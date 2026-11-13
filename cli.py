@@ -146,7 +146,13 @@ def _build_parser() -> argparse.ArgumentParser:
     repair_cmd.add_argument("--author-email", default="noreply@ai-audit.local", help="Git commit author e-mail")
     repair_cmd.add_argument("--repair-api-url", default="", help="rag-chat base URL (default: RAG_CHAT_URL env or http://127.0.0.1:9150)")
     repair_cmd.add_argument("--auth-code", default="")
-    repair_cmd.add_argument("--auth-token", default="")
+    repair_cmd.add_argument("--auth-token", default="", help="ai-audit JWT, checked locally only (never sent to rag-chat)")
+    repair_cmd.add_argument(
+        "--rag-chat-api-key",
+        default="",
+        help="rag-chat API key, required for --apply/--commit/--push (default: RAG_CHAT_API_KEY env; "
+        "prefer the env var so the key stays out of shell history and ps)",
+    )
 
     diff_cmd = sub.add_parser("diff-audit", help="Audit only files touched by a diff")
     diff_cmd.add_argument("--repo", required=True, help="Repo name from ecosystem config")
@@ -337,8 +343,17 @@ def _run_repair(
     auth_token: str = "",
     pack_id: str = "",
     audit_api_base: str = "",
+    rag_chat_api_key: str = "",
 ) -> None:
-    """Forward a repair request to the rag-chat repair API and stream SSE output."""
+    """Forward a repair request to the rag-chat repair API and stream SSE output.
+
+    Two separate credentials:
+    - the ai-audit JWT (``--auth-token`` / ``AI_AUDIT_AUTH_TOKEN``) is checked locally with
+      ``enforce_role`` and never leaves this process;
+    - the rag-chat API key (``--rag-chat-api-key`` / ``RAG_CHAT_API_KEY``) is sent to rag-chat as
+      ``Authorization: Bearer``. rag-chat requires it for write runs (``apply`` or ``git_ops``);
+      read-only review/suggest runs work without it.
+    """
     import sys
     import requests as _req
 
@@ -366,6 +381,16 @@ def _run_repair(
     if token:
         enforce_role(token, "admin" if write_ops else "analyst", "cli:repair")
 
+    base_url = repair_api_url or os.getenv("RAG_CHAT_URL", "http://127.0.0.1:9150")
+    rag_key = (rag_chat_api_key or os.getenv("RAG_CHAT_API_KEY", "")).strip()
+    if write_ops and not rag_key:
+        raise SystemExit(
+            "--apply / --commit / --push need a rag-chat API key (rag-chat rejects unauthenticated "
+            "write runs with 401). Set RAG_CHAT_API_KEY in .env or pass --rag-chat-api-key. "
+            f"Create a key at {base_url}/ui/api-keys (or POST {base_url}/api-keys). "
+            "Read-only runs (--mode review / suggest without --apply) need no key."
+        )
+
     # Acquire diff text
     if repair_compare_branch:
         diff_text = ""  # the repair API will generate this from compare_branch
@@ -375,8 +400,6 @@ def _run_repair(
         diff_text = sys.stdin.read()
     else:
         diff_text = ""  # pack-only: rag-chat works from the pack's context
-
-    base_url = repair_api_url or os.getenv("RAG_CHAT_URL", "http://127.0.0.1:9150")
 
     git_ops = None
     if commit or push:
@@ -406,7 +429,8 @@ def _run_repair(
         **({"audit_api_base": audit_api_base} if pack_id and audit_api_base else {}),
     }
 
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    # Only the rag-chat key goes over the wire; the ai-audit JWT is not a rag-chat credential.
+    headers = {"Authorization": f"Bearer {rag_key}"} if rag_key else {}
     try:
         with _req.post(
             f"{base_url}/api/repair/run",
@@ -415,6 +439,21 @@ def _run_repair(
             stream=True,
             timeout=600,
         ) as resp:
+            if resp.status_code in (401, 403):
+                detail = ""
+                try:
+                    detail = str(resp.json().get("detail", ""))
+                except ValueError:
+                    pass
+                hint = (
+                    "check that RAG_CHAT_API_KEY / --rag-chat-api-key is a valid rag-chat API key"
+                    if rag_key else
+                    "this run needs a rag-chat API key: set RAG_CHAT_API_KEY or pass --rag-chat-api-key"
+                )
+                raise SystemExit(
+                    f"rag-chat refused the repair run ({resp.status_code}"
+                    f"{': ' + detail if detail else ''}); {hint}."
+                )
             resp.raise_for_status()
             event_name = ""
             for line in resp.iter_lines(decode_unicode=True):
@@ -766,6 +805,7 @@ def main() -> None:
             auth_token=args.auth_token,
             pack_id=args.repair_pack_id,
             audit_api_base=args.repair_audit_api_base,
+            rag_chat_api_key=args.rag_chat_api_key,
         )
     elif args.command == "merge-refresh":
         from auditor.merge_hook import MergeEvent, get_scheduler, run_merge_refresh

@@ -87,7 +87,17 @@ Applies the patch, creates a repair branch, and commits.  Add `--push` to also
 push.  All git operations call the audit API endpoints — the CLI never touches
 git directly.
 
+**Needs a rag-chat API key.** rag-chat rejects write runs (`--apply`, `--commit`,
+`--push`) without one, so the CLI stops before sending anything if none is set.
+Create a key at `http://<rag-chat>/ui/api-keys` (or `POST /api-keys`) and put it
+in `.env` as `RAG_CHAT_API_KEY` (or pass `--rag-chat-api-key`; the env var keeps
+it out of shell history). The ai-audit JWT (`--auth-token` /
+`AI_AUDIT_AUTH_TOKEN`) is only checked locally for the `admin` role and is never
+sent to rag-chat.
+
 ```bash
+export RAG_CHAT_API_KEY=...   # or set it in .env
+
 # Apply + commit (no push)
 ai-audit repair \
   --repo agent-composer \
