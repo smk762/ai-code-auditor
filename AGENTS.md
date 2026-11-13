@@ -6,10 +6,12 @@ Do **not** wait for a pasted brief.
 
 ### Quick start: mission bundle (one call)
 
+`$AI_AUDIT_PUBLIC_BASE_URL` is the audit API base (`http://<AUDIT_HOST>:8765`). The real host/IP is in the local `.env` (see `.env.example`); check it there.
+
 ```bash
 ai-audit packs --bundle --repo argus-cortex            # markdown briefs
 ai-audit packs --bundle --repo argus-cortex --json
-curl -s 'http://192.168.1.198:8765/audit/packs/bundle?repo=argus-cortex&token_budget=2500&limit_specialists=5'
+curl -s "$AI_AUDIT_PUBLIC_BASE_URL/audit/packs/bundle?repo=argus-cortex&token_budget=2500&limit_specialists=5"
 ```
 
 Returns `world_model` (ecosystem + architecture memory + `pack-world-<repo>`), ranked
@@ -27,7 +29,7 @@ Optional: `q=<keyword>` boosts matches, `status=open,claimed,in_progress` (defau
 4. **Close** — `POST /audit/validate_patch {"repo","patch","pack_id":"<id>"}`; `passed=true` marks the pack `resolved`.
 
 ```bash
-B=http://192.168.1.198:8765
+B=$AI_AUDIT_PUBLIC_BASE_URL   # real value in local .env
 curl -s "$B/audit/packs/bundle?repo=argus-cortex&token_budget=2500"                      # 1
 curl -X POST "$B/audit/packs/<id>/status" -H 'Content-Type: application/json' \
   -H "X-API-Token: $AI_AUDIT_API_TOKEN" -d '{"status":"claimed","note":"agent X"}'       # 2
@@ -46,7 +48,7 @@ Give up on a pack with `status: wontfix` (+ `note`). Other repos get this flow v
 Statuses: `open` (default) · `claimed` · `in_progress` · `resolved` · `wontfix`.
 
 ```bash
-curl -X POST 'http://192.168.1.198:8765/audit/packs/<id>/status' \
+curl -X POST "$AI_AUDIT_PUBLIC_BASE_URL/audit/packs/<id>/status" \
   -H 'Content-Type: application/json' -H "X-API-Token: $AI_AUDIT_API_TOKEN" \
   -d '{"status":"claimed","note":"agent X working"}'
 ai-audit packs --set-status claimed --id <id> --note "…"   # local, no HTTP
@@ -70,7 +72,7 @@ Fetch packs in this order:
 ```bash
 ai-audit packs --kind world_model --json
 # or
-curl -s 'http://192.168.1.198:8765/audit/packs?kind=world_model'
+curl -s "$AI_AUDIT_PUBLIC_BASE_URL/audit/packs?kind=world_model"
 ```
 
 Always useful ids:

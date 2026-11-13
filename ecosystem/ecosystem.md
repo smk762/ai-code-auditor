@@ -58,10 +58,12 @@ Night conductor scans `dev` on every `smk762/argus-*` repo, plus shared dependen
 
 ## Deployment notes (current)
 
+Hosts below are placeholders (`<AGENT_HOST>`, `<STATEFUL_HOST>`). The real host/IP is in the local `.env` (see `.env.example`: `AI_AUDIT_PUBLIC_BASE_URL`, `DATABASE_URL`, `OLLAMA_BASE_URL`, `AI_AUDIT_MITHRANDIR_WEBHOOK_URL`); check it there.
+
 | Host | Role |
 |------|------|
-| Dragon `192.168.1.198` | `ai-code-auditor`, `agent-composer` (rag-chat/rag-ingest), local argus checkouts / mirrors |
-| Jarrah `192.168.1.109` | Stateful node: Postgres `:5432`, Redis `:6379`, MinIO `:9000`, Qdrant `:6333`, Ollama `:11434`; `mithrandir` `:8400` |
+| Dragon `<AGENT_HOST>` | `ai-code-auditor`, `agent-composer` (rag-chat/rag-ingest), local argus checkouts / mirrors |
+| Jarrah `<STATEFUL_HOST>` | Stateful node: Postgres `:5432`, Redis `:6379`, MinIO `:9000`, Qdrant `:6333`, Ollama `:11434`; `mithrandir` `:8400` |
 | Voluptas host | ComfyUI `:8188` (see voluptas compose); Argus darkroom/studio call into it |
 
 Branch policy: all `argus-*` repos use **`dev` as default**. Night conductor syncs mirrors and checks out `dev` before each rest session.
@@ -72,9 +74,9 @@ Branch policy: all `argus-*` repos use **`dev` as default**. Night conductor syn
 
 | Artifact | URL |
 |----------|-----|
-| Status envelope | `http://192.168.1.198:8765/reports/mithrandir/LATEST.json` |
-| TTS body | `http://192.168.1.198:8765/reports/mithrandir/LATEST.md` |
-| Webhook | `POST http://192.168.1.109:8400/api/companion/events` |
+| Status envelope | `http://<AGENT_HOST>:8765/reports/mithrandir/LATEST.json` |
+| TTS body | `http://<AGENT_HOST>:8765/reports/mithrandir/LATEST.md` |
+| Webhook | `POST http://<STATEFUL_HOST>:8400/api/companion/events` |
 
 `LATEST.json` is one `source=ai-code-auditor` status event in mithrandir’s shared envelope — not exclusive owner of the morning broadcast.
 
@@ -84,7 +86,7 @@ Branch policy: all `argus-*` repos use **`dev` as default**. Night conductor syn
 
 - Collection `audit_docs` (isolated from chat `project_docs`).
 - Ingest slim `LATEST.md` + short JSON only (not full SARIF).
-- Prefer Jarrah Ollama for embeddings: `http://192.168.1.109:11434`.
+- Prefer Jarrah Ollama for embeddings: `http://<STATEFUL_HOST>:11434`.
 
 ## Agent coding packs
 
@@ -99,7 +101,7 @@ Loop: **scan → compressed world model → specialist coding packs** (no paste 
 |----------|----------|
 | Pack YAML + markdown brief | `reports/agent_packs/<id>.yaml` / `.md` |
 | Discovery index | `reports/agent_packs/INDEX.json` (`layers`, `kind_counts`) |
-| World model | `GET http://192.168.1.198:8765/audit/packs?kind=world_model` |
+| World model | `GET http://<AGENT_HOST>:8765/audit/packs?kind=world_model` |
 | Specialists | `GET /audit/packs?layer=specialist&repo=&q=` |
 | **Mission bundle** | `GET /audit/packs/bundle?repo=<name>&token_budget=2500&limit_specialists=5` (world model + ranked specialists + capped `briefs_markdown`) |
 | Full pack / brief | `GET /audit/packs/{id}` · `/brief` |

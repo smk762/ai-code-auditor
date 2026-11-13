@@ -11,7 +11,9 @@ Before coding, fetch packs yourself (do not ask for a paste).
 
 **Preferred flow (consuming agent):**
 
-1. **Bundle:** `GET http://192.168.1.198:8765/audit/packs/bundle?repo=<name>[&token_budget=2500&q=<kw>&limit_specialists=5]`
+API base: `$AI_AUDIT_PUBLIC_BASE_URL` (`http://<AUDIT_HOST>:8765`). The real host/IP is in the local `.env` (see `.env.example`); check it there.
+
+1. **Bundle:** `GET $AI_AUDIT_PUBLIC_BASE_URL/audit/packs/bundle?repo=<name>[&token_budget=2500&q=<kw>&limit_specialists=5]`
    (world model + ranked specialists + token-capped `briefs_markdown`). CLI: `ai-audit packs --bundle --repo <name>`.
 2. **Claim:** `POST /audit/packs/{id}/status {"status":"claimed"}` (`X-API-Token`).
 3. **Fix:** `ai-audit repair --pack-id <id>` (fetches the pack; no diff needed) — or implement from `GET /audit/packs/{id}/brief`.
@@ -21,7 +23,7 @@ Other repos receive this via `bash scripts/install_agent_pack_awareness.sh` (ide
 
 Manual path:
 
-1. World model: `GET http://192.168.1.198:8765/audit/packs?kind=world_model`
+1. World model: `GET $AI_AUDIT_PUBLIC_BASE_URL/audit/packs?kind=world_model`
    - Load `pack-world-ecosystem` plus `pack-world-<repo>` for repos in scope
    - Load `pack-world-architecture-memory` when changing cross-repo boundaries
 2. Specialist: `GET /audit/packs?layer=specialist&repo=<name>&q=<keyword>`
