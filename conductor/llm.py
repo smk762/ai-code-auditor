@@ -51,26 +51,46 @@ def completion(
     messages: list[dict[str, str]],
     *,
     model: str | None = None,
-    temperature: float = 0.1,
+    temperature: float | None = 0.1,
     max_tokens: int = 4096,
+    effort: str | None = None,
+    use_fallbacks: bool = True,
 ) -> str:
-    """Chat completion via LiteLLM when installed; otherwise Anthropic/OpenAI HTTP."""
+    """Chat completion via LiteLLM when installed; otherwise Anthropic/OpenAI HTTP.
+
+    temperature=None omits the parameter (required for Claude 5.x, which rejects
+    sampling params). effort sets Anthropic output_config.effort (low|medium|high|xhigh|max).
+    """
     models = load_conductor_models()
     chosen = model or models.conductor
+    is_anthropic = chosen.startswith("anthropic/") or chosen.startswith("claude")
+    if is_anthropic:
+        # Current Claude models reject sampling params with a 400 ("`temperature` is
+        # deprecated for this model"), so never send it on the Anthropic path.
+        temperature = None
+    extra: dict[str, Any] = {}
+    if temperature is not None:
+        extra["temperature"] = temperature
+    if effort and chosen.startswith("anthropic/"):
+        extra["output_config"] = {"effort": effort}
     try:
         import litellm  # type: ignore
 
         resp = litellm.completion(
             model=chosen,
             messages=messages,
-            temperature=temperature,
             max_tokens=max_tokens,
+            **extra,
         )
         return str(resp.choices[0].message.content or "")
     except ImportError:
         logger.debug("litellm not installed; using requests fallback for %s", chosen)
-        return _requests_completion(chosen, messages, temperature=temperature, max_tokens=max_tokens)
+        return _requests_completion(
+            chosen, messages, temperature=temperature, max_tokens=max_tokens, effort=effort
+        )
     except Exception as exc:
+        if not use_fallbacks:
+            raise
         for fb in models.fallbacks:
             try:
                 import litellm  # type: ignore
@@ -78,8 +98,8 @@ def completion(
                 resp = litellm.completion(
                     model=fb,
                     messages=messages,
-                    temperature=temperature,
                     max_tokens=max_tokens,
+                    **({"temperature": temperature} if temperature is not None else {}),
                 )
                 logger.warning("primary model %s failed (%s); used fallback %s", chosen, exc, fb)
                 return str(resp.choices[0].message.content or "")
@@ -92,8 +112,9 @@ def _requests_completion(
     model: str,
     messages: list[dict[str, str]],
     *,
-    temperature: float,
+    temperature: float | None,
     max_tokens: int,
+    effort: str | None = None,
 ) -> str:
     import requests
 
@@ -102,6 +123,18 @@ def _requests_completion(
         if not key:
             raise RuntimeError("ANTHROPIC_API_KEY required")
         name = model.split("/", 1)[-1]
+        body: dict[str, Any] = {
+            "model": name,
+            "max_tokens": max_tokens,
+            "messages": [m for m in messages if m.get("role") != "system"],
+        }
+        system = next((m["content"] for m in messages if m.get("role") == "system"), "")
+        if system:
+            body["system"] = system
+        if temperature is not None:
+            body["temperature"] = temperature
+        if effort:
+            body["output_config"] = {"effort": effort}
         resp = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -109,19 +142,19 @@ def _requests_completion(
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
-            json={
-                "model": name,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "messages": [m for m in messages if m.get("role") != "system"],
-                "system": next((m["content"] for m in messages if m.get("role") == "system"), ""),
-            },
+            json=body,
             timeout=180,
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            # Surface the API's error message (e.g. unknown model, rejected param).
+            raise RuntimeError(f"Anthropic API {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
+        if data.get("stop_reason") == "refusal":
+            raise RuntimeError(f"Anthropic refusal: {data.get('stop_details')}")
         parts = data.get("content") or []
-        return "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+        return "".join(
+            p.get("text", "") for p in parts if isinstance(p, dict) and p.get("type") == "text"
+        )
 
     # OpenAI-compatible (openai/, xai/, etc.)
     if model.startswith("openai/") or model.startswith("gpt"):
@@ -143,8 +176,8 @@ def _requests_completion(
         json={
             "model": name,
             "messages": messages,
-            "temperature": temperature,
             "max_tokens": max_tokens,
+            **({"temperature": temperature} if temperature is not None else {}),
         },
         timeout=120,
     )
