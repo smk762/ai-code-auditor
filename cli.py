@@ -27,6 +27,11 @@ def _build_parser() -> argparse.ArgumentParser:
     repo = sub.add_parser("repo-run", help="Run nightly repo audit pipeline")
     repo.add_argument("--auth-code", default="", help="Auth code when auth mode is enabled")
     repo.add_argument("--auth-token", default="", help="JWT token with admin role")
+    repo.add_argument(
+        "--batch",
+        action="store_true",
+        help="Review uncached units via the Anthropic Batches API first (half price, slower)",
+    )
 
     eco = sub.add_parser("ecosystem-run", help="Run ecosystem audit pipeline")
     eco.add_argument("--auth-code", default="", help="Auth code when auth mode is enabled")
@@ -547,6 +552,8 @@ def main() -> None:
     if token and args.command in {"repo-run", "ecosystem-run", "rest-run"}:
         enforce_role(token, "admin", f"cli:{args.command}")
     if args.command == "repo-run":
+        if args.batch:
+            os.environ["AI_AUDIT_LLM_BATCH"] = "1"
         run_repo_audit()
     elif args.command == "ecosystem-run":
         run_ecosystem_audit()

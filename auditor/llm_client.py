@@ -10,6 +10,7 @@ import requests
 
 from auditor.config import ModelProviderConfig, get_secret_from_env, load_model_provider_config
 from auditor.contracts import CodeUnit, Finding
+from auditor.llm_cache import ReviewCache, review_key
 from auditor.retry import with_retries
 from auditor.ecosystem_briefing import build_ecosystem_overview, build_file_briefing
 
@@ -18,6 +19,14 @@ logger = logging.getLogger(__name__)
 # Providers whose endpoint speaks POST /v1/chat/completions (OpenAI, DeepSeek, Qwen, vLLM, …).
 OPENAI_CHAT_PROVIDERS = {"openai", "openai-compatible", "xai"}
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+AUDIT_INSTRUCTIONS = (
+    "Review the code below for security vulnerabilities (auth bypass, injection, path traversal, "
+    "hardcoded secrets, IDOR), bugs, cross-service contract violations, and maintainability issues.\n"
+    "Return a JSON array. Each element: type, severity (CRITICAL/HIGH/MEDIUM/LOW/INFO), "
+    "title, description, line, recommendation.\n"
+    "Return [] if no issues. Return only the JSON array."
+)
 
 
 def _safe_line(value: Any, default: int) -> int:
@@ -44,6 +53,10 @@ class LLMClient:
         self.num_gpu_layers = num_gpu_layers
         self._failures = 0
         self._parse_failures = 0
+        # Effort only applies to Claude; it is part of the cache key so changing it re-reviews.
+        self.effort = os.getenv("AI_AUDIT_LLM_EFFORT", "low") if self.provider == "anthropic" else ""
+        self.cache = ReviewCache.from_env()
+        self.cache_hits = 0
         # Pre-built ecosystem context injected into every audit prompt
         self._ecosystem_overview = build_ecosystem_overview()
         self._repo_briefing = repo_briefing
@@ -98,7 +111,7 @@ class LLMClient:
             model=f"anthropic/{self.model}",
             temperature=None,
             max_tokens=8192,
-            effort=os.getenv("AI_AUDIT_LLM_EFFORT", "low"),
+            effort=self.effort or None,
             use_fallbacks=False,
         )
 
@@ -139,26 +152,45 @@ class LLMClient:
             return False, f"{key_env} is not set"
         return True, "ok (key present; endpoint not probed)"
 
-    def analyze_code(self, unit: CodeUnit, repo_path: str = "") -> list[Finding]:
+    def build_prompt(self, unit: CodeUnit, repo_path: str = "") -> str:
+        """The per-unit audit prompt (shared by sync, batch, and model-eval paths)."""
         file_ctx = build_file_briefing(
             repo_name=unit.repo,
             file_path=__import__("pathlib").Path(unit.file_path),
             repo_path=__import__("pathlib").Path(repo_path or unit.file_path).parent,
         )
-        prompt = (
+        return (
             f"{self._ecosystem_overview}\n\n"
             f"{self._repo_briefing}\n\n"
             f"---\n{file_ctx}\n"
             f"File: {unit.file_path}\n"
             f"Symbol: {unit.symbol}\n\n"
-            "Review the code below for security vulnerabilities (auth bypass, injection, path traversal, "
-            "hardcoded secrets, IDOR), bugs, cross-service contract violations, and maintainability issues.\n"
-            "Return a JSON array. Each element: type, severity (CRITICAL/HIGH/MEDIUM/LOW/INFO), "
-            "title, description, line, recommendation.\n"
-            "Return [] if no issues. Return only the JSON array.\n\n"
+            f"{AUDIT_INSTRUCTIONS}\n\n"
             f"```\n{unit.raw_text}\n```"
         )
-        response = self.generate(prompt)
+
+    def cache_key(self, unit: CodeUnit) -> str:
+        return review_key(
+            provider=self.provider, model=self.model, effort=self.effort,
+            instructions=AUDIT_INSTRUCTIONS, unit=unit,
+        )
+
+    def analyze_code(self, unit: CodeUnit, repo_path: str = "") -> list[Finding]:
+        key = self.cache_key(unit) if self.cache else ""
+        if self.cache:
+            cached = self.cache.get(key)
+            if cached is not None:
+                parsed = _parse_findings_json(cached, unit)
+                if parsed is not None:
+                    self.cache_hits += 1
+                    return parsed
+        response = self.generate(self.build_prompt(unit, repo_path))
+        if self.cache and response and _parse_findings_json(response, unit) is not None:
+            self.cache.put(key, self.model, response)
+        return self.findings_from_response(response, unit)
+
+    def findings_from_response(self, response: str, unit: CodeUnit) -> list[Finding]:
+        """Parse model output into findings; heuristics only when there is no usable output."""
         if response:
             parsed = _parse_findings_json(response, unit)
             # [] is a valid "no issues" answer — only fall back when parsing failed.
