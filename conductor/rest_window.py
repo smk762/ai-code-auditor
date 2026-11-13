@@ -30,7 +30,7 @@ def load_rest_windows(path: str | Path = "config/rest_windows.yaml") -> RestWind
             raw = yaml.safe_load(f) or {}
     windows = raw.get("windows") or [{"name": "nightly", "start": "00:30", "end": "06:00"}]
     w0 = windows[0]
-    tz = str(raw.get("timezone") or "Australia/Perth")
+    tz = str(raw.get("timezone") or "UTC")
 
     def _parse(hhmm: str) -> time:
         h, m = hhmm.split(":")

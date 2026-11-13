@@ -50,14 +50,14 @@ def test_commit_repair_rejects_path_escape(tmp_path: Path) -> None:
 
 def test_rest_session_aborts_outside_window(monkeypatch, tmp_path: Path) -> None:
     cfg = RestWindowConfig(
-        timezone="Australia/Perth",
+        timezone="UTC",
         start=time(0, 30),
         end=time(6, 0),
         wrap_up_before_end_minutes=20,
         inflight_grace_s=120,
         max_tasks_per_session=12,
     )
-    tz = ZoneInfo("Australia/Perth")
+    tz = ZoneInfo("UTC")
     noon = datetime(2026, 11, 11, 12, 0, tzinfo=tz)
     assert should_freeze_launches(cfg, noon)
 
