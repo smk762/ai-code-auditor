@@ -192,6 +192,8 @@ class MithrandirStatus:
     requires_ack: bool | None = None
     severity: StatusSeverity | None = None
     quiet_exempt: bool | None = None
+    # TTS-safe blocked-PR sentence(s) from auditor.pr_intel; spoken before the next window.
+    pr_brief: str = ""
 
     def __post_init__(self) -> None:
         if not self.event_id:
@@ -271,6 +273,8 @@ class MithrandirStatus:
             out["expires_at"] = self.expires_at
         if self.channels_hint:
             out["channels_hint"] = list(self.channels_hint)
+        if self.pr_brief:
+            out["pr_brief"] = self.pr_brief
         return out
 
 

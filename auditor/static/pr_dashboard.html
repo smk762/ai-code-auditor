@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blocked PRs</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #f4f4f2; --surface-1: #fcfcfb; --surface-2: #efeeeb; --border: #e2e1dc;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #7a7974;
+    --accent: #2a78d6; --ok: #138a5e; --warn: #b86e00; --critical: #c42b2b; --wait: #6250d6;
+    --ok-bg: #e3f4ec; --warn-bg: #fbf0dc; --critical-bg: #fbe5e5; --wait-bg: #ebe8fb; --muted-bg: #efeeeb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-0: #121211; --surface-1: #1a1a19; --surface-2: #242423; --border: #31312f;
+      --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
+      --accent: #3987e5; --ok: #3cc28f; --warn: #e09a2b; --critical: #f07070; --wait: #9085e9;
+      --ok-bg: #12301f; --warn-bg: #33270f; --critical-bg: #3a1717; --wait-bg: #221e3d; --muted-bg: #242423;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-0: #121211; --surface-1: #1a1a19; --surface-2: #242423; --border: #31312f;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
+    --accent: #3987e5; --ok: #3cc28f; --warn: #e09a2b; --critical: #f07070; --wait: #9085e9;
+    --ok-bg: #12301f; --warn-bg: #33270f; --critical-bg: #3a1717; --wait-bg: #221e3d; --muted-bg: #242423;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface-0); color: var(--text-primary);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1240px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  .sub { color: var(--text-secondary); font-size: 13px; }
+  .filters { margin-left: auto; display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--text-secondary); }
+  select { font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 6px; background: var(--surface-1);
+    color: var(--text-primary); border: 1px solid var(--border); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(12, 1fr); }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .card h2 { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
+  .card .hint { font-size: 12px; color: var(--text-muted); margin: 0 0 10px; }
+  .span-2 { grid-column: span 2; } .span-5 { grid-column: span 5; } .span-7 { grid-column: span 7; } .span-12 { grid-column: span 12; }
+  @media (max-width: 900px) { .grid > * { grid-column: span 12 !important; } .kpis > * { grid-column: span 4 !important; } }
+  .kpi .label { font-size: 12px; color: var(--text-secondary); }
+  .kpi .value { font-size: 28px; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .kpi.blocked .value { color: var(--critical); } .kpi.waiting .value { color: var(--wait); } .kpi.ready .value { color: var(--ok); }
+  .spoken { font-size: 14px; color: var(--text-secondary); border-left: 3px solid var(--accent); padding: 2px 0 2px 10px; margin: 0; }
+  ol.plan { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  ol.plan li { display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: start; }
+  .n { width: 24px; height: 24px; border-radius: 50%; background: var(--surface-2); color: var(--text-secondary);
+    font-size: 12px; font-weight: 600; display: grid; place-items: center; font-variant-numeric: tabular-nums; }
+  .act { font-weight: 600; }
+  .meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .chip { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--muted-bg); color: var(--text-secondary); white-space: nowrap; }
+  .chip.critical { background: var(--critical-bg); color: var(--critical); }
+  .chip.warn { background: var(--warn-bg); color: var(--warn); }
+  .chip.wait { background: var(--wait-bg); color: var(--wait); }
+  .chip.ok { background: var(--ok-bg); color: var(--ok); }
+  .chip.rel { background: var(--surface-2); color: var(--text-primary); font-weight: 600; }
+  .pr { padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .pr:last-child { border-bottom: 0; }
+  .pr .title { font-weight: 600; overflow-wrap: anywhere; }
+  .blk { font-size: 13px; color: var(--text-secondary); margin: 4px 0 0; padding-left: 16px; }
+  .blk li { margin: 1px 0; }
+  .next { font-size: 13px; margin-top: 4px; }
+  .next b { color: var(--text-primary); }
+  .repo-group { margin: 6px 0 10px; }
+  .repo-group h3 { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin: 0 0 4px; }
+  .empty { color: var(--text-muted); font-size: 13px; padding: 16px 0; text-align: center; }
+  .err { color: var(--critical); }
+  details summary { cursor: pointer; font-size: 13px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Pull requests</h1>
+    <div class="sub" id="sub">Loading…</div>
+    <div class="filters"><label for="repo">Repo</label> <select id="repo"><option value="">All repos</option></select></div>
+  </header>
+
+  <section class="grid kpis" id="kpis" aria-label="Headline numbers"></section>
+
+  <section class="grid" style="margin-top:12px">
+    <div class="card span-12">
+      <h2>Briefing</h2>
+      <p class="spoken" id="spoken"></p>
+    </div>
+  </section>
+
+  <section class="grid" style="margin-top:12px">
+    <div class="card span-7">
+      <h2>Suggested resolution path</h2>
+      <p class="hint">Prerequisites first, then whatever unblocks the most; release PRs before the rest; oldest first.</p>
+      <ol class="plan" id="plan"></ol>
+    </div>
+    <div class="card span-5">
+      <h2>Blocked and waiting</h2>
+      <p class="hint">Why each PR is stuck, with evidence.</p>
+      <div id="stuck"></div>
+    </div>
+  </section>
+
+  <section class="grid" style="margin-top:12px">
+    <div class="card span-12">
+      <h2>Ready to merge</h2>
+      <p class="hint">Clean, checks green, nothing they wait on.</p>
+      <div id="ready"></div>
+      <details style="margin-top:8px" id="drafts-wrap"><summary id="drafts-sum">Drafts</summary><div id="drafts"></div></details>
+    </div>
+  </section>
+</main>
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const safeUrl = (u) => /^https:\/\/github\.com\//.test(u || "") ? u : "";
+const link = (text, url) => { const u = safeUrl(url); return u ? `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(text)}</a>` : esc(text); };
+const KIND = {
+  conflict: ["merge conflict", "critical"], ci_failing: ["CI failing", "critical"], dep_closed: ["parent closed", "critical"],
+  wrong_base: ["wrong base", "warn"], behind: ["behind", "warn"], changes_requested: ["changes requested", "warn"],
+  stacked: ["stacked", "wait"], depends_on: ["depends on", "wait"], review_required: ["needs review", ""],
+  checks_pending: ["checks running", ""], draft: ["draft", ""],
+};
+const chip = (kind) => { const [label, cls] = KIND[kind] || [kind, ""]; return `<span class="chip ${cls}">${esc(label)}</span>`; };
+const ago = (iso) => {
+  const m = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (!isFinite(m)) return "unknown";
+  if (m < 60) return `${m} min ago`;
+  if (m < 48 * 60) return `${Math.round(m / 60)} h ago`;
+  return `${Math.round(m / 1440)} days ago`;
+};
+const days = (d) => d < 1 ? "today" : `${Math.round(d)}d idle`;
+let DATA = null;
+
+function render() {
+  const repo = document.getElementById("repo").value;
+  const keep = (ref) => !repo || ref.startsWith(repo + "#");
+  const prs = DATA.prs.filter((p) => !repo || p.repo === repo);
+  const count = (s) => prs.filter((p) => p.state === s).length;
+  const stale = prs.filter((p) => p.idle_days >= DATA.stale_days).length;
+  const tiles = [["Open", prs.length, ""], ["Blocked", count("blocked"), "blocked"], ["Waiting", count("waiting"), "waiting"],
+    ["Ready", count("ready"), "ready"], ["Drafts", count("draft"), ""], [`Idle ≥ ${DATA.stale_days}d`, stale, ""]];
+  document.getElementById("kpis").innerHTML = tiles.map(([l, v, c]) =>
+    `<div class="card kpi span-2 ${c}"><div class="label">${esc(l)}</div><div class="value">${v}</div></div>`).join("");
+  document.getElementById("spoken").textContent = DATA.spoken || "No open pull requests.";
+
+  // Resolution path: notable steps in full; runs of plain merges collapse into one row.
+  const steps = DATA.plan.filter((s) => keep(s.ref));
+  const rows = [];
+  let run = [];
+  const flush = () => {
+    if (!run.length) return;
+    rows.push(`<li><span class="n">${run[0].i}</span><div><div class="act">Merge ${run.length} ready PR${run.length > 1 ? "s" : ""}</div>` +
+      `<div class="chips">${run.map((s) => `<span class="chip ok">${link(s.ref, s.url)}</span>`).join("")}</div></div></li>`);
+    run = [];
+  };
+  steps.forEach((s, idx) => {
+    const i = idx + 1;
+    const plain = s.action === "Merge" && !s.release && !s.unblocks.length && !s.after.length;
+    if (plain) { run.push({...s, i}); return; }
+    flush();
+    const extra = [];
+    if (s.release) extra.push(`<span class="chip rel">release</span>`);
+    if (s.unblocks.length) extra.push(`<span class="chip ok">unblocks ${s.unblocks.map(esc).join(", ")}</span>`);
+    if (s.after.length) extra.push(`<span class="chip wait">after ${s.after.map(esc).join(", ")}</span>`);
+    rows.push(`<li><span class="n">${i}</span><div><div class="act">${esc(s.action)}</div>` +
+      `<div class="meta">${link(s.ref, s.url)} · ${esc(s.title)}</div>` +
+      (extra.length ? `<div class="chips">${extra.join("")}</div>` : "") + `</div></li>`);
+  });
+  flush();
+  document.getElementById("plan").innerHTML = rows.join("") || `<li class="empty">Nothing to do.</li>`;
+
+  const stuck = prs.filter((p) => p.state === "blocked" || p.state === "waiting" || p.state === "pending");
+  document.getElementById("stuck").innerHTML = stuck.length ? stuck.map((p) => `
+    <div class="pr">
+      <div class="title">${link(p.ref, p.url)} ${esc(p.title)}</div>
+      <div class="chips">${p.blockers.filter((b) => b.kind !== "review_required").map((b) => chip(b.kind)).join("")}
+        ${p.release ? `<span class="chip rel">release</span>` : ""}
+        <span class="chip">${esc(days(p.idle_days))}</span></div>
+      <ul class="blk">${p.blockers.filter((b) => b.kind !== "review_required").map((b) =>
+        `<li>${b.url ? link(b.detail, b.url) : esc(b.detail)}</li>`).join("")}</ul>
+      ${p.blocks.length ? `<div class="meta">Holds up ${p.blocks.map(esc).join(", ")}</div>` : ""}
+      <div class="next"><b>Next:</b> ${esc(p.next_action)}</div>
+    </div>`).join("") : `<div class="empty">Nothing is blocked.</div>`;
+
+  const groups = {};
+  prs.filter((p) => p.state === "ready").forEach((p) => (groups[p.repo] ||= []).push(p));
+  const names = Object.keys(groups).sort();
+  document.getElementById("ready").innerHTML = names.length ? names.map((r) => `
+    <div class="repo-group"><h3>${esc(r)}</h3><div class="chips">${groups[r].map((p) =>
+      `<span class="chip ${p.release ? "rel" : ""}">${link("#" + p.number, p.url)} ${esc(p.title.slice(0, 70))} · ${esc(days(p.idle_days))}</span>`).join("")}</div></div>`).join("")
+    : `<div class="empty">Nothing ready to merge.</div>`;
+
+  const drafts = prs.filter((p) => p.state === "draft");
+  document.getElementById("drafts-sum").textContent = `Drafts (${drafts.length})`;
+  document.getElementById("drafts").innerHTML = drafts.map((p) => `
+    <div class="pr"><div class="title">${link(p.ref, p.url)} ${esc(p.title)}</div>
+    <div class="chips">${p.blockers.filter((b) => b.kind !== "draft").map((b) => chip(b.kind)).join("")}<span class="chip">${esc(days(p.idle_days))}</span></div></div>`).join("")
+    || `<div class="empty">No drafts.</div>`;
+}
+
+async function load() {
+  try {
+    const r = await fetch("prs.json");
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+    DATA = await r.json();
+  } catch (e) {
+    document.getElementById("sub").innerHTML = `<span class="err">Could not load PR intel: ${esc(e.message)}</span>`;
+    return;
+  }
+  const sel = document.getElementById("repo");
+  const repos = [...new Set(DATA.prs.map((p) => p.repo))].sort();
+  sel.innerHTML = `<option value="">All repos</option>` + repos.map((r) => `<option>${esc(r)}</option>`).join("");
+  try { const saved = localStorage.getItem("prs.repo"); if (saved && repos.includes(saved)) sel.value = saved; } catch (_) {}
+  const errs = DATA.errors.length ? ` · <span class="err">${DATA.errors.length} repo(s) failed</span>` : "";
+  document.getElementById("sub").innerHTML = `${DATA.repos_checked} repos · updated ${esc(ago(DATA.generated_at))} · refreshed hourly${errs}`;
+  render();
+}
+document.getElementById("repo").addEventListener("change", (e) => {
+  try { localStorage.setItem("prs.repo", e.target.value); } catch (_) {}
+  render();
+});
+load();
+</script>
+</body>
+</html>

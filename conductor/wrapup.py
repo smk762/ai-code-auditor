@@ -81,6 +81,8 @@ def wrap_up(
     send_webhook: bool = True,
     ingest_rag: bool = True,
 ) -> dict[str, Any]:
+    if not status.pr_brief:
+        status.pr_brief = _cached_pr_brief(output_dir)
     md, speakable = build_briefing(status)
     status.speakable = speakable
     status.body_md = md
@@ -102,6 +104,16 @@ def wrap_up(
         "rag": rag_result,
         "public_base_url": public_base_url(),
     }
+
+
+def _cached_pr_brief(output_dir: str | Path) -> str:
+    """Spoken blocked-PR summary from the PR-intel cache, if it is under 6 hours old."""
+    from auditor.pr_intel import load_report, pr_intel_enabled
+
+    if not pr_intel_enabled():
+        return ""
+    report = load_report(output_dir, max_age_h=6)
+    return str((report or {}).get("spoken") or "")
 
 
 def ingest_latest_to_rag(status: dict[str, Any], body_md: str) -> dict[str, Any]:
