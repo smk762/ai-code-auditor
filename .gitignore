@@ -28,6 +28,9 @@ reports/mithrandir/
 reports/agent_packs/
 reports/conductor/
 reports/security-out/
+reports/model_eval/
+reports/wiki_eval/
+reports/repo_readiness/
 graph/*.db
 index/code_embeddings.faiss
 index/code_embeddings.meta.json
