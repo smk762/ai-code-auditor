@@ -35,6 +35,7 @@ GET  /audit/findings.json             Filtered findings + severity × repo matri
 GET  /reports/mithrandir/LATEST.json  Atomic rest-session status for mithrandir (Jarrah)
 GET  /reports/mithrandir/LATEST.md    TTS-safe companion briefing for Holly
 POST /audit/ingest                    Trigger RAG briefing ingest to the audit_docs collection
+GET  /audit/search                    Search audit_docs (wiki sections, packs) via rag-chat (q, repo, kind, top_k)
 POST /audit/merge                     Schedule lightweight merge-to-dev pack/RAG refresh (debounced)
 GET  /audit/merge                     Pending/running merge-hook status
 POST /audit/hooks/github              GitHub push webhook (dev branch → merge refresh)
@@ -797,6 +798,24 @@ def post_wiki_ask(repo: str, request: _AskRequest) -> JSONResponse:
     res["answer_html"] = render_markdown(link_citations(res.get("answer_md", ""), slug, sha,
                                                         getattr(cfg, "subpath", "") or ""))
     return JSONResponse(res)
+
+
+@app.get("/audit/search")
+def get_audit_search(q: str = Query(..., min_length=1, max_length=2000), repo: str | None = None,
+                     kind: str | None = None, top_k: int = Query(5, ge=1, le=20)) -> JSONResponse:
+    """Semantic search over the audit collection (wiki sections, agent packs) through rag-chat.
+
+    Read-only, so no auth, like the wiki pages it returns passages of. Filters are tags:
+    ``repo`` → ``repo:<name>``, ``kind`` → ``kind:<kind>`` (``wiki``, ``agent_coding_pack``).
+    """
+    from auditor import rag_client
+
+    try:
+        return JSONResponse(rag_client.search(q, repo=repo, kind=kind, top_k=top_k))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/audit/wiki/refresh")
