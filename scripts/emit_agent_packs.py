@@ -189,6 +189,9 @@ def main() -> None:
             f"  [{entry.get('kind')}] {entry.get('severity', '?'):8} "
             f"{entry.get('repo', ''):20} {entry.get('id')}"
         )
+    from auditor.pack_savings import refresh_quietly
+
+    print(f"Pack savings: {refresh_quietly(out)}")
     print(f"Discover: {base}/audit/packs")
     print(f"Bundle: {base}/audit/packs/bundle?repo=<name>")
     print(f"World model: {base}/audit/packs?kind=world_model")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -134,6 +135,56 @@ def _sync_mirror_item(
         return MirrorSyncResult(name=name, path=str(path), ok=False, action="error", error=str(exc))
 
 
+def ensure_checkout_aliases(cfg: dict[str, Any]) -> list[MirrorSyncResult]:
+    """Symlink each ``aliases`` entry to its mirror in every directory that holds a mirror.
+
+    Idempotent. A stale symlink at the alias path is repointed; a real file or directory there
+    is never touched (reported, not failed).
+    """
+    aliases = cfg.get("aliases") or {}
+    if not aliases:
+        return []
+    items = [i for i in cfg.get("mirrors") or [] if i.get("path")]
+    paths = {str(i.get("name") or ""): Path(i["path"]) for i in items}
+    parents = sorted({p.parent for p in paths.values()} | (
+        {Path(cfg["mirror_root"])} if cfg.get("mirror_root") else set()
+    ))
+    results: list[MirrorSyncResult] = []
+    for alias, target_name in aliases.items():
+        target = paths.get(str(target_name))
+        name = f"alias:{alias}"
+        if target is None:
+            results.append(MirrorSyncResult(
+                name=name, path="", ok=False, action="alias",
+                error=f"alias target {target_name!r} is not a configured mirror",
+            ))
+            continue
+        for parent in parents:
+            link = parent / str(alias)
+            if link == target or not parent.is_dir():
+                continue
+            rel = os.path.relpath(target, parent)
+            try:
+                if link.is_symlink():
+                    if os.readlink(link) == rel:
+                        results.append(MirrorSyncResult(name=name, path=str(link), ok=True, action="alias-ok"))
+                        continue
+                    link.unlink()
+                elif link.exists():
+                    results.append(MirrorSyncResult(
+                        name=name, path=str(link), ok=True, action="alias-kept-existing",
+                        error="a real file/dir is there; left alone",
+                    ))
+                    continue
+                link.symlink_to(rel, target_is_directory=True)
+                results.append(MirrorSyncResult(name=name, path=str(link), ok=True, action=f"alias->{rel}"))
+            except OSError as exc:
+                results.append(MirrorSyncResult(
+                    name=name, path=str(link), ok=False, action="alias", error=str(exc)[:300],
+                ))
+    return results
+
+
 def sync_one_mirror(
     name: str,
     config_path: str | Path = "config/repo_mirrors.yaml",
@@ -176,4 +227,5 @@ def sync_mirrors(
 
     for item in cfg.get("mirrors") or []:
         results.append(_sync_mirror_item(item, preferred=preferred))
+    results.extend(ensure_checkout_aliases(cfg))
     return results
