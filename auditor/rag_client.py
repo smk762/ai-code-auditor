@@ -27,6 +27,7 @@ import logging
 import os
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -187,9 +188,7 @@ def delete_documents(doc_ids: list[str], *, source: str = SOURCE, session: Any =
     return result
 
 
-def _ledger_path(output_dir: str | os.PathLike | None) -> "Path":
-    from pathlib import Path
-
+def _ledger_path(output_dir: str | os.PathLike | None) -> Path:
     if output_dir is None and os.getenv("AI_AUDIT_RAG_LEDGER"):
         return Path(os.environ["AI_AUDIT_RAG_LEDGER"])
     if output_dir is None:
