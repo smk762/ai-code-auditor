@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+import os
+import tempfile
+
 import pytest
+
+# Never touch the real audit DB. auditor.db binds its engine at import time from DATABASE_URL,
+# and auditor.env_loader only setdefault()s from .env, so this must be set before any test
+# module imports auditor.*. Without it, the pipeline smoke test wrote two runs into the
+# production Postgres on every suite run from a checkout with a real .env.
+os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(tempfile.mkdtemp(prefix="ai-audit-test-db-"), "audit.db")
 
 
 @pytest.fixture(autouse=True)

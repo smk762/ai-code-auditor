@@ -47,3 +47,10 @@ architecture_memory_path: {tmp_path / "memory" / "architecture_memory.md"}
     assert (tmp_path / "reports" / "extraction_candidates.md").exists()
     assert (tmp_path / "graph" / "ecosystem_graph.db").exists()
     assert (tmp_path / "index" / "code_embeddings.meta.json").exists()
+
+
+def test_tests_never_use_the_real_audit_db() -> None:
+    from auditor.db import normalized_database_url
+
+    assert normalized_database_url.startswith("sqlite:///")
+    assert "ai-audit-test-db-" in normalized_database_url
