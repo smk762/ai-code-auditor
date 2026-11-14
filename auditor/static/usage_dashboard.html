@@ -4,90 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Claude API Usage</title>
+<link rel="stylesheet" href="/audit/static/ui.css">
+<script src="/audit/static/ui.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
-  :root {
-    color-scheme: light;
-    --surface-0: #f4f4f2;
-    --surface-1: #fcfcfb;
-    --surface-2: #efeeeb;
-    --border: #e2e1dc;
-    --text-primary: #0b0b0b;
-    --text-secondary: #52514e;
-    --text-muted: #7a7974;
-    --grid: #e7e6e1;
-    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
-    --series-5: #e87ba4; --series-6: #008300; --series-7: #6250d6; --series-8: #e34948;
-    --neutral: #a3a29c;
-    --seq-1: #cde2fb; --seq-2: #9ec5f4; --seq-3: #6da7ec; --seq-4: #3987e5;
-    --seq-5: #256abf; --seq-6: #184f95; --seq-7: #0d366b;
-    --warn: #b86e00; --critical: #c42b2b;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      color-scheme: dark;
-      --surface-0: #121211; --surface-1: #1a1a19; --surface-2: #242423; --border: #31312f;
-      --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86; --grid: #2c2c2a;
-      --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
-      --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
-      --neutral: #6c6b66;
-      --seq-1: #104281; --seq-2: #184f95; --seq-3: #1c5cab; --seq-4: #256abf;
-      --seq-5: #3987e5; --seq-6: #6da7ec; --seq-7: #b7d3f6;
-      --warn: #e09a2b; --critical: #f07070;
-    }
-  }
-  :root[data-theme="dark"] {
-    color-scheme: dark;
-    --surface-0: #121211; --surface-1: #1a1a19; --surface-2: #242423; --border: #31312f;
-    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86; --grid: #2c2c2a;
-    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
-    --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
-    --neutral: #6c6b66;
-    --seq-1: #104281; --seq-2: #184f95; --seq-3: #1c5cab; --seq-4: #256abf;
-    --seq-5: #3987e5; --seq-6: #6da7ec; --seq-7: #b7d3f6;
-    --warn: #e09a2b; --critical: #f07070;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--surface-0); color: var(--text-primary);
-    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-  }
-  main { max-width: 1240px; margin: 0 auto; padding: 20px 16px 48px; }
-  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
-  h1 { font-size: 20px; margin: 0; }
-  .sub { color: var(--text-secondary); font-size: 13px; }
-  .filters { margin-left: auto; display: flex; gap: 4px; align-items: center; }
-  .filters button {
-    font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
-    background: var(--surface-1); color: var(--text-secondary); border: 1px solid var(--border);
-  }
-  .filters button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface-1); border-color: var(--text-primary); }
-  .grid { display: grid; gap: 12px; grid-template-columns: repeat(12, 1fr); }
-  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
-  .card h2 { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
-  .card .hint { font-size: 12px; color: var(--text-muted); margin: 0 0 10px; }
-  .span-3 { grid-column: span 3; } .span-4 { grid-column: span 4; } .span-5 { grid-column: span 5; }
-  .span-6 { grid-column: span 6; } .span-7 { grid-column: span 7; } .span-8 { grid-column: span 8; }
-  .span-12 { grid-column: span 12; }
-  @media (max-width: 900px) { .grid > * { grid-column: span 12 !important; } }
-  @media (min-width: 901px) and (max-width: 1100px) { .span-3 { grid-column: span 6; } }
-  .kpi .label { font-size: 12px; color: var(--text-secondary); }
-  .kpi .value { font-size: 28px; font-weight: 650; letter-spacing: -0.01em; margin-top: 2px; font-variant-numeric: tabular-nums; }
-  .kpi .note { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
-  .kpi .status { font-weight: 600; }
-  .status.warn { color: var(--warn); } .status.critical { color: var(--critical); }
+  /* usage-page specifics; tokens and shared components come from ui.css */
   .chart-box { position: relative; height: 240px; }
   .chart-box.tall { height: 300px; }
   .donut-box { position: relative; height: 220px; }
-  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
-  .legend span { display: inline-flex; align-items: center; gap: 6px; }
-  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
   .lane-bars { display: grid; gap: 10px; }
   .lane-row .top { display: flex; justify-content: space-between; font-size: 13px; }
   .lane-row .top b { font-weight: 600; }
   .lane-row .top span { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-  .track { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; margin-top: 4px; }
-  .fill { height: 100%; border-radius: 4px; }
+  .lane-row .fill { border-radius: 4px; }
   .heat-wrap { overflow-x: auto; }
   .heat { display: grid; grid-template-columns: 74px repeat(24, minmax(18px, 1fr)); gap: 2px; min-width: 560px; }
   .heat .h { font-size: 10px; color: var(--text-muted); text-align: center; }
@@ -96,23 +25,17 @@
   .heat .c:hover { outline: 2px solid var(--text-primary); outline-offset: -1px; }
   .scale { display: flex; align-items: center; gap: 2px; font-size: 11px; color: var(--text-muted); margin-top: 8px; }
   .scale i { width: 22px; height: 10px; border-radius: 2px; display: inline-block; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-  th { font-weight: 600; color: var(--text-secondary); font-size: 12px; }
-  td.num, th.num { text-align: right; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
   .tip {
     position: fixed; pointer-events: none; z-index: 10; background: var(--surface-1); color: var(--text-primary);
     border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px;
     box-shadow: 0 4px 16px rgba(0,0,0,.15); display: none; max-width: 260px;
   }
-  .empty { color: var(--text-muted); font-size: 13px; padding: 24px 0; text-align: center; }
-  .err { color: var(--critical); }
 </style>
 </head>
 <body>
+<!--#nav-->
 <main>
-  <header>
+  <header class="page">
     <h1>Claude API usage</h1>
     <div class="sub" id="sub">Loading…</div>
     <div class="filters" role="group" aria-label="Time range">
@@ -125,7 +48,7 @@
 
   <section class="grid" id="kpis" aria-label="Headline numbers"></section>
 
-  <section class="grid" style="margin-top:12px">
+  <section class="grid">
     <div class="card span-8">
       <h2>Spend per day, by lane</h2>
       <p class="hint">Which days were hungry, and which process drove them.</p>
@@ -191,9 +114,7 @@ let range = "month";
 let data = null;
 const charts = {};
 
-const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-const money = (x) => x == null ? "—" : (x >= 100 ? "$" + x.toFixed(0) : (x === 0 || x >= 0.01) ? "$" + x.toFixed(2) : "$" + x.toFixed(3));
-const int = (x) => (x || 0).toLocaleString();
+const { css, money, int } = UI;
 const laneLabel = (l) => LANE_LABEL[l] || l;
 
 // Color follows the entity: fixed slot per lane / model, never by rank.
@@ -408,7 +329,7 @@ document.getElementById("heat").addEventListener("mousemove", (e) => {
 });
 document.getElementById("heat").addEventListener("mouseleave", () => { tip.style.display = "none"; });
 
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+UI.onThemeChange(render);
 load();
 setInterval(load, 60000);
 </script>

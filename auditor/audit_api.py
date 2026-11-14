@@ -13,6 +13,9 @@ DELETE /audit/runs/{run_id}           Remove a finished run and related DB rows 
 GET  /audit/reports/{run_id}          Return combined markdown report for a completed run
 GET  /audit/topology                  Return the latest service topology HTML
 GET  /audit/topology.json             Return the latest service topology JSON sidecar
+GET  /                               Web UI landing page (also /ui); shared nav + /audit/static assets
+GET  /audit/summary.json             Landing-page headline numbers (last run, findings, packs, spend)
+GET  /audit/usage                    Claude API usage dashboard (+ /audit/usage.json)
 GET  /reports/mithrandir/LATEST.json  Atomic rest-session status for mithrandir (Jarrah)
 GET  /reports/mithrandir/LATEST.md    TTS-safe companion briefing for Holly
 POST /audit/ingest                    Trigger RAG briefing ingest to the audit_docs collection
@@ -44,7 +47,8 @@ from typing import Any, Literal
 from dataclasses import asdict
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 
@@ -54,10 +58,12 @@ from auditor.agent_pack import CHARS_PER_TOKEN, DEFAULT_BUNDLE_TOKEN_BUDGET, PAC
 from auditor.config import load_ecosystem_config
 from auditor.db import AuditRun, FindingRecord, PipelineCheckpoint, RepoRun, as_utc, db_session, utcnow
 from auditor.gpu_scheduler import get_vram_info
+from auditor.ui import STATIC_DIR, STATIC_URL, render_page
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="ai-code-auditor API", version="1.0.0")
+app.mount(STATIC_URL, StaticFiles(directory=STATIC_DIR), name="static")
 
 
 def _require_mutating_auth(
@@ -616,12 +622,27 @@ def get_service_topology() -> FileResponse:
     return FileResponse(path, media_type="text/html")
 
 
-@app.get("/audit/usage")
-def get_usage_dashboard() -> FileResponse:
+@app.get("/audit/usage", response_class=HTMLResponse)
+def get_usage_dashboard() -> HTMLResponse:
     """Claude API usage dashboard (spend by lane, model, process, day and hour)."""
     from auditor.usage_dashboard import HTML_PATH
 
-    return FileResponse(HTML_PATH, media_type="text/html")
+    return HTMLResponse(render_page(HTML_PATH.name, "/audit/usage"))
+
+
+@app.get("/", response_class=HTMLResponse)
+@app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
+def get_landing_page() -> HTMLResponse:
+    """Web UI landing page: last run, findings by severity, open packs, month spend."""
+    return HTMLResponse(render_page("index.html", "/"))
+
+
+@app.get("/audit/summary.json")
+def get_summary_json() -> JSONResponse:
+    """Headline numbers for the landing page; sections that fail to load are listed in ``errors``."""
+    from auditor.ui import summary_data
+
+    return JSONResponse(summary_data(_output_dir()))
 
 
 @app.get("/audit/usage.json")
