@@ -11,7 +11,8 @@ GET  /audit/runs/{run_id}/stream      SSE: snapshot events until the run leaves 
 POST /audit/runs/{run_id}/cancel      Stop an in-flight run (pending/running); idempotent if cancelled
 DELETE /audit/runs/{run_id}           Remove a finished run and related DB rows (not while active)
 GET  /audit/reports/{run_id}          Return combined markdown report for a completed run
-GET  /audit/topology                  Return the latest service topology HTML
+GET  /audit/topology                  Redirect to /ui/topology (generated HTML: /audit/topology/legacy)
+GET  /ui/topology                     Ecosystem map (data: /audit/topology/map.json)
 GET  /audit/topology.json             Return the latest service topology JSON sidecar
 GET  /                               Web UI landing page (also /ui); shared nav + /audit/static assets
 GET  /audit/summary.json             Landing-page headline numbers (last run, findings, packs, spend)
@@ -580,8 +581,16 @@ def get_report(run_id: str) -> str:
 
 
 @app.get("/audit/topology")
-def get_service_topology() -> FileResponse:
-    """Return the latest service topology HTML.  404 if not yet generated."""
+def get_service_topology():
+    """The topology now lives on the ecosystem map; kept as a redirect for old links."""
+    from fastapi.responses import RedirectResponse
+
+    return RedirectResponse("/ui/topology", status_code=307)
+
+
+@app.get("/audit/topology/legacy")
+def get_service_topology_legacy() -> FileResponse:
+    """The generated single-file topology HTML (pre-map).  404 if not yet generated."""
     path = Path(_output_dir()) / "service_topology.html"
     if not path.exists():
         raise HTTPException(
@@ -589,6 +598,20 @@ def get_service_topology() -> FileResponse:
             detail="Service topology has not been generated yet — run an ecosystem audit first.",
         )
     return FileResponse(path, media_type="text/html")
+
+
+@app.get("/ui/topology", response_class=HTMLResponse)
+def get_topology_page() -> HTMLResponse:
+    """Ecosystem map: argus packages, shared and external services, and how they connect."""
+    return HTMLResponse(render_page("topology.html", "/ui/topology"))
+
+
+@app.get("/audit/topology/map.json")
+def get_topology_map_json() -> JSONResponse:
+    """Nodes and edges for the ecosystem map (documented flow, code imports, service use, violations)."""
+    from auditor.ui_topology import topology_data
+
+    return JSONResponse(topology_data(_output_dir()))
 
 
 @app.get("/audit/usage", response_class=HTMLResponse)

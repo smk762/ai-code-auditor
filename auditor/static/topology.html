@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ecosystem map</title>
+<link rel="stylesheet" href="/audit/static/ui.css">
+<script src="/audit/static/ui.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<style>
+  .map-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
+  @media (max-width: 960px) { .map-wrap { grid-template-columns: 1fr; } }
+  .map { position: relative; padding: 0; overflow: hidden; }
+  .map svg { display: block; width: 100%; height: 720px; cursor: grab; touch-action: none; }
+  .map svg:active { cursor: grabbing; }
+  @media (max-width: 700px) { .map svg { height: 480px; } }
+  .map .tools { position: absolute; top: 10px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; pointer-events: none; }
+  .map .tools > * { pointer-events: auto; }
+  .chip { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 999px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center;
+          background: var(--surface-1); color: var(--text-secondary); border: 1px solid var(--border); }
+  .chip[aria-pressed="true"] { color: var(--text-primary); border-color: var(--text-muted); }
+  .chip[aria-pressed="false"] { opacity: .55; }
+  .chip svg { width: 22px; height: 8px; }
+  .zoom { margin-left: auto; display: flex; gap: 4px; }
+  .legend-box { position: absolute; bottom: 10px; left: 12px; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--text-secondary);
+                background: color-mix(in srgb, var(--surface-1) 85%, transparent); padding: 6px 8px; border-radius: 8px; }
+  .legend-box span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend-box i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .legend-box i.svc { border-radius: 3px; background: var(--surface-2); border: 1px solid var(--text-muted); }
+  .node text { font-size: 11px; fill: var(--text-primary); paint-order: stroke; stroke: var(--surface-1); stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
+  .node.svc text { fill: var(--text-secondary); }
+  .node { cursor: pointer; }
+  .dim { opacity: .12; }
+  .side-label { font-size: 11px; fill: var(--text-muted); letter-spacing: .06em; text-transform: uppercase; }
+  #panel h2 { font-size: 15px; margin: 0 0 2px; }
+  #panel .kv { font-size: 12px; color: var(--text-secondary); margin: 2px 0 10px; }
+  #panel h3 { font-size: 12px; margin: 12px 0 4px; color: var(--text-secondary); font-weight: 600; }
+  #panel ul { margin: 0; padding-left: 16px; font-size: 13px; }
+  #panel li { margin: 3px 0; }
+  #panel .ev { font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+  .tip { position: fixed; pointer-events: none; z-index: 10; background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border);
+         border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.15); display: none; max-width: 280px; }
+  details.table summary { cursor: pointer; font-size: 13px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+<!--#nav-->
+<main>
+  <header class="page">
+    <h1>Ecosystem map</h1>
+    <div class="sub" id="sub">Scanning the mirrors…</div>
+  </header>
+
+  <div class="map-wrap">
+    <section class="card map" aria-label="Ecosystem map">
+      <div class="tools" role="group" aria-label="Edge kinds">
+        <button class="chip" data-kind="flow" aria-pressed="true"><svg viewBox="0 0 22 8"><line x1="1" y1="4" x2="21" y2="4" stroke="currentColor" stroke-width="2.2"/></svg>documented flow</button>
+        <button class="chip" data-kind="imports" aria-pressed="true"><svg viewBox="0 0 22 8"><line x1="1" y1="4" x2="21" y2="4" stroke="currentColor" stroke-width="1.2"/></svg>code imports</button>
+        <button class="chip" data-kind="uses" aria-pressed="true"><svg viewBox="0 0 22 8"><line x1="1" y1="4" x2="21" y2="4" stroke="currentColor" stroke-width="1.2" stroke-dasharray="3 3"/></svg>service use</button>
+        <button class="chip" data-kind="violation" aria-pressed="true"><svg viewBox="0 0 22 8"><line x1="1" y1="4" x2="21" y2="4" stroke="var(--critical)" stroke-width="2.4"/></svg>policy violation</button>
+        <div class="zoom"><button class="chip" id="fit" aria-pressed="true">Fit</button></div>
+      </div>
+      <svg id="svg" role="img" aria-label="Network of argus packages, shared services and external services"></svg>
+      <div class="legend-box" id="legend"></div>
+    </section>
+    <aside class="card" id="panel" aria-live="polite">
+      <h2>How to read this</h2>
+      <p class="kv">Circles are repos, coloured by group; their size grows with connections. Boxes are external services: AI and moderation on the left, data stores and chain on the right, ML and geo tooling along the top.</p>
+      <p class="kv">Hover to see a node's neighbours. Click one for its details and the code that links it. Drag to rearrange, scroll to zoom.</p>
+      <p class="kv">Edges come from the code (imports, service mentions in at least <span id="minf">2</span> files), the documented flow in <span class="mono">ecosystem.md</span>, and architecture-policy violations.</p>
+    </aside>
+  </div>
+
+  <section class="card" style="margin-top:12px">
+    <details class="table"><summary>All connections as a table</summary>
+      <div class="table-wrap"><table id="conn"><thead><tr><th>From</th><th>To</th><th>Kind</th><th class="num">Files</th><th>Example</th></tr></thead><tbody></tbody></table></div>
+    </details>
+  </section>
+</main>
+<div class="tip" id="tip" role="tooltip"></div>
+
+<script>
+const { esc, int, css } = UI;
+const GROUP_VAR = { pipeline: "--series-1", verticals: "--series-2", shared: "--series-3", platform: "--series-7", other: "--neutral" };
+const COL = 0.47;  // service columns sit this fraction of the width from the centre
+
+// Where each node belongs. Pipeline repos (and anything in the documented flow) are placed in
+// columns by flow depth, left to right; cortex sits under them as the foundation; other repos
+// form a row below by group; services take the left column, the right column or the top row.
+function targets(nodes, W, H) {
+  const T = {};
+  const flow = data.edges.filter((e) => e.kind === "flow").map((e) => [e.source.id || e.source, e.target.id || e.target]);
+  const inFlow = new Set(flow.flat());
+  const preds = {}, succs = {};
+  flow.forEach(([a, b]) => { (preds[b] ||= []).push(a); (succs[a] ||= []).push(b); });
+  const rank = {};
+  const rk = (id, seen = new Set()) => {
+    if (rank[id] != null) return rank[id];
+    if (seen.has(id)) return 0;
+    seen.add(id);
+    return (rank[id] = preds[id] ? Math.max(...preds[id].map((p) => rk(p, seen) + 1)) : 0);
+  };
+  [...inFlow].forEach((id) => rk(id));
+  // a source with no predecessors sits just before its first successor (safelight → voluptas)
+  [...inFlow].filter((id) => !preds[id] && succs[id]).forEach((id) => { rank[id] = Math.max(0, Math.min(...succs[id].map((s) => rank[s])) - 1); });
+  const maxRank = Math.max(1, ...Object.values(rank));
+  const cols = {};
+  [...inFlow].sort().forEach((id) => (cols[rank[id]] ||= []).push(id));
+  Object.entries(cols).forEach(([r, ids]) => ids.forEach((id, i) => {
+    T[id] = { x: (r / maxRank - 0.5) * 0.62 * W, y: (i - (ids.length - 1) / 2) * 0.13 * H - 0.08 * H };
+  }));
+  const rest = nodes.filter((n) => n.kind === "repo" && !inFlow.has(n.id));
+  const cortex = rest.find((n) => n.id === "argus-cortex");
+  if (cortex) T[cortex.id] = { x: 0, y: 0.24 * H };
+  const row = (ids, y) => ids.forEach((id, i) => { T[id] = { x: (i - (ids.length - 1) / 2) * Math.min(0.12 * W, 0.66 * W / Math.max(1, ids.length - 1)), y }; });
+  const order = ["verticals", "shared", "pipeline", "other", "platform"];
+  const lower = rest.filter((n) => n !== cortex && n.group !== "platform").sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group) || a.id.localeCompare(b.id));
+  row(lower.map((n) => n.id), 0.4 * H);
+  row(rest.filter((n) => n !== cortex && n.group === "platform").map((n) => n.id), 0.54 * H);
+  const svc = (side) => nodes.filter((n) => n.kind === "service" && n.side === side).sort((a, b) => a.category.localeCompare(b.category) || a.label.localeCompare(b.label));
+  [["left", -1], ["right", 1]].forEach(([side, sgn]) => {
+    const list = svc(side);
+    list.forEach((n, i) => { T[n.id] = { x: sgn * COL * W, y: (i - (list.length - 1) / 2) * 0.1 * H }; });
+  });
+  const top = svc("top");
+  top.forEach((n, i) => { T[n.id] = { x: (i - (top.length - 1) / 2) * 0.17 * W, y: -0.5 * H }; });
+  nodes.forEach((n) => { T[n.id] ||= { x: 0, y: 0.4 * H }; });
+  return T;
+}
+let data = null, sim = null, zoom = null, selected = null;
+const pos = {};  // id → {x, y}: kept across re-renders so toggling edges doesn't reshuffle the map
+const shown = { flow: true, imports: true, uses: true, violation: true };
+const svg = d3.select("#svg");
+const tip = document.getElementById("tip");
+const nodeById = (id) => data.nodes.find((n) => n.id === id);
+const ghLink = (repoId, ev) => {
+  const n = nodeById(repoId);
+  return n && n.github && n.head ? `${n.github}/blob/${n.head}/${ev.path}#L${ev.line}` : null;
+};
+
+function legend() {
+  const used = [...new Set(data.nodes.filter((n) => n.kind === "repo").map((n) => n.group))];
+  document.getElementById("legend").innerHTML = used.map((g) => `<span><i style="background:var(${GROUP_VAR[g]})"></i>${esc(data.groups[g])}</span>`).join("")
+    + `<span><i class="svc"></i>external service</span>`;
+}
+
+function degree() {
+  const d = {};
+  data.edges.forEach((e) => { d[e.source.id || e.source] = (d[e.source.id || e.source] || 0) + 1; d[e.target.id || e.target] = (d[e.target.id || e.target] || 0) + 1; });
+  return d;
+}
+
+function render() {
+  if (!data) return;
+  svg.selectAll("*").remove();
+  const box = svg.node().getBoundingClientRect();
+  const W = box.width, H = box.height;
+  const deg = degree();
+  const nodes = data.nodes.map((n) => ({ ...n, ...(pos[n.id] || {}), r: n.kind === "repo" ? 7 + Math.min(10, Math.sqrt(deg[n.id] || 0) * 2.4) : 0 }));
+  const settled = nodes.every((n) => pos[n.id]);
+  const ids = new Set(nodes.map((n) => n.id));
+  const edges = data.edges.filter((e) => shown[e.kind] && ids.has(e.source.id || e.source) && ids.has(e.target.id || e.target))
+    .map((e) => ({ ...e, source: e.source.id || e.source, target: e.target.id || e.target }));
+
+  const defs = svg.append("defs");
+  [["arrow", css("--text-muted")], ["arrow-flow", css("--text-secondary")], ["arrow-bad", css("--critical")]].forEach(([id, color]) =>
+    defs.append("marker").attr("id", id).attr("viewBox", "0 -4 8 8").attr("refX", 8).attr("refY", 0).attr("markerUnits", "userSpaceOnUse")
+      .attr("markerWidth", 9).attr("markerHeight", 9)
+      .attr("orient", "auto").append("path").attr("d", "M0,-4L8,0L0,4").attr("fill", color));
+
+  const root = svg.append("g");
+  zoom = d3.zoom().scaleExtent([0.3, 3]).on("zoom", (ev) => root.attr("transform", ev.transform));
+  svg.call(zoom).on("dblclick.zoom", null);
+  const T = targets(nodes, W, H);
+  root.append("text").attr("class", "side-label").attr("x", -COL * W).attr("y", -0.36 * H).attr("text-anchor", "middle").text("AI & MODERATION");
+  root.append("text").attr("class", "side-label").attr("x", COL * W).attr("y", -0.36 * H).attr("text-anchor", "middle").text("DATA & CHAIN");
+  root.append("text").attr("class", "side-label").attr("x", 0).attr("y", -0.56 * H).attr("text-anchor", "middle").text("ML & GEO TOOLING");
+
+  const stroke = (e) => e.kind === "violation" ? css("--critical") : e.kind === "flow" ? css("--text-secondary") : css("--text-muted");
+  const link = root.append("g").attr("fill", "none").selectAll("path").data(edges).join("path")
+    .attr("stroke", stroke)
+    .attr("class", (e) => `edge ${e.kind}`)
+    .attr("stroke-width", (e) => e.kind === "flow" ? 2.2 : e.kind === "violation" ? 2.4 : e.kind === "imports" ? 1.3 : 1)
+    .attr("stroke-dasharray", (e) => e.kind === "uses" ? "3 3" : null)
+    .attr("stroke-opacity", (e) => e.kind === "uses" ? 0.22 : 0.85)
+    .attr("marker-end", (e) => e.kind === "uses" ? null : `url(#${e.kind === "violation" ? "arrow-bad" : e.kind === "flow" ? "arrow-flow" : "arrow"})`);
+
+  const node = root.append("g").selectAll("g").data(nodes).join("g").attr("class", (n) => `node ${n.kind === "service" ? "svc" : ""}`)
+    .attr("tabindex", 0).attr("role", "button").attr("aria-label", (n) => n.label);
+  node.filter((n) => n.kind === "repo").append("circle").attr("r", (n) => n.r)
+    .attr("fill", (n) => css(GROUP_VAR[n.group] || "--neutral")).attr("stroke", css("--surface-1")).attr("stroke-width", 2);
+  node.filter((n) => n.kind === "repo" && n.violations > 0).append("circle").attr("r", (n) => n.r + 4)
+    .attr("fill", "none").attr("stroke", css("--critical")).attr("stroke-width", 1.5).attr("stroke-dasharray", "2 2");
+  node.filter((n) => n.kind === "repo").append("text").attr("x", (n) => n.r + 4).attr("y", 4).text((n) => n.label);
+  const svcNodes = node.filter((n) => n.kind === "service");
+  svcNodes.append("text").attr("text-anchor", "middle").attr("y", 4).text((n) => n.label);
+  svcNodes.each(function (n) {
+    const t = d3.select(this).select("text").node().getBBox();
+    n.w = t.width + 16; n.h = 22;
+    d3.select(this).insert("rect", "text").attr("x", -n.w / 2).attr("y", -11).attr("width", n.w).attr("height", 22).attr("rx", 6)
+      .attr("fill", css("--surface-2")).attr("stroke", css("--text-muted")).attr("stroke-width", 1);
+  });
+
+  // Structured layout: every node is pulled hard to a computed target (see targets()); the
+  // simulation only resolves overlaps. Links are drawn but don't pull, so the map stays legible.
+  nodes.forEach((n) => { if (n.x == null) { n.x = T[n.id].x; n.y = T[n.id].y; } });
+  sim = d3.forceSimulation(nodes)
+    .force("link", d3.forceLink(edges).id((n) => n.id).strength(0))
+    .force("collide", d3.forceCollide((n) => n.kind === "service" ? n.w / 2 + 4 : n.r + 30).strength(0.9))
+    .force("x", d3.forceX((n) => T[n.id].x).strength(0.6))
+    .force("y", d3.forceY((n) => T[n.id].y).strength(0.6))
+    .stop();
+  for (let i = 0; i < (settled ? 0 : 400); i++) sim.tick();
+
+  const edgePath = (e) => {
+    const s = e.source, t = e.target, dx = t.x - s.x, dy = t.y - s.y, len = Math.hypot(dx, dy) || 1;
+    // distance from a node's centre to its outline along the edge: circle radius, or where the
+    // ray leaves the service's box
+    const ux = Math.abs(dx / len) || 1e-6, uy = Math.abs(dy / len) || 1e-6;
+    const pad = (n) => n.kind === "service" ? Math.min(n.w / 2 / ux, n.h / 2 / uy) + 3 : n.r + 3;
+    const ex = t.x - dx / len * pad(t), ey = t.y - dy / len * pad(t);
+    const sx = s.x + dx / len * (pad(s) - 3), sy = s.y + dy / len * (pad(s) - 3);
+    return `M${sx},${sy}L${ex},${ey}`;
+  };
+  const draw = () => {
+    link.attr("d", edgePath); node.attr("transform", (n) => `translate(${n.x},${n.y})`);
+    nodes.forEach((n) => { pos[n.id] = { x: n.x, y: n.y }; });
+  };
+  draw();
+  sim.on("tick", draw);
+
+  node.call(d3.drag()
+    .on("start", (ev, n) => { if (!ev.active) sim.alphaTarget(0.15).restart(); n.fx = n.x; n.fy = n.y; })
+    .on("drag", (ev, n) => { n.fx = ev.x; n.fy = ev.y; })
+    .on("end", (ev, n) => { if (!ev.active) sim.alphaTarget(0); }));
+
+  const nbrs = (n) => new Set(edges.flatMap((e) => e.source.id === n.id ? [e.target.id] : e.target.id === n.id ? [e.source.id] : []));
+  const focus = (n) => {
+    if (!n) { node.classed("dim", false); link.classed("dim", false).attr("stroke-opacity", (e) => e.kind === "uses" ? 0.22 : 0.85); return; }
+    const near = nbrs(n); near.add(n.id);
+    node.classed("dim", (m) => !near.has(m.id));
+    link.classed("dim", (e) => e.source.id !== n.id && e.target.id !== n.id)
+      .attr("stroke-opacity", (e) => e.kind === "uses" ? (e.source.id === n.id || e.target.id === n.id ? 0.85 : 0.22) : 0.85);
+  };
+  node.on("mouseenter", (ev, n) => {
+    focus(n);
+    tip.innerHTML = n.kind === "repo" ? `<b>${esc(n.id)}</b><br>${esc(n.role || n.area || "")}` : `<b>${esc(n.label)}</b><br>${esc(n.category)}`;
+    tip.style.display = "block";
+  }).on("mousemove", (ev) => {
+    tip.style.left = Math.min(ev.clientX + 14, innerWidth - 300) + "px"; tip.style.top = ev.clientY + 14 + "px";
+  }).on("mouseleave", () => { tip.style.display = "none"; focus(selected); })
+    .on("click", (ev, n) => { selected = n; focus(n); panel(n); })
+    .on("keydown", (ev, n) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selected = n; focus(n); panel(n); } });
+  svg.on("click", (ev) => { if (ev.target === svg.node()) { selected = null; focus(null); } });
+  fit(false);
+}
+
+function fit(animate = true) {
+  const g = svg.select("g").node();
+  if (!g || !zoom) return;
+  const b = g.getBBox(), box = svg.node().getBoundingClientRect();
+  const s = Math.min(1.6, 0.92 / Math.max(b.width / box.width, (b.height + 60) / box.height));
+  const t = d3.zoomIdentity.translate(box.width / 2 - s * (b.x + b.width / 2), box.height / 2 + 18 - s * (b.y + b.height / 2)).scale(s);
+  (animate ? svg.transition().duration(350) : svg).call(zoom.transform, t);
+}
+
+function evidenceList(repoId, ev) {
+  return (ev || []).map((x) => { const u = ghLink(repoId, x); const label = `${x.path}:${x.line}`;
+    return u ? `<a href="${esc(u)}">${esc(label)}</a>` : esc(label); }).join(" · ");
+}
+
+function panel(n) {
+  const out = data.edges.filter((e) => (e.source.id || e.source) === n.id);
+  const inc = data.edges.filter((e) => (e.target.id || e.target) === n.id);
+  const name = (id) => { const m = nodeById(id); return m ? m.label : id; };
+  const row = (e, other, repoForEvidence) => `<li><b>${esc(name(other))}</b> <span class="muted">${esc(e.kind === "uses" ? e.label.replace(/^uses /, "uses ") : e.label)}${e.weight > 1 ? ` · ${int(e.weight)} files` : ""}</span>
+      ${e.evidence ? `<div class="ev">${evidenceList(repoForEvidence, e.evidence)}</div>` : ""}</li>`;
+  let html;
+  if (n.kind === "repo") {
+    const one = data.mentions.filter((m) => m.source === n.id);
+    html = `<h2>${esc(n.id)}</h2><p class="kv">${esc(n.area)}${n.service_role ? ` · ${esc(n.service_role)}` : ""} · ${int(n.files)} source files scanned</p>
+      <p>${esc(n.role)}</p>
+      <p class="kv">${n.wiki ? `<a href="/ui/wiki/${encodeURIComponent(n.id)}">Wiki</a> · ` : ""}<a href="/ui/repos?q=${encodeURIComponent(n.id)}">Repo card</a>${n.github ? ` · <a href="${esc(n.github)}">GitHub</a>` : ""}${n.violations ? ` · <span class="status critical">${int(n.violations)} violation${n.violations === 1 ? "" : "s"}</span>` : ""}</p>
+      ${out.length ? `<h3>Depends on</h3><ul>${out.map((e) => row(e, e.target.id || e.target, n.id)).join("")}</ul>` : ""}
+      ${inc.length ? `<h3>Used by</h3><ul>${inc.map((e) => row(e, e.source.id || e.source, e.source.id || e.source)).join("")}</ul>` : ""}
+      ${one.length ? `<h3>Mentioned once (not drawn)</h3><ul>${one.map((m) => `<li>${esc(m.label.replace(/^uses /, ""))} <div class="ev">${evidenceList(n.id, m.evidence)}</div></li>`).join("")}</ul>` : ""}`;
+  } else {
+    html = `<h2>${esc(n.label)}</h2><p class="kv">${esc(n.category)} · external service</p>
+      <h3>Used by</h3><ul>${inc.map((e) => row(e, e.source.id || e.source, e.source.id || e.source)).join("") || "<li class='muted'>nothing drawn</li>"}</ul>`;
+  }
+  document.getElementById("panel").innerHTML = html;
+}
+
+function table() {
+  const name = (id) => { const m = nodeById(id); return m ? m.label : id; };
+  document.querySelector("#conn tbody").innerHTML = data.edges.map((e) => {
+    const s = e.source.id || e.source, t = e.target.id || e.target;
+    const ev = (e.evidence || [])[0];
+    return `<tr><td>${esc(name(s))}</td><td>${esc(name(t))}</td><td>${esc(e.label)}</td><td class="num">${e.evidence ? int(e.weight) : "—"}</td>
+      <td class="mono">${ev ? evidenceList(s, [ev]) : ""}</td></tr>`;
+  }).join("");
+}
+
+document.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => {
+  shown[b.dataset.kind] = !shown[b.dataset.kind];
+  b.setAttribute("aria-pressed", String(shown[b.dataset.kind]));
+  render();
+  if (selected) panel(selected);
+}));
+document.getElementById("fit").addEventListener("click", () => fit());
+UI.onThemeChange(render);
+let resizeT = null;
+addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(render, 200); });
+
+UI.load("/audit/topology/map.json", (d) => {
+  data = d;
+  document.getElementById("minf").textContent = d.min_files;
+  const c = d.counts;
+  document.getElementById("sub").innerHTML = `${int(d.nodes.filter((n) => n.kind === "repo").length)} repos · ${int(d.nodes.filter((n) => n.kind === "service").length)} external services · `
+    + `${int(c.flow || 0)} documented flows · ${int(c.imports || 0)} code imports · ${int(c.uses || 0)} service links · ${int(c.violation || 0)} violations`
+    + ` · <a href="/audit/topology/map.json">JSON</a> · <a href="/ui/architecture">architecture rules</a>`;
+  legend(); table(); render();
+}, document.getElementById("sub"));
+</script>
+</body>
+</html>
