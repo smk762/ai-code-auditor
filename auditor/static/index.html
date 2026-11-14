@@ -38,6 +38,8 @@
   </section>
 
   <section class="grid links-grid" aria-label="Pages">
+    <a class="card span-3" href="/ui/repos"><h2>Repos</h2><p>One card per repo: dev tip, last audit, findings, packs, violations.</p></a>
+    <a class="card span-3" href="/ui/packs"><h2>Packs board</h2><p>Agent coding packs by lifecycle status; move them along.</p></a>
     <a class="card span-3" href="/ui/runs"><h2>Runs</h2><p>Every audit run, with per-repo results and findings deltas.</p></a>
     <a class="card span-3" href="/ui/findings"><h2>Findings</h2><p>Severity × repo matrix, filters, new and fixed since the last run.</p></a>
     <a class="card span-3" href="/ui/pack-savings"><h2>Pack savings</h2><p>Estimated tokens agents save by reading packs instead of code.</p></a>
@@ -76,7 +78,7 @@ function render(d) {
         : tile("Last run", "—", "no runs recorded"),
     f ? tile("Findings", `<a href="/ui/findings">${int(f.total)}</a>`, `${int(f.by_severity.CRITICAL)} critical · ${int(f.by_severity.HIGH)} high · ${esc(f.pipeline)} ${UI.ago(f.started_at)}`)
       : tile("Findings", "—", "no run has findings stored yet"),
-    p ? tile("Open packs", int(sc.open || 0), `${int(active)} claimed or in progress · ${int(p.total)} total`)
+    p ? tile("Open packs", `<a href="/ui/packs">${int(sc.open || 0)}</a>`, `${int(active)} claimed or in progress · ${int(p.total)} total`)
       : tile("Open packs", "—", "pack index unavailable"),
     s ? tile("Spend this month", money(s.spent), s.cap ? `${((s.spent / s.cap) * 100).toFixed(0)}% of ${money(s.cap)} cap · <a href="/audit/usage">usage</a>` : "no total cap")
       : tile("Spend this month", "—", "ledger unavailable"),

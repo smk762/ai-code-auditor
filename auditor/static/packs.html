@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Packs board</title>
+<link rel="stylesheet" href="/audit/static/ui.css">
+<script src="/audit/static/ui.js"></script>
+<style>
+  .board { display: grid; grid-template-columns: repeat(5, minmax(220px, 1fr)); gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+  .col { background: var(--surface-2); border-radius: 10px; padding: 10px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+  .col h2 { font-size: 13px; margin: 0 2px; display: flex; justify-content: space-between; text-transform: capitalize; }
+  .col h2 span { color: var(--text-secondary); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .pk { background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+  .pk a.t { color: var(--text-primary); text-decoration: none; font-weight: 550; display: block; margin: 4px 0; overflow-wrap: anywhere; }
+  .pk a.t:hover { text-decoration: underline; }
+  .pk .meta { font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+  .pk .foot { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 6px; }
+  .pk select { font-size: 11px; padding: 2px 4px; }
+  .more { font-size: 12px; color: var(--text-muted); text-align: center; padding: 4px; }
+  .flash { font-size: 12px; }
+</style>
+</head>
+<body>
+<!--#nav-->
+<main>
+  <header class="page">
+    <h1>Packs board</h1>
+    <div class="sub" id="sub">Loading…</div>
+  </header>
+
+  <section class="card">
+    <div class="toolbar" role="group" aria-label="Filters">
+      <input type="search" id="f-q" placeholder="Search title, id or file…" aria-label="Search packs">
+      <label>Repo <select id="f-repo"><option value="">all</option></select></label>
+      <label>Severity <select id="f-severity">
+        <option value="">all</option><option value="CRITICAL,HIGH">high+</option>
+        <option value="CRITICAL">critical</option><option value="HIGH">high</option><option value="MEDIUM">medium</option>
+        <option value="LOW">low</option><option value="INFO">info</option></select></label>
+      <label>Layer <select id="f-layer"><option value="">all</option></select></label>
+      <label>Kind <select id="f-kind"><option value="">all</option></select></label>
+      <span class="flash" id="flash" role="status"></span>
+    </div>
+    <div class="board" id="board"></div>
+  </section>
+</main>
+
+<script>
+const { esc, int } = UI;
+const STATUSES = ["open", "claimed", "in_progress", "resolved", "wontfix"];
+const p = UI.params();
+const state = { repo: p.repo || "", severity: p.severity || "", layer: p.layer || "", kind: p.kind || "", q: p.q || "" };
+const els = { repo: "f-repo", severity: "f-severity", layer: "f-layer", kind: "f-kind", q: "f-q" };
+for (const k in els) els[k] = document.getElementById(els[k]);
+els.q.value = state.q;
+els.severity.value = state.severity;
+
+function fill(el, values, current) {
+  el.innerHTML = `<option value="">all</option>` + values.map((v) => `<option value="${esc(v)}"${v === current ? " selected" : ""}>${esc(v.replace("_", " "))}</option>`).join("");
+}
+
+function card(pk) {
+  const opts = STATUSES.map((s) => `<option value="${s}"${s === pk.status ? " selected" : ""}>${s.replace("_", " ")}</option>`).join("");
+  return `<div class="pk">
+    ${UI.sevBadge(pk.severity)} <span class="meta">${esc(pk.kind)} · score ${Number(pk.score || 0).toFixed(2)}</span>
+    <a class="t" href="/ui/packs/${encodeURIComponent(pk.id)}">${esc(pk.title || pk.id)}</a>
+    <div class="meta">${esc(pk.repo)}${pk.path ? ` · ${esc(pk.path)}` : ""}</div>
+    <div class="foot">
+      <span class="meta">${pk.draft_pr_url ? `<a href="${esc(pk.draft_pr_url)}">draft PR</a>` : pk.status_updated_at ? `moved ${UI.ago(pk.status_updated_at)}` : `found ${UI.ago(pk.detected_at)}`}</span>
+      <select data-id="${esc(pk.id)}" data-was="${esc(pk.status)}" aria-label="Move ${esc(pk.title || pk.id)}">${opts}</select>
+    </div></div>`;
+}
+
+function render(d) {
+  fill(els.repo, d.facets.repos, state.repo);
+  fill(els.layer, d.facets.layers, state.layer);
+  fill(els.kind, d.facets.kinds, state.kind);
+  document.getElementById("board").innerHTML = d.columns.map((c) => `<div class="col" aria-label="${esc(c.status)}">
+      <h2>${esc(c.status.replace("_", " "))} <span>${int(c.total)}</span></h2>
+      ${c.packs.map((pk) => card({ ...pk, status: c.status })).join("") || `<div class="more">empty</div>`}
+      ${c.total > c.packs.length ? `<div class="more">+${int(c.total - c.packs.length)} more · narrow the filters</div>` : ""}
+    </div>`).join("");
+  document.getElementById("sub").textContent = `${UI.plural(d.total, "pack")} match · most severe, then highest score first · the world-model layer is reference material, not work`;
+}
+
+function load() {
+  UI.setParams(state);
+  const qs = new URLSearchParams(Object.entries(state).filter(([, v]) => v));
+  return UI.load(`/audit/packs/board.json?${qs}`, render, document.getElementById("sub"));
+}
+
+document.getElementById("board").addEventListener("change", async (e) => {
+  const sel = e.target.closest("select[data-id]");
+  if (!sel) return;
+  const flash = document.getElementById("flash");
+  sel.disabled = true;
+  try {
+    const out = await UI.send("POST", `/audit/packs/${encodeURIComponent(sel.dataset.id)}/status`, { status: sel.value, note: "set from the packs board" });
+    flash.innerHTML = `<span class="status ok">Moved ${esc(out.id)} to ${esc(out.status.replace("_", " "))}</span>`;
+    await load();
+  } catch (err) {
+    sel.value = sel.dataset.was;
+    sel.disabled = false;
+    flash.innerHTML = `<span class="err">Not moved: ${esc(err.message)}</span>`;
+  }
+});
+for (const k of ["repo", "severity", "layer", "kind"]) els[k].addEventListener("change", () => { state[k] = els[k].value; load(); });
+let typing = null;
+els.q.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => { state.q = els.q.value.trim(); load(); }, 250); });
+load();
+</script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 import yaml
@@ -169,6 +171,14 @@ def write_architecture_violations(violations: list[RuleViolation], output_dir: s
         lines.append("- No architecture violations detected.")
 
     report.write_text("\n".join(lines), encoding="utf-8")
+    # Structured sidecar for the web UI (repo cards); entities[0] is the violating repo.
+    (out / "architecture_violations.json").write_text(json.dumps({
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "total": len(violations),
+        "violations": [
+            {**asdict(v), "repo": v.entities[0] if v.entities else ""} for v in violations
+        ],
+    }, indent=2), encoding="utf-8")
     return report
 
 
