@@ -32,6 +32,7 @@ reports/security-out/
 reports/model_eval/
 reports/wiki_eval/
 reports/wiki/
+reports/wiki_public/
 reports/_brand/
 reports/repo_readiness/
 graph/*.db
