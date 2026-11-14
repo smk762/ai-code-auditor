@@ -976,13 +976,17 @@ def get_findings_json(
     type: str = Query(default=""),  # noqa: A002
     q: str = Query(default="", description="substring of title or file path"),
     change: Literal["all", "new", "fixed"] = Query(default="all"),
+    pack_status: str = Query(default="", description="comma-separated pack statuses; 'none' = no pack"),
     limit: int = Query(default=500, ge=1, le=5000),
 ) -> JSONResponse:
-    """Findings for one run, filtered, with the severity × repo matrix and facets for the run."""
+    """Findings for one run, filtered, with the severity × repo matrix and facets for the run.
+
+    Each row carries its agent coding pack (id, status) so the page can hand work to an agent.
+    """
     from auditor.ui_runs import findings_data
 
     out = findings_data(run_id, repo=repo, severity=severity, source=source, type=type, q=q,
-                        change=change, limit=limit)
+                        change=change, pack_status=pack_status, limit=limit, output_dir=_output_dir())
     if out is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found.")
     return JSONResponse(out)

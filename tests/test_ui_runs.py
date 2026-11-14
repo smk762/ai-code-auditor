@@ -134,6 +134,50 @@ def test_findings_unknown_run_and_empty_db(history, memdb) -> None:
     assert ui_runs.findings_data("y-1", change="new")["findings"] == []  # no baseline → nothing "new"
 
 
+def _pack_index(out: Path, entries: list[dict]) -> Path:
+    import json
+
+    (out / "agent_packs").mkdir(parents=True, exist_ok=True)
+    (out / "agent_packs" / "INDEX.json").write_text(json.dumps({"packs": entries}))
+    return out
+
+
+def _pk(id_, title, status="open", file="a.py", repo="x", kind="nightly", layer="specialist"):
+    return {"id": id_, "title": title, "status": status, "file_path": file, "repo": repo,
+            "kind": kind, "layer": layer}
+
+
+def test_findings_link_packs_and_hand_off_open_ones(history, tmp_path) -> None:
+    out = _pack_index(tmp_path, [
+        _pk("pack-kept-nightly", "kept"),
+        _pk("pack-kept-diff", "kept", status="claimed", kind="diff_audit"),  # furthest along wins
+        _pk("pack-fresh", "fresh"),
+        _pk("pack-other-file", "fresh too", file="a.py"),  # wrong file: no link
+        _pk("pack-world-x", "fresh too", file="b.py", layer="world_model"),  # never linked
+    ])
+    d = ui_runs.findings_data("x-2", output_dir=out)
+    packs = {f["title"]: f["pack"] for f in d["findings"]}
+    assert packs["kept"] == {"id": "pack-kept-diff", "status": "claimed", "kind": "diff_audit"}
+    assert packs["fresh"]["id"] == "pack-fresh" and packs["fresh too"] is None
+    assert d["packs"]["by_status"] == {"claimed": 1, "open": 1, "none": 1}
+    assert d["packs"]["open_total"] == 1
+    assert d["packs"]["open"] == [{"id": "pack-fresh", "repo": "x", "severity": "LOW", "type": "bug",
+                                   "path": "a.py", "line": 1, "title": "fresh"}]
+
+    def titles(**kw):
+        return [f["title"] for f in ui_runs.findings_data("x-2", output_dir=out, **kw)["findings"]]
+
+    assert titles(pack_status="open,claimed") == ["kept", "fresh"]
+    assert titles(pack_status="none") == ["fresh too"]
+    assert "pack" not in ui_runs.findings_data("x-2")["findings"][0]  # no output_dir: no lookup
+
+
+def test_findings_without_pack_index(history, tmp_path) -> None:
+    d = ui_runs.findings_data("x-2", output_dir=tmp_path)
+    assert all(f["pack"] is None for f in d["findings"])
+    assert d["packs"] == {"by_status": {"none": 3}, "open_total": 0, "open": []}
+
+
 def test_findings_empty_db(memdb) -> None:
     d = ui_runs.findings_data()
     assert d["run"] is None and d["findings"] == []

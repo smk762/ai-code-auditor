@@ -12,6 +12,7 @@ the night before.
 """
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
@@ -28,6 +29,9 @@ SEVERITIES = ui.SEVERITIES
 BASELINE_LOOKBACK = 50
 DELTA_LIST_LIMIT = 200
 FINDINGS_LIMIT = 500
+PROMPT_PACK_LIMIT = 200  # open packs listed for the "copy agent prompt" handoff
+# Lifecycle order: when one finding has several packs, the furthest-along one is shown.
+PACK_STATUS_ORDER = ("resolved", "wontfix", "in_progress", "claimed", "open")
 
 # Markdown reports each pipeline writes to output_dir (overwritten by the next run).
 REPORTS_BY_PIPELINE: dict[str, list[str]] = {
@@ -267,6 +271,33 @@ def run_summary(run_id: str, output_dir: str | Path) -> dict[str, Any] | None:
 
 # ── findings ─────────────────────────────────────────────────────────────────
 
+def _pack_lookup(output_dir: str | Path) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """Specialist packs from ``agent_packs/INDEX.json`` keyed by ``(repo, file_path, title)``.
+
+    Every pipeline that stores findings also emits a pack per finding with the same repo, path
+    and title, so that key links them. Where several packs share it (a nightly and a diff-audit
+    pack for the same issue), the furthest along the lifecycle wins: a claimed pack is the one
+    to show, not a fresh open twin.
+    """
+    from auditor.agent_pack import index_path
+
+    try:
+        entries = json.loads(index_path(output_dir).read_text(encoding="utf-8")).get("packs") or []
+    except (OSError, ValueError):
+        return {}
+    rank = {st: i for i, st in enumerate(PACK_STATUS_ORDER)}
+    out: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for e in entries:
+        if e.get("layer") == "world_model" or not e.get("title"):
+            continue
+        k = (str(e.get("repo") or ""), str(e.get("file_path") or ""), str(e["title"]))
+        status = str(e.get("status") or "open")
+        cur = out.get(k)
+        if cur is None or rank.get(status, len(rank)) < rank.get(cur["status"], len(rank)):
+            out[k] = {"id": e["id"], "status": status, "kind": e.get("kind") or ""}
+    return out
+
+
 def findings_data(
     run_id: str = "",
     *,
@@ -276,13 +307,19 @@ def findings_data(
     type: str = "",  # noqa: A002 — query-parameter name
     q: str = "",
     change: str = "all",
+    pack_status: str = "",
     limit: int = FINDINGS_LIMIT,
+    output_dir: str | Path = "",
 ) -> dict[str, Any] | None:
     """Findings for one run (default: newest finished run with findings), filtered.
 
     ``change``: ``all`` (this run), ``new`` (not in the baseline run) or ``fixed`` (in the
     baseline, gone now). The severity × repo matrix and facets cover the whole run, not the
     filtered rows, so the filters can be read off them.
+
+    With ``output_dir``, each row gets ``pack`` (``{id, status, kind}`` or None) from the agent
+    pack index, ``pack_status`` filters on it (comma-separated; ``none`` = no pack), and
+    ``packs`` summarises the filtered rows' packs, including the open ones to hand an agent.
     """
     with ui._db_session() as s:
         row = _resolve_run(s, run_id or None)
@@ -315,6 +352,11 @@ def findings_data(
         rows = list(d["new"]) if d else []
     else:
         rows = current
+    packs = _pack_lookup(output_dir) if output_dir else {}
+    if output_dir:
+        for f in (*current, *(d["fixed"] if d else ())):
+            f["pack"] = packs.get((f["repo"], f["file_path"], f["title"]))
+    ps_set = {x.strip().lower() for x in pack_status.split(",") if x.strip()}
     sev_set = {x.strip().upper() for x in severity.split(",") if x.strip()}
     ql = q.strip().lower()
     rows = [
@@ -324,8 +366,23 @@ def findings_data(
         and (not source or f["source"] == source)
         and (not type or f["type"] == type)
         and (not ql or ql in f["title"].lower() or ql in f["path"].lower())
+        and (not ps_set or ((f.get("pack") or {}).get("status") or "none") in ps_set)
     ]
     rows.sort(key=lambda f: (_sev_rank(f), f["repo"], f["file_path"], f["line"]))
+    pack_summary = None
+    if output_dir:
+        by_status = Counter((f.get("pack") or {}).get("status") or "none" for f in rows)
+        seen: set[str] = set()
+        open_packs = []
+        for f in rows:
+            pk = f.get("pack")
+            if pk and pk["status"] == "open" and pk["id"] not in seen:
+                seen.add(pk["id"])
+                open_packs.append({"id": pk["id"], "repo": f["repo"], "severity": f["severity"],
+                                   "type": f["type"], "path": f["path"], "line": f["line"],
+                                   "title": f["title"]})
+        pack_summary = {"by_status": dict(by_status), "open_total": len(open_packs),
+                        "open": open_packs[:PROMPT_PACK_LIMIT]}
     return {
         "run": run,
         "previous": previous,
@@ -335,6 +392,7 @@ def findings_data(
         "total": len(current),
         "filtered_total": len(rows),
         "findings": rows[:limit],
+        "packs": pack_summary,
         "filters": {"repo": repo, "severity": severity, "source": source, "type": type, "q": q,
-                    "change": change, "limit": limit},
+                    "change": change, "pack_status": pack_status, "limit": limit},
     }
