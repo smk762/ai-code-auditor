@@ -9,10 +9,15 @@ x-auditor-base: &auditor-base
     - ./index:/app/index
     - ./memory:/app/memory
     - ./:/repos/ai-code-auditor
-    # Match repo `path:` entries in config/ecosystem.yaml (host paths → same path in container).
-    # All mounted repos now live under ~/tmp/mnt/; agent-composer is local.
-    - /home/smk/tmp/mnt:/home/smk/tmp/mnt:ro
+    # Match repo `path:` entries in config/ecosystem.yaml (host paths → same path in container),
+    # read-only. The wiki viewer, "Ask this repo" citations, repo cards and the topology scan all
+    # read these mirrors; without them citations fail as "missing". Most repos are git mirrors
+    # under ~/mirrors (synced by scripts/sync_repo_mirrors.sh); three are checkouts in ~.
+    # Add a line here when a repo's path in ecosystem.yaml is outside these.
+    - /home/smk/mirrors:/home/smk/mirrors:ro
     - /home/smk/agent-composer:/home/smk/agent-composer:ro
+    - /home/smk/argus-cull:/home/smk/argus-cull:ro
+    - /home/smk/argus-lens:/home/smk/argus-lens:ro
   environment:
     # Match the host clock so ledger/dashboard hours line up with the systemd timers.
     - TZ=${TZ:-Australia/Perth}
