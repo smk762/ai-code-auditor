@@ -270,7 +270,69 @@ def _build_parser() -> argparse.ArgumentParser:
     sav.add_argument("--cached", action="store_true", help="Show the last report instead of re-measuring")
     sav.add_argument("--history", action="store_true", help="Show the recorded trend instead")
 
+    wk = sub.add_parser("wiki", help="Generated per-repo wiki (DeepWiki-style): build or show status")
+    wk_sub = wk.add_subparsers(dest="wiki_command", required=True)
+    wkb = wk_sub.add_parser("build", help="Build wiki pages (notes → drafts → check-and-fix) via the Batch API")
+    wkb.add_argument("--repos", default="", help="Comma-separated repo names (default: every enabled repo)")
+    wkb.add_argument("--dry-run", action="store_true", help="Price the build without calling the API")
+    wkb.add_argument("--sync", action="store_true", help="Streaming Messages API instead of Batch (2x price, no wait)")
+    wkb.add_argument("--json", action="store_true", help="Print the build report as JSON")
+    wks = wk_sub.add_parser("status", help="Show built repos, their source SHAs and the wiki lane budget")
+    wks.add_argument("--json", action="store_true", help="Print as JSON")
+
     return parser
+
+
+def _run_wiki(args) -> None:
+    import json as _json
+
+    from auditor.config import load_ecosystem_config
+    from auditor.spend_ledger import get_ledger
+
+    out = load_ecosystem_config().output_dir
+    if args.wiki_command == "status":
+        from wiki.build import wiki_dir
+
+        try:
+            idx = _json.loads((wiki_dir(out) / "INDEX.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            idx = {"repos": {}}
+        led = get_ledger()
+        payload = {**idx, "wiki_spent_usd": round(led.spent("wiki"), 2), "wiki_cap_usd": led.caps().get("wiki"),
+                   "wiki_left_usd": round(led.remaining("wiki"), 2)}
+        if args.json:
+            print(_json.dumps(payload, indent=2))
+            return
+        print(f"wiki lane: ${payload['wiki_spent_usd']:.2f} spent of ${payload['wiki_cap_usd'] or 0:.2f} "
+              f"this budget month (${payload['wiki_left_usd']:.2f} left)")
+        for name, r in sorted(idx.get("repos", {}).items()):
+            print(f"  {name:22} {str(r.get('source_sha') or '')[:10]:10} {r.get('pages', 0)} pages  built {r.get('built_at')}")
+        if not idx.get("repos"):
+            print("  no repos built yet: ai-audit wiki build --repos <name> --dry-run")
+        return
+
+    from wiki.build import build
+
+    names = [n.strip() for n in args.repos.split(",") if n.strip()] or None
+    rep = build(names, out, mode="sync" if args.sync else "batch", dry_run=args.dry_run).to_dict()
+    if args.json:
+        print(_json.dumps(rep, indent=2))
+        return
+    if rep["dry_run"]:
+        print(f"dry run: {len(rep['repos'])} repos, {rep['stages']['notes']['requested']} files need notes, "
+              f"estimated ${rep['estimate_usd']:.2f} ({'sync' if args.sync else 'batch'}); "
+              f"wiki lane has ${rep['wiki_lane_left_usd']:.2f} left")
+        for name, r in rep["repos"].items():
+            if r["skipped"]:
+                print(f"  {name}: skipped ({r['skipped']})")
+        return
+    for name, r in rep["repos"].items():
+        state = r["skipped"] or f"{len(r['pages_written'])} pages written, {r['dropped_claims']} claims dropped"
+        failed = f"; failed: {r['pages_failed']}" if r["pages_failed"] else ""
+        print(f"  {name:22} {state}{failed}")
+    print(f"cost ${rep['cost_usd']:.2f}; wiki lane has ${rep['wiki_lane_left_usd']:.2f} left")
+    if rep["stopped"]:
+        raise SystemExit(f"stopped: {rep['stopped']}")
 
 
 def _refresh_pr_intel_quietly() -> dict:
@@ -1033,6 +1095,8 @@ def main() -> None:
         _run_pr_intel(as_json=args.json, cached=args.cached)
     elif args.command == "pack-savings":
         _run_pack_savings(as_json=args.json, cached=args.cached, history=args.history)
+    elif args.command == "wiki":
+        _run_wiki(args)
     elif args.command == "diff-audit":
         _run_diff_audit(
             repo_name=args.repo,

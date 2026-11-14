@@ -17,6 +17,7 @@ COPY semantic /app/semantic
 COPY copilot /app/copilot
 COPY pipelines /app/pipelines
 COPY qa /app/qa
+COPY wiki /app/wiki
 COPY alembic /app/alembic
 COPY alembic.ini /app/alembic.ini
 COPY config /app/config
