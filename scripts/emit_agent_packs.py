@@ -170,7 +170,7 @@ def main() -> None:
 
     if ingest_rag:
         # One ingest after status restore so RAG metadata matches the YAML.
-        result = ingest_packs_to_rag(_load_packs(out))
+        result = ingest_packs_to_rag(_load_packs(out), output_dir=out, full=True)
         print(f"  RAG ingest: {result}")
 
     idx = rebuild_index(out, public_base_url=base)

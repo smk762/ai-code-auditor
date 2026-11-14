@@ -8,6 +8,11 @@ a title naming repo, page and section, a link to that section in the wiki viewer
 Only the four generated content pages go in, from the internal variant; "Notable findings" is
 built from audit data that changes nightly and packs already cover it. On by default; set
 ``AI_AUDIT_WIKI_RAG_INGEST=0`` to turn it off.
+
+Re-sent sections replace their old chunks (rag-ingest keys them by id). Sections that were sent
+before but no longer exist (a renamed heading, a dropped page) are retired with rag-ingest's
+``POST /delete``, using the per-repo record in ``reports/rag_ingested.json``; when only some
+pages are re-sent, only those pages' old sections are considered.
 """
 from __future__ import annotations
 
@@ -44,6 +49,11 @@ def sections(md: str) -> list[tuple[str, str]]:
     return out
 
 
+def _page_of(doc_id: str) -> str:
+    parts = doc_id.split("::")
+    return parts[2] if len(parts) > 3 else ""
+
+
 def documents_for_repo(output_dir: str | Path, repo: str, pages: set[str] | None = None,
                        base_url: str = "") -> list[dict[str, Any]]:
     d = Path(output_dir) / "wiki" / repo
@@ -77,7 +87,7 @@ def documents_for_repo(output_dir: str | Path, repo: str, pages: set[str] | None
 
 def ingest(output_dir: str | Path, repos: dict[str, set[str] | None] | None = None) -> dict[str, Any]:
     """Post wiki sections per repo. ``repos`` maps repo → pages (None = all); default every built repo."""
-    from auditor.rag_client import post_documents
+    from auditor.rag_client import sync_documents
     from conductor.publish import public_base_url
 
     if not wiki_rag_enabled():
@@ -91,9 +101,13 @@ def ingest(output_dir: str | Path, repos: dict[str, set[str] | None] | None = No
         docs = documents_for_repo(output_dir, repo, pages, base)
         if not docs:
             continue
-        r = post_documents(docs, tags=["kind:wiki", f"repo:{repo}"])
-        result["repos"][repo] = {k: r.get(k) for k in ("ingested", "count", "status_code", "error") if k in r}
+        considered = None if pages is None else (lambda i, p=frozenset(pages): _page_of(i) in p)
+        r = sync_documents(output_dir, f"wiki:{repo}", docs, tags=["kind:wiki", f"repo:{repo}"],
+                           considered=considered)
+        result["repos"][repo] = {k: r.get(k) for k in ("ingested", "count", "retired", "status_code", "error",
+                                                        "retire_error") if k in r}
         result["count"] += r.get("count", 0)
+        result["retired"] = result.get("retired", 0) + r.get("retired", 0)
         if not r.get("ingested"):
             result["ingested"] = False
             if r.get("skipped"):  # e.g. no secret: no point trying the other repos

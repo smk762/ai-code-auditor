@@ -935,7 +935,7 @@ def emit_packs_from_worker_results(
 
     rebuild_index(output_dir, public_base_url=public_base_url)
     if ingest_rag and packs:
-        ingest_packs_to_rag(packs)
+        ingest_packs_to_rag(packs, output_dir=output_dir)
     return packs
 
 
@@ -969,7 +969,7 @@ def emit_packs_from_findings(
         packs.append(pack)
     rebuild_index(output_dir, public_base_url=public_base_url)
     if ingest_rag and packs:
-        ingest_packs_to_rag(packs)
+        ingest_packs_to_rag(packs, output_dir=output_dir)
     return packs
 
 
@@ -1219,7 +1219,7 @@ def emit_world_model_packs(
 
     rebuild_index(output_dir, public_base_url=public_base_url)
     if ingest_rag and packs:
-        ingest_packs_to_rag(packs)
+        ingest_packs_to_rag(packs, output_dir=output_dir)
     return packs
 
 
@@ -1341,34 +1341,56 @@ def emit_packs_from_extraction_candidates(
     if packs:
         rebuild_index(output_dir, public_base_url=public_base_url)
         if ingest_rag:
-            ingest_packs_to_rag(packs)
+            ingest_packs_to_rag(packs, output_dir=output_dir)
     return packs
 
 
-def ingest_packs_to_rag(packs: list[AgentCodingPack]) -> dict[str, Any]:
+def ingest_packs_to_rag(packs: list[AgentCodingPack], *, output_dir: str | Path | None = None,
+                        full: bool = False) -> dict[str, Any]:
     """Upsert slim pack summaries into the audit RAG collection for agent retrieval.
 
     Posted per repo, so each request carries ``repo:<name>`` in its tags (rag-ingest keeps
-    tags, title and url per chunk, but drops other metadata)."""
-    from auditor.rag_client import post_documents
+    tags, title and url per chunk, but drops other metadata). Closed packs (resolved, wontfix)
+    are retired from the collection instead of re-sent, so retrieval surfaces open work. With
+    ``full=True`` (``packs`` is every pack on disk), packs sent earlier that no longer exist are
+    retired too. The record of what was sent is ``rag_ingested.json`` (scope ``packs``)."""
+    from auditor.rag_client import post_documents, recorded_ids, retire, update_ledger
 
     by_repo: dict[str, list[dict[str, Any]]] = {}
+    closed: set[str] = set()
     for pack in packs:
+        doc_id = f"agent-pack::{pack.work_item_id}"
+        if (pack.status or DEFAULT_PACK_STATUS) not in ACTIVE_PACK_STATUSES:
+            closed.add(doc_id)
+            continue
         repo = (pack.repo or {}).get("name", "") or "ecosystem"
         sev = (pack.priority or {}).get("severity", "")
         title = (pack.narrative or {}).get("title", pack.work_item_id)
         by_repo.setdefault(repo, []).append({
-            "id": f"agent-pack::{pack.work_item_id}",
+            "id": doc_id,
             "title": f"{repo} · {title} [{sev} · {pack.status or DEFAULT_PACK_STATUS} · {pack.layer()}]",
             "url": (pack.repair or {}).get("pack_url") or "",
             "text": pack.to_rag_text(),
         })
-    if not by_repo:
+    if not by_repo and not closed and not full:
         return {"ingested": False, "skipped": True, "count": 0}
-    result: dict[str, Any] = {"ingested": True, "skipped": False, "count": 0}
+    result: dict[str, Any] = {"ingested": True, "skipped": False, "count": 0, "retired": 0}
+    sent: set[str] = set()
     for repo, docs in sorted(by_repo.items()):
         r = post_documents(docs, tags=["kind:agent_coding_pack", f"repo:{repo}"])
         result["count"] += r.get("count", 0)
         if not r.get("ingested"):
             return {**result, **{k: v for k, v in r.items() if k != "count"}, "ingested": False}
+        ids = {d["id"] for d in docs}
+        update_ledger(output_dir, "packs", add=ids)
+        sent |= ids
+    gone = set(closed)
+    if full:
+        gone |= recorded_ids(output_dir, "packs") - sent
+    # Closed packs may predate the record (sent before it existed), so they're deleted
+    # whether or not it lists them; deleting an id that isn't there is harmless.
+    d = retire(output_dir, "packs", gone)
+    result["retired"] = d.get("count", 0)
+    if not d.get("deleted"):
+        result["retire_error"] = d.get("error")
     return result
