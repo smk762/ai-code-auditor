@@ -40,6 +40,28 @@ from ecosystem.graph_builder import GraphBuilder
 from patterns.service_role_violations import detect_competing_providers, detect_ui_in_worker
 
 
+# Kinds this script rebuilds from scratch. Packs from findings (nightly, diff_audit, ask, conductor
+# missions) come from runs this script doesn't repeat, so it must leave them, and their claims, alone.
+OWNED_KINDS = frozenset({"world_model", "architecture", "extraction"})
+
+
+def remove_owned_packs(out: Path) -> int:
+    """Delete the packs this script re-emits (YAML + brief), so stale ones don't linger."""
+    import yaml
+
+    removed = 0
+    for path in (out / "agent_packs").glob("pack-*.yaml"):
+        try:
+            kind = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("kind")
+        except (OSError, yaml.YAMLError):
+            continue
+        if kind in OWNED_KINDS:
+            path.unlink(missing_ok=True)
+            path.with_suffix(".md").unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
 def _load_packs(out: Path) -> list:
     """Reload emitted packs from disk (picks up restored status)."""
     from auditor.agent_pack import AgentCodingPack, load_pack
@@ -77,14 +99,9 @@ def main() -> None:
     base = public_base_url()
     out = Path(cfg.output_dir)
     ingest_rag = pack_rag_ingest_enabled(False if args.no_rag else True)
-    packs_root = out / "agent_packs"
     lifecycle = snapshot_pack_lifecycle(out)
-    if packs_root.exists():
-        for stale in packs_root.glob("pack-*"):
-            stale.unlink(missing_ok=True)
-        idx = packs_root / "INDEX.json"
-        if idx.exists():
-            idx.unlink()
+    removed = remove_owned_packs(out)
+    print(f"Replacing {removed} world-model/architecture/extraction packs; finding packs are kept")
 
     print("=== 1. Compressed world model ===")
     world: list = []

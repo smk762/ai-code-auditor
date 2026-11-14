@@ -208,4 +208,4 @@ Consuming-agent flow: `bundle?repo=` → `POST /audit/packs/{id}/status {"status
 
 Cross-repo awareness: `bash scripts/install_agent_pack_awareness.sh [--dry-run] [--repo NAME]` writes an idempotent `AGENTS.md` section + `.cursor/rules/agent-coding-packs.mdc` into every enabled ecosystem repo on disk (local files only; it never runs git in those repos). Re-run after changing the API base or flow text.
 
-Refresh full loop: `python scripts/emit_agent_packs.py`. Ecosystem / nightly / conductor / diff-audit also emit packs. Merges to `dev` → hourly `ai-audit merge-poll` (GitHub API) or `POST /audit/merge` (see `contrib/github/merge-refresh-webhook.md`).
+Refresh full loop: `python scripts/emit_agent_packs.py`. It replaces the world-model, architecture and extraction packs it rebuilds and leaves finding packs (nightly, diff_audit, ask, conductor) and their status alone. Ecosystem / nightly / conductor / diff-audit also emit packs. Merges to `dev` → hourly `ai-audit merge-poll` (GitHub API) or `POST /audit/merge` (see `contrib/github/merge-refresh-webhook.md`).
