@@ -338,6 +338,9 @@ def run() -> None:
                     len(packs),
                     len(ext),
                 )
+                from auditor.pack_savings import refresh_quietly
+
+                logger.info("pack savings: %s", refresh_quietly(cfg.output_dir))
             except Exception:
                 logger.exception("agent pack emission failed")
             write_service_topology(
