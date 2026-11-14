@@ -124,3 +124,10 @@ def test_summary_endpoint(client: TestClient, memdb) -> None:
     body = r.json()
     assert set(body) >= {"last_run", "findings", "packs", "spend", "errors"}
     assert body["errors"] == []
+
+
+def test_pack_savings_page_in_shell(client: TestClient) -> None:
+    r = client.get("/ui/pack-savings")
+    assert r.status_code == 200
+    assert 'aria-current="page">Pack savings</a>' in r.text
+    assert "/audit/pack-savings.json" in r.text

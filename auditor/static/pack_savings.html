@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pack savings</title>
+<link rel="stylesheet" href="/audit/static/ui.css">
+<script src="/audit/static/ui.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  .chart-box { position: relative; height: 260px; }
+  .legend i.dash { background: none !important; height: 0; border-top: 2px dashed; width: 14px; border-radius: 0; }
+  .legend i.dot2 { background: none !important; height: 0; border-top: 2px dotted; width: 14px; border-radius: 0; }
+  details summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); margin-top: 10px; }
+  th.sort { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sort[aria-sort="ascending"]::after { content: " ▲"; font-size: 9px; }
+  th.sort[aria-sort="descending"]::after { content: " ▼"; font-size: 9px; }
+  .bar { display: flex; align-items: center; gap: 8px; min-width: 140px; }
+  .bar .track { flex: 1; margin: 0; height: 6px; }
+  .bar .fill { background: var(--seq-5); border-radius: 3px; }
+  .bar span { width: 38px; text-align: right; font-variant-numeric: tabular-nums; }
+  .broken { color: var(--warn); font-size: 12px; }
+</style>
+</head>
+<body>
+<!--#nav-->
+<main>
+  <header class="page">
+    <h1>Agent pack savings</h1>
+    <div class="sub" id="sub">Loading…</div>
+  </header>
+
+  <section class="grid" id="kpis" aria-label="Headline numbers"></section>
+
+  <section class="grid">
+    <div class="card span-12">
+      <h2>Savings over time</h2>
+      <p class="hint">Share of tokens an agent doesn't read when it uses the default mission bundle instead of reading the cited files (targeted), the whole repo (source), or per session including the orientation docs that load either way. One point per measurement.</p>
+      <div class="chart-box"><canvas id="trend" aria-label="Line chart of pack token savings over time"></canvas></div>
+      <div class="legend" id="trend-legend"></div>
+      <details><summary>Show as table</summary>
+        <div class="table-wrap"><table id="history"><thead><tr><th>Measured</th><th class="num">Packs</th><th class="num">vs targeted (median)</th><th class="num">Session</th><th class="num">vs source</th><th class="num">Brief vs file</th></tr></thead><tbody></tbody></table></div>
+      </details>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card span-12">
+      <h2>Per repo</h2>
+      <p class="hint">Estimated tokens (characters ÷ 4). <b>Bundle</b>: what packs hand an agent. <b>Targeted</b>: the files those packs cite, plus the README and ecosystem map. <b>Source</b>: every scanned source file. <b>Orientation</b>: CLAUDE.md, AGENTS.md and their imports, loaded either way. Click a column to sort.</p>
+      <div class="table-wrap">
+        <table id="repos">
+          <thead><tr>
+            <th class="sort" data-k="repo">Repo</th>
+            <th class="sort num" data-k="bundle_tokens">Bundle</th>
+            <th class="sort num" data-k="targeted_tokens">Targeted</th>
+            <th class="sort num" data-k="source_tokens">Source</th>
+            <th class="sort num" data-k="orientation_tokens">Orientation</th>
+            <th class="sort" data-k="saving_vs_targeted">Saving vs targeted</th>
+            <th class="sort num" data-k="saving_vs_source">vs source</th>
+            <th class="sort num" data-k="specialists_in_bundle">Specialists</th>
+          </tr></thead>
+          <tbody><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const { esc, int } = UI;
+const pct = (x) => x == null ? "—" : `${Math.round(x * 100)}%`;
+const tok = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : int(n);
+// Fixed slot per measure (never by rank); dashes are the non-colour cue.
+const SERIES = [
+  { key: "median_saving_vs_targeted", label: "vs targeted (median repo)", color: "--series-1", dash: [] },
+  { key: "session_saving", label: "per session, incl. orientation", color: "--series-3", dash: [6, 4], cls: "dash" },
+  { key: "saving_vs_source", label: "vs full source crawl", color: "--series-7", dash: [2, 3], cls: "dot2" },
+];
+let report = null, history = [], chart = null;
+const sort = { k: "saving_vs_targeted", dir: -1 };
+
+function tile(label, value, note) {
+  return `<div class="card kpi span-3"><div class="label">${label}</div><div class="value">${value}</div><div class="note">${note}</div></div>`;
+}
+
+function renderReport() {
+  const s = report.summary, p = report.per_pack;
+  document.getElementById("sub").innerHTML =
+    `Estimated (${esc(report.method)}), measured ${UI.ago(report.generated_at)} · ${int(report.pack_count)} packs, ${UI.plural(s.repos, "repo")} · bundle cap ${int(report.token_budget)} tokens · <a href="/audit/pack-savings.json">JSON</a>`;
+  document.getElementById("kpis").innerHTML = [
+    tile("Saving vs targeted reading", pct(s.median_saving_vs_targeted), `median repo · ${tok(s.bundle_tokens)} bundle vs ${tok(s.targeted_tokens)} targeted, all repos`),
+    tile("Per-session saving", pct(s.session_saving), `with ${tok(s.orientation_tokens)} orientation tokens counted on both sides`),
+    tile("Saving vs full source crawl", pct(s.saving_vs_source), `${tok(s.source_tokens)} source tokens across repos`),
+    tile("Pack brief vs cited file", `${p.median_file_to_brief.toFixed(1)}× smaller`, `median over ${int(p.packs)} packs · p25 ${p.p25_file_to_brief.toFixed(1)}× · p75 ${p.p75_file_to_brief.toFixed(1)}×`),
+  ].join("");
+  renderRepos();
+}
+
+function renderRepos() {
+  const rows = [...report.repos].sort((a, b) => {
+    const x = a[sort.k], y = b[sort.k];
+    return (typeof x === "string" ? x.localeCompare(y) : (x ?? -1) - (y ?? -1)) * sort.dir;
+  });
+  document.querySelectorAll("#repos th.sort").forEach((th) =>
+    th.setAttribute("aria-sort", th.dataset.k === sort.k ? (sort.dir > 0 ? "ascending" : "descending") : "none"));
+  document.querySelector("#repos tbody").innerHTML = rows.map((r) => `<tr>
+      <td>${esc(r.repo)}${r.broken_imports.length ? `<div class="broken" title="${esc(r.broken_imports.join(", "))}">⚠ ${UI.plural(r.broken_imports.length, "broken import")}</div>` : ""}</td>
+      <td class="num">${tok(r.bundle_tokens)}</td><td class="num">${tok(r.targeted_tokens)}</td>
+      <td class="num">${tok(r.source_tokens)}</td><td class="num">${tok(r.orientation_tokens)}</td>
+      <td><div class="bar"><div class="track"><div class="fill" style="width:${Math.max(0, (r.saving_vs_targeted || 0) * 100)}%"></div></div><span>${pct(r.saving_vs_targeted)}</span></div></td>
+      <td class="num">${pct(r.saving_vs_source)}</td>
+      <td class="num">${int(r.specialists_in_bundle)} <span class="muted">/ ${int(r.specialist_candidates)}</span></td></tr>`).join("")
+    || `<tr><td colspan="8" class="empty">No repos measured.</td></tr>`;
+}
+
+function renderTrend() {
+  const tbody = document.querySelector("#history tbody");
+  tbody.innerHTML = [...history].reverse().map((h) => `<tr><td>${esc(new Date(h.generated_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }))}</td>
+    <td class="num">${int(h.pack_count)}</td><td class="num">${pct(h.median_saving_vs_targeted)}</td><td class="num">${pct(h.session_saving)}</td>
+    <td class="num">${pct(h.saving_vs_source)}</td><td class="num">${h.median_file_to_brief ? h.median_file_to_brief.toFixed(1) + "×" : "—"}</td></tr>`).join("")
+    || `<tr><td colspan="6" class="empty">No history yet.</td></tr>`;
+  document.getElementById("trend-legend").innerHTML = SERIES.map((s) =>
+    `<span><i class="${s.cls || ""}" style="background:var(${s.color});border-color:var(${s.color})"></i>${esc(s.label)}</span>`).join("");
+
+  const css = UI.css;
+  Chart.defaults.color = css("--text-secondary");
+  Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+  Chart.defaults.font.size = 12;
+  const labels = history.map((h) => new Date(h.generated_at));
+  const fmt = (d) => d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  // Direct labels at the last point, in text ink (identity comes from the line beside it).
+  const endLabels = {
+    id: "endLabels", afterDatasetsDraw(c) {
+      const { ctx } = c; ctx.save(); ctx.font = `12px ${Chart.defaults.font.family}`; ctx.fillStyle = css("--text-secondary"); ctx.textBaseline = "middle";
+      c.data.datasets.forEach((ds, i) => {
+        const pt = c.getDatasetMeta(i).data.at(-1);
+        if (pt) ctx.fillText(pct(ds.data.at(-1)), pt.x + 8, pt.y);
+      });
+      ctx.restore();
+    },
+  };
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById("trend"), {
+    type: "line",
+    data: {
+      labels: labels.map(fmt),
+      datasets: SERIES.map((s) => ({
+        label: s.label, data: history.map((h) => h[s.key]), borderColor: css(s.color), backgroundColor: css(s.color),
+        borderDash: s.dash, borderWidth: 2, pointRadius: history.length < 20 ? 4 : 0, pointHoverRadius: 5,
+        pointBorderColor: css("--surface-1"), pointBorderWidth: 2, tension: 0, spanGaps: true,
+      })),
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      layout: { padding: { right: 44 } },
+      interaction: { mode: "index", intersect: false },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+        y: { min: 0, max: 1, grid: { color: css("--grid") }, border: { display: false }, ticks: { callback: (v) => `${v * 100}%`, stepSize: 0.25 } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: css("--surface-1"), titleColor: css("--text-primary"), bodyColor: css("--text-secondary"),
+          borderColor: css("--border"), borderWidth: 1, padding: 10, boxPadding: 4, usePointStyle: true,
+          callbacks: { label: (c) => ` ${c.dataset.label}: ${pct(c.parsed.y)}` },
+        },
+      },
+    },
+    plugins: [endLabels],
+  });
+}
+
+document.querySelectorAll("#repos th.sort").forEach((th) => th.addEventListener("click", () => {
+  sort.dir = sort.k === th.dataset.k ? -sort.dir : (th.dataset.k === "repo" ? 1 : -1);
+  sort.k = th.dataset.k;
+  renderRepos();
+}));
+
+async function load() {
+  const sub = document.getElementById("sub");
+  try {
+    const [r, h] = await Promise.all([fetch("/audit/pack-savings.json"), UI.getJSON("/audit/pack-savings.json?history=1")]);
+    history = h.history || [];
+    if (r.status === 404) {
+      sub.innerHTML = `No measurement yet. Run <code>ai-audit pack-savings</code> (it also runs after every pack emit).`;
+    } else if (!r.ok) {
+      throw new Error(`${r.status} ${(await r.text()).slice(0, 200)}`);
+    } else {
+      report = await r.json();
+      renderReport();
+    }
+    renderTrend();
+  } catch (e) {
+    sub.innerHTML = `<span class="err">Could not load pack savings: ${esc(e.message)}</span>`;
+  }
+}
+UI.onThemeChange(() => { if (history.length || report) renderTrend(); });
+load();
+</script>
+</body>
+</html>
