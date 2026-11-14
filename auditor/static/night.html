@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Night summary</title>
+<link rel="stylesheet" href="/audit/static/ui.css">
+<script src="/audit/static/ui.js"></script>
+<style>
+  .problems { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+  .problems li { border-left: 3px solid var(--warn); padding: 4px 10px; font-size: 13px; }
+  .problems li.decision { border-color: var(--series-7); }
+  .problems .ids { font-size: 11px; color: var(--text-muted); margin-top: 2px; overflow-wrap: anywhere; }
+  .mstatus { font-size: 11px; font-weight: 650; letter-spacing: .02em; }
+  .mstatus.COMPLETED { color: var(--ok); } .mstatus.PARTIAL { color: var(--warn); }
+  .mstatus.FAILED, .mstatus.ESCALATED { color: var(--critical); }
+  details.f summary { cursor: pointer; font-size: 12px; color: var(--link); }
+  details.f ul { margin: 6px 0 0; padding-left: 16px; font-size: 12px; }
+  details.f li { margin-bottom: 6px; }
+  td.why { font-size: 12px; color: var(--text-secondary); max-width: 520px; overflow-wrap: anywhere; }
+  tr.sel td { background: var(--surface-2); }
+</style>
+</head>
+<body>
+<!--#nav-->
+<main>
+  <header class="page">
+    <h1>Night summary</h1>
+    <div class="sub" id="sub">Loading…</div>
+  </header>
+
+  <section class="grid" id="kpis" aria-label="Headline numbers"></section>
+
+  <section class="grid">
+    <div class="card span-6">
+      <h2>Needs attention</h2>
+      <p class="hint">Mission failures grouped by reason, and decisions the session left for you.</p>
+      <ul class="problems" id="problems"></ul>
+    </div>
+    <div class="card span-6">
+      <h2>Top findings</h2>
+      <p class="hint" id="top-hint">Confirmed by the session, most severe first.</p>
+      <div class="table-wrap"><table id="top"><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card span-12">
+      <h2>Missions</h2>
+      <p class="hint">One row per mission, from its own result file.</p>
+      <div class="table-wrap"><table id="missions">
+        <thead><tr><th>Repo</th><th>Mission</th><th>Status</th><th class="num">Findings</th><th>Summary / reason</th></tr></thead>
+        <tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card span-12">
+      <h2>Recent nights</h2>
+      <p class="hint">Click a night to open it. Spend is the conductor lane of the spend ledger between one session's start and the next.</p>
+      <div class="table-wrap"><table id="history">
+        <thead><tr><th>Started</th><th>Missions</th><th class="num">Findings</th><th class="num">Draft PRs</th><th class="num">Decisions</th><th class="num">Spend</th><th>Session</th></tr></thead>
+        <tbody></tbody></table></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const { esc, int, money } = UI;
+const p = UI.params();
+let run = p.run || "";
+
+const mcounts = (c) => Object.entries(c).filter(([, n]) => n).map(([s, n]) => `<span class="mstatus ${esc(s)}">${int(n)} ${esc(s.toLowerCase())}</span>`).join(" · ") || "none";
+function tile(label, value, note) {
+  return `<div class="card kpi span-3"><div class="label">${label}</div><div class="value">${value}</div><div class="note">${note}</div></div>`;
+}
+const when = (iso) => iso ? new Date(iso).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+
+function render(d) {
+  const s = d.session;
+  if (!s) {
+    document.getElementById("sub").textContent = "No rest sessions recorded yet (reports/conductor/ is empty).";
+    return;
+  }
+  UI.setParams({ run });
+  const c = s.mission_counts;
+  const ok = c.COMPLETED || 0;
+  document.getElementById("sub").innerHTML = `${esc(when(s.started_at))} (${UI.ago(s.started_at)}) · <span class="mono">${esc(s.run_id)}</span>` +
+    (s.window ? ` · window ${esc(s.window.start)}–${esc(s.window.end)} ${esc(s.window.timezone)}` : "") +
+    (s.ended_reason ? ` · ended: ${esc(s.ended_reason)}` : "") +
+    (s.headline ? `<br><span class="muted">Reported as: “${esc(s.headline)}”</span>` : "");
+
+  const prs = s.draft_prs.length;
+  document.getElementById("kpis").innerHTML = [
+    tile("Missions", `${int(ok)}<span class="muted"> / ${int(s.missions_total)}</span>`, `completed · ${mcounts(c)}`),
+    tile("Findings", int(s.confirmed ?? s.findings_reported),
+      s.confirmed != null ? `confirmed · ${int(s.dismissed)} dismissed · ${int(s.manual_review)} for manual review` : "reported by missions"),
+    tile("Draft PRs", int(prs), s.decisions_needed ? `<span class="status warn">${UI.plural(s.decisions_needed, "decision")} needed</span>` : "no decisions needed"),
+    tile("Spend", s.spend ? money(s.spend.usd) : "—", s.spend ? `${int(s.spend.calls)} conductor calls · ${int(s.spend.input_tokens)} in / ${int(s.spend.output_tokens)} out` : "ledger unavailable"),
+  ].join("");
+
+  document.getElementById("problems").innerHTML = s.problems.length ? s.problems.map((x) => x.kind === "decision"
+      ? `<li class="decision"><b>Decision${x.repo ? ` · ${esc(x.repo)}` : ""}:</b> ${esc(x.text)}<div class="ids">${esc(x.id || "")}</div></li>`
+      : `<li>${esc(x.text)}<div class="ids">${UI.plural(x.missions.length, "mission")}: ${esc(x.missions.join(", "))}</div></li>`).join("")
+    : `<li class="muted" style="border:0">Nothing — every mission completed and no decisions are pending.</li>`;
+
+  const top = s.top_findings.length ? s.top_findings
+    : s.missions.flatMap((m) => m.findings.map((f) => ({ ...f, repo: m.repo }))).sort((a, b) => UI.SEVERITIES.indexOf(String(a.severity).toUpperCase()) - UI.SEVERITIES.indexOf(String(b.severity).toUpperCase())).slice(0, 8);
+  document.querySelector("#top tbody").innerHTML = top.length ? top.map((f) =>
+    `<tr><td>${UI.sevBadge(String(f.severity || "").toUpperCase())}</td><td>${esc(f.title)}<div class="muted">${esc(f.repo || "")}</div></td></tr>`).join("")
+    : `<tr><td class="empty">No findings this night.</td></tr>`;
+
+  const order = { FAILED: 0, ESCALATED: 1, PARTIAL: 2, COMPLETED: 3 };
+  const ms = [...s.missions].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || a.repo.localeCompare(b.repo));
+  document.querySelector("#missions tbody").innerHTML = ms.length ? ms.map((m) => `<tr>
+      <td>${esc(m.repo)}</td><td>${esc(m.mission)}</td><td><span class="mstatus ${esc(m.status)}">${esc(m.status.toLowerCase())}</span></td>
+      <td class="num">${int(m.findings.length)}</td>
+      <td class="why">${esc((m.escalate_reason || m.summary || "").slice(0, 400)) || '<span class="muted">no summary</span>'}
+        ${m.findings.length ? `<details class="f"><summary>${UI.plural(m.findings.length, "finding")}</summary><ul>${m.findings.map((f) =>
+          `<li>${UI.sevBadge(String(f.severity || "").toUpperCase())} ${esc(f.title)}${f.recommendation ? `<div class="muted">${esc(String(f.recommendation).slice(0, 300))}</div>` : ""}</li>`).join("")}</ul></details>` : ""}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="empty">No mission files in this session.</td></tr>`;
+
+  document.querySelector("#history tbody").innerHTML = d.history.map((h) => `<tr class="${h.run_id === s.run_id ? "sel" : ""}">
+      <td>${esc(when(h.started_at))}</td><td>${mcounts(h.mission_counts)}</td>
+      <td class="num">${int(h.confirmed ?? h.findings_reported)}</td><td class="num">${int(h.draft_prs.length)}</td>
+      <td class="num">${h.decisions_needed ? `<span class="status warn">${int(h.decisions_needed)}</span>` : "0"}</td>
+      <td class="num">${h.spend ? money(h.spend.usd) : "—"}</td>
+      <td><a class="mono" href="?run=${encodeURIComponent(h.run_id)}" data-run="${esc(h.run_id)}">${esc(h.run_id)}</a></td></tr>`).join("");
+}
+
+function load() {
+  UI.load(`/audit/night.json${run ? `?run=${encodeURIComponent(run)}` : ""}`, render, document.getElementById("sub"));
+}
+document.getElementById("history").addEventListener("click", (e) => {
+  const a = e.target.closest("a[data-run]");
+  if (!a) return;
+  e.preventDefault();
+  run = a.dataset.run;
+  load();
+  scrollTo({ top: 0 });
+});
+load();
+</script>
+</body>
+</html>

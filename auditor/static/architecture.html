@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture &amp; patterns</title>
+<link rel="stylesheet" href="/audit/static/ui.css">
+<script src="/audit/static/ui.js"></script>
+<style>
+  td.ev { font-size: 12px; color: var(--text-secondary); max-width: 560px; overflow-wrap: anywhere; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .chips button { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 999px; cursor: pointer;
+    background: var(--surface-1); color: var(--text-secondary); border: 1px solid var(--border); }
+  .chips button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface-1); border-color: var(--text-primary); }
+</style>
+</head>
+<body>
+<!--#nav-->
+<main>
+  <header class="page">
+    <h1>Architecture &amp; patterns</h1>
+    <div class="sub" id="sub">Loading…</div>
+  </header>
+
+  <section class="grid">
+    <div class="card span-12">
+      <h2>Architecture violations</h2>
+      <p class="hint" id="v-hint">From the latest ecosystem run. Rules live in <span class="mono">config/architecture_rules.yaml</span>.</p>
+      <div class="chips" id="v-chips" role="group" aria-label="Filter by rule"></div>
+      <div class="table-wrap"><table id="violations">
+        <thead><tr><th>Severity</th><th>Rule</th><th>Repo</th><th>Where</th><th>Evidence</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card span-12">
+      <h2>Extraction candidates</h2>
+      <p class="hint">Duplicated logic worth extracting into a shared library. Approving adds a <span class="mono">use_&lt;library&gt;</span> rule to the rules file (same as <span class="mono">ai-audit approve-extraction</span>) and needs the API token or auth code.</p>
+      <span id="x-flash" role="status"></span>
+      <div class="table-wrap"><table id="extraction">
+        <thead><tr><th>Candidate</th><th class="num">Score</th><th>Library</th><th>Repos</th><th>Rationale</th><th></th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card span-12">
+      <h2>Pattern proposals</h2>
+      <p class="hint" id="p-hint">Usage patterns seen across repos that could be standardised.</p>
+      <div class="table-wrap"><table id="proposals">
+        <thead><tr><th>Pattern</th><th>Status</th><th>Domain</th><th>Recommendation</th><th>Risk</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const { esc, int } = UI;
+let data = null;
+let rule = UI.params().rule || "";
+const ruleLabel = (r) => r.replace(/_/g, " ");
+
+function renderViolations() {
+  const v = data.violations;
+  if (!v) {
+    document.querySelector("#violations tbody").innerHTML = `<tr><td colspan="5" class="empty">No architecture report yet: it is written by the ecosystem run.</td></tr>`;
+    return;
+  }
+  const byRule = data.violation_counts.by_rule;
+  document.getElementById("v-chips").innerHTML = [["", v.violations.length, "all"], ...Object.entries(byRule).map(([k, n]) => [k, n, ruleLabel(k)])]
+    .map(([k, n, label]) => `<button data-rule="${esc(k)}" aria-pressed="${k === rule}">${esc(label)} ${int(n)}</button>`).join("");
+  const rows = v.violations.filter((x) => !rule || x.rule === rule);
+  document.querySelector("#violations tbody").innerHTML = rows.length ? rows.map((x) => `<tr>
+      <td>${UI.sevBadge(x.severity || "INFO")}</td><td>${esc(ruleLabel(x.rule))}</td>
+      <td>${x.repo ? `<a href="/ui/repos?q=${encodeURIComponent(x.repo)}">${esc(x.repo)}</a>` : '<span class="muted">—</span>'}</td>
+      <td class="mono">${esc(x.path)}</td><td class="ev">${esc(x.evidence)}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="empty">${v.violations.length ? "No violations for this rule." : "No architecture violations detected."}</td></tr>`;
+  document.getElementById("v-hint").innerHTML = `${UI.plural(v.violations.length, "violation")} in the latest ecosystem run` +
+    (v.source === "markdown" ? " (read from the markdown report; the next run also writes JSON)" : v.generated_at ? `, ${UI.ago(v.generated_at)}` : "") +
+    ` · <a href="/ui/reports/architecture_violations.md">report</a>`;
+}
+
+function renderExtraction() {
+  const x = data.extraction;
+  const tbody = document.querySelector("#extraction tbody");
+  if (!x) { tbody.innerHTML = `<tr><td colspan="6" class="empty">No extraction report yet.</td></tr>`; return; }
+  tbody.innerHTML = x.candidates.length ? x.candidates.map((c) => `<tr>
+      <td><b>${esc(c.title || c.id)}</b><div class="muted mono">${esc(c.id)} · ${esc(c.domain || "")} · ${esc(c.priority || "")} · ${UI.plural(c.units, "unit")}</div></td>
+      <td class="num">${c.score != null ? Number(c.score).toFixed(2) : "—"}</td>
+      <td class="mono">${esc(c.library || "")}${c.owner_repo ? `<div class="muted">owner: ${esc(c.owner_repo)}</div>` : ""}</td>
+      <td>${esc(c.repos.join(", "))}</td>
+      <td class="ev">${esc(c.rationale || "")}${c.risks ? `<div class="muted">Risks: ${esc(Array.isArray(c.risks) ? c.risks.join("; ") : c.risks)}</div>` : ""}</td>
+      <td>${c.approved ? `<span class="status ok">approved</span><div class="muted mono">${esc(c.rule_name)}</div>`
+        : `<button class="primary" data-approve="${esc(c.id)}" title="Adds rule ${esc(c.rule_name)}">Approve</button>`}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty">No extraction candidates exceeded the threshold in the latest run${x.generated_at ? ` (${UI.ago(x.generated_at)})` : ""}.</td></tr>`;
+}
+
+function renderProposals() {
+  const ps = data.proposals;
+  const tbody = document.querySelector("#proposals tbody");
+  if (!ps) { tbody.innerHTML = `<tr><td colspan="5" class="empty">No pattern report yet.</td></tr>`; return; }
+  tbody.innerHTML = ps.length ? ps.map((x) => `<tr><td class="mono">${esc(x.name)}</td>
+      <td>${esc(x.status || "")}</td><td>${esc(x.domain || "")}</td><td>${esc(x.recommendation || "")}</td><td class="ev">${esc(x.risk || "")}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="empty">No proposals.</td></tr>`;
+  const pc = data.proposal_counts;
+  document.getElementById("p-hint").textContent = `${UI.plural(ps.length, "proposal")}` + (Object.keys(pc).length ? ` · ${Object.entries(pc).map(([k, n]) => `${n} ${k}`).join(", ")}` : "");
+}
+
+function render(d) {
+  data = d;
+  UI.setParams({ rule });
+  renderViolations(); renderExtraction(); renderProposals();
+  const vc = d.violations ? d.violations.violations.length : null;
+  const xc = d.extraction ? d.extraction.candidates.filter((c) => !c.approved).length : null;
+  document.getElementById("sub").textContent = [
+    vc != null ? UI.plural(vc, "violation") : null,
+    xc != null ? `${int(xc)} candidate${xc === 1 ? "" : "s"} awaiting approval` : null,
+    d.proposals ? UI.plural(d.proposals.length, "pattern proposal") : null,
+  ].filter(Boolean).join(" · ") || "No reports yet.";
+}
+
+document.getElementById("v-chips").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-rule]");
+  if (!b) return;
+  rule = b.dataset.rule;
+  UI.setParams({ rule });
+  renderViolations();
+});
+document.getElementById("extraction").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-approve]");
+  if (!b) return;
+  const flash = document.getElementById("x-flash");
+  b.disabled = true;
+  try {
+    const out = await UI.send("POST", `/audit/extraction/${encodeURIComponent(b.dataset.approve)}/approve`);
+    flash.innerHTML = `<span class="status ok">${out.already_present ? "Rule already present" : "Added rule"} <span class="mono">${esc(out.rule_name)}</span> to ${esc(out.rules_path)}</span>`;
+    UI.load("/audit/architecture.json", render, document.getElementById("sub"));
+  } catch (err) {
+    b.disabled = false;
+    flash.innerHTML = `<span class="err">Not approved: ${esc(err.message)}</span>`;
+  }
+});
+UI.load("/audit/architecture.json", render, document.getElementById("sub"));
+</script>
+</body>
+</html>
