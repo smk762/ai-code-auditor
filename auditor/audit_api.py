@@ -1923,7 +1923,7 @@ def set_agent_pack_status(pack_id: str, request: _PackStatusRequest) -> JSONResp
     if pack_rag_ingest_enabled():
         # Refresh the slim RAG doc so retrieval reflects the new status (best-effort).
         try:
-            ingest_packs_to_rag([AgentCodingPack.from_dict(updated)])
+            ingest_packs_to_rag([AgentCodingPack.from_dict(updated)], output_dir=_output_dir())
         except Exception as exc:
             logger.warning("pack status RAG refresh failed for %s: %s", pack_id, exc)
     return JSONResponse({

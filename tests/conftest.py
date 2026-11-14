@@ -25,6 +25,12 @@ def _isolated_spend_ledger(tmp_path_factory: pytest.TempPathFactory, monkeypatch
 
 
 @pytest.fixture(autouse=True)
+def _isolated_rag_ledger(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never read or write the real record of RAG doc ids (reports/rag_ingested.json)."""
+    monkeypatch.setenv("AI_AUDIT_RAG_LEDGER", str(tmp_path_factory.mktemp("rag") / "rag_ingested.json"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """auditor.env_loader pulls the developer's real .env into os.environ; tests must
     see built-in defaults, not whichever provider/model is configured locally."""
