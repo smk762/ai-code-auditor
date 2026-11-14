@@ -122,6 +122,8 @@ The pipeline is notes → drafts → check-and-fix → citation pass, all throug
 
 Output is `reports/wiki/<repo>/*.md` plus `INDEX.json` (source SHA, page tree, per-page citation stats, dropped claims, and content hashes of the cited files), and `reports/wiki/INDEX.json` for all repos. `_raw/` keeps the text from before the citation pass.
 
+Viewer (`auditor/ui_wiki.py`): `/ui/wiki` lists the built repos, and `/ui/wiki/{repo}/{page}` renders a page server-side with a sidebar of the repo's pages. Citations become links to the GitHub blob at the SHA the page was built from (the repo's `subpath` is prefixed). Mermaid blocks are shown as source. The behind badge compares the built SHA with the `dev` tip in `merge_poll_state.json`: it shows a commit count when the local mirror has the tip, otherwise just "behind dev". JSON: `/audit/wiki`, `/audit/wiki/{repo}`, `/audit/wiki/{repo}/{page}`. Page files are served only from the repo's own `INDEX.json` entries.
+
 Batch `custom_id`s hash the exact request params, and results are stored as they are harvested, so reruns and crashes never pay twice. Each stage is priced first and checked against the `wiki` lane (default $30/month, `AI_AUDIT_BUDGET_WIKI_USD`). Only Python/JS/TS sources are read, so repos made of YAML, Terraform or Jinja get no pages yet.
 
 ## RAG ingest integration

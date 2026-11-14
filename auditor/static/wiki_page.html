@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title><!--#title--></title>
+<link rel="stylesheet" href="/audit/static/ui.css">
+<script src="/audit/static/ui.js"></script>
+<style>
+  .wiki { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: start; }
+  .wiki aside { position: sticky; top: 12px; }
+  .wiki aside h2 { font-size: 13px; margin: 0 0 6px; }
+  .wiki aside h2 a { color: var(--text-primary); text-decoration: none; }
+  .wiki aside ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .wiki aside li a { display: block; padding: 5px 8px; border-radius: 6px; color: var(--text-secondary); text-decoration: none; font-size: 13px; }
+  .wiki aside li a:hover { background: var(--surface-2); color: var(--text-primary); }
+  .wiki aside li a[aria-current="page"] { background: var(--surface-2); color: var(--text-primary); font-weight: 600; }
+  .wiki aside .back { display: block; margin-top: 12px; font-size: 12px; }
+  .wiki .meta { font-size: 12px; color: var(--text-secondary); margin-bottom: 10px; }
+  .wiki .prose { max-width: none; }
+  .wiki .prose a code { background: none; padding: 0; font-size: 11px; color: var(--link); }
+  .wiki .prose pre code.language-mermaid::before { content: "diagram source (mermaid)"; display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
+  .wiki footer { margin-top: 14px; font-size: 12px; color: var(--text-muted); }
+  .wiki footer details { margin-top: 6px; }
+  .wiki footer summary { cursor: pointer; color: var(--text-secondary); }
+  .wiki footer ul.dropped { margin: 6px 0 0; padding-left: 18px; }
+  .wiki footer ul.dropped li { margin-bottom: 4px; }
+  .ok-badge { color: var(--ok); } .warn-badge { color: var(--warn); }
+  @media (max-width: 800px) { .wiki { grid-template-columns: 1fr; } .wiki aside { position: static; } }
+</style>
+</head>
+<body>
+<!--#nav-->
+<main>
+  <div class="wiki">
+    <aside class="card" aria-label="Pages">
+      <h2><a href="/ui/wiki"><!--#repo--></a></h2>
+      <ul><!--#pages--></ul>
+      <a class="back" href="/ui/wiki">All repos</a>
+    </aside>
+    <div>
+      <div class="meta"><!--#meta--></div>
+      <article class="card prose"><!--#content--></article>
+      <footer><!--#foot--></footer>
+    </div>
+  </div>
+</main>
+</body>
+</html>
