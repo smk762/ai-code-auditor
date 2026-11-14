@@ -46,6 +46,8 @@ def _isolate_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AI_AUDIT_REST_TZ", raising=False)
     # nor the host's rag-chat API key (cli repair sends it as a Bearer token)
     monkeypatch.delenv("RAG_CHAT_API_KEY", raising=False)
+    # nor the host's audit API token (it turns on auth for every mutating route)
+    monkeypatch.delenv("AI_AUDIT_API_TOKEN", raising=False)
 
 
 @pytest.fixture

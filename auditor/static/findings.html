@@ -128,7 +128,7 @@ function agentPrompt(packs, total) {
   const lines = [
     `Fix ${packs.length === 1 ? "this finding" : `these ${packs.length} findings`} from the ai-code-auditor. ${packs.length === 1 ? "It has" : "Each has"} an agent coding pack with the code, the recommendation and acceptance criteria.`,
     ``,
-    `Audit API: ${base} (status changes and validate_patch need ${auth}).`,
+    `Audit API: ${base}. Status changes and validate_patch need ${auth}. The token is in your environment (Claude Code sets it from ~/.claude/settings.json); if it is empty or you get a 401, ask the user for it. Don't search .env files for it.`,
     repos.length === 1 ? `Repo: ${repos[0]}. Work on a branch cut from origin/dev.`
                        : `Repos: ${repos.join(", ")}. One branch per repo, cut from origin/dev; do one repo at a time.`,
     ``,
@@ -146,8 +146,27 @@ function agentPrompt(packs, total) {
   return lines.join("\n");
 }
 
-async function showPrompt(text, label) {
+// What the prompt box shows: "all" (the filtered open packs) or one pack id; null when hidden.
+let shownPrompt = null;
+
+// Keep an open prompt box in step with the filters; the clipboard is only written on a click.
+function refreshPrompt() {
+  if (!shownPrompt) return;
   const box = document.getElementById("prompt-box"), ta = document.getElementById("prompt-text");
+  const pk = shownPrompt === "all" ? null : rowPacks.get(shownPrompt);
+  const text = shownPrompt === "all"
+    ? (openPacks.list.length ? agentPrompt(openPacks.list, openPacks.total) : "")
+    : (pk ? agentPrompt([pk], 1) : "");
+  if (text === ta.value) return;
+  if (!text) { box.hidden = true; ta.value = ""; shownPrompt = null; }
+  else ta.value = text;
+  document.getElementById("flash").innerHTML = text
+    ? `<span class="status warn">Filters changed: prompt updated, not copied yet</span>` : "";
+}
+
+async function showPrompt(text, label, which) {
+  const box = document.getElementById("prompt-box"), ta = document.getElementById("prompt-text");
+  shownPrompt = which;
   box.hidden = false;
   ta.value = text;
   ta.focus(); ta.select();
@@ -191,6 +210,7 @@ function render(d) {
   copyAll.textContent = ps.open_total ? `Copy agent prompt (${int(ps.open_total)} open ${ps.open_total === 1 ? "pack" : "packs"})` : "Copy agent prompt";
   document.getElementById("pack-summary").textContent = PACK_STATUSES.filter((s) => ps.by_status[s])
     .map((s) => `${int(ps.by_status[s])} ${s === "none" ? "without a pack" : s.replace("_", " ")}`).join(" · ");
+  refreshPrompt();
 
   const what = { all: "in this run", new: "new since the previous run", fixed: "fixed since the previous run" }[state.change];
   document.getElementById("count").textContent = d.filtered_total > d.findings.length
@@ -211,12 +231,12 @@ function load() {
 }
 
 document.getElementById("copy-all").addEventListener("click", () => {
-  if (openPacks.list.length) showPrompt(agentPrompt(openPacks.list, openPacks.total), `a prompt for ${UI.plural(openPacks.list.length, "pack")}`);
+  if (openPacks.list.length) showPrompt(agentPrompt(openPacks.list, openPacks.total), `a prompt for ${UI.plural(openPacks.list.length, "pack")}`, "all");
 });
 document.querySelector("#table tbody").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-copy]");
   const pk = b && rowPacks.get(b.dataset.copy);
-  if (pk) showPrompt(agentPrompt([pk], 1), pk.id);
+  if (pk) showPrompt(agentPrompt([pk], 1), pk.id, pk.id);
 });
 for (const k of ["repo", "severity", "source", "type", "pack_status"]) els[k].addEventListener("change", () => { state[k] = els[k].value; load(); });
 let typing = null;
