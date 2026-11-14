@@ -19,6 +19,7 @@ GET  /audit/usage                    Claude API usage dashboard (+ /audit/usage.
 GET  /ui/runs, /ui/runs/{run_id}      Runs list and run summary pages (live via the SSE stream)
 GET  /ui/findings                     Findings page: severity × repo matrix, filters, new/fixed
 GET  /ui/reports/{name}               A markdown report from output_dir, rendered server-side
+GET  /ui/pack-savings                 Pack token-savings page (data: /audit/pack-savings.json)
 GET  /audit/runs.json                 All pipelines' runs + facets (pipeline, status filters)
 GET  /audit/runs/{run_id}/summary.json  Run summary with findings delta vs the previous run
 GET  /audit/findings.json             Filtered findings + severity × repo matrix for a run
@@ -623,6 +624,12 @@ def get_run_page(run_id: str) -> HTMLResponse:
 def get_findings_page() -> HTMLResponse:
     """Findings: severity × repo matrix and a filterable table, with new/fixed since last run."""
     return HTMLResponse(render_page("findings.html", "/ui/findings"))
+
+
+@app.get("/ui/pack-savings", response_class=HTMLResponse)
+def get_pack_savings_page() -> HTMLResponse:
+    """Estimated token savings from agent packs: headline numbers, trend, per-repo table."""
+    return HTMLResponse(render_page("pack_savings.html", "/ui/pack-savings"))
 
 
 @app.get("/ui/reports/{name}", response_class=HTMLResponse)
