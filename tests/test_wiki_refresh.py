@@ -65,15 +65,15 @@ def test_plan_and_incremental_rebuild(eco) -> None:
     assert sorted(rec["builds"]["internal"]["repos"]["svc"]["pages_written"]) == ["architecture", "integration", "interfaces", "overview"]
     assert rf.plan(out).skipped["svc/internal"] == "up to date with the mirror"
 
-    # a commit that changes only other.py: the mirror moved, but a recent build waits a week
-    (repo / "other.py").write_text(OTHER + "\n\ndef more():\n    return 3\n")
+    # a commit that changes the lines the interfaces page cites (other.py L1-L2)
+    (repo / "other.py").write_text(OTHER.replace("return 2", "return 20"))
     _commit(repo, "other")
     assert rf.plan(out).skipped["svc/internal"].startswith("built 0d ago")
     before = {p["slug"]: p for p in json.loads((out / "wiki" / "svc" / "INDEX.json").read_text())["pages"]}
 
     _age_index(out, 8)
     p = rf.plan(out)
-    assert [(i.pages, i.reasons) for i in p.items] == [(["interfaces"], {"interfaces": "cited file changed: other.py"})]
+    assert [(i.pages, i.reasons) for i in p.items] == [(["interfaces"], {"interfaces": "cited lines changed: other.py"})]
     calls = len(fake.batches_created)
     rec = rf.refresh(out, runner=Runner(out, client=fake, poll_s=0), publish=False)
     assert rec["builds"]["internal"]["repos"]["svc"]["pages_written"] == ["interfaces"]
@@ -162,6 +162,83 @@ def test_public_variant_only_where_needed(eco, monkeypatch, tmp_path) -> None:
     assert [i.variant for i in rf.plan(out).items] == ["internal", "public"]  # refused last time: build it
     (out / "wiki_public_report.json").unlink()
     assert [i.variant for i in rf.plan(out, all_public=True).items] == ["internal", "public"]
+
+
+def test_only_cited_lines_count(eco) -> None:
+    out, repo = eco
+    rf.refresh(out, runner=Runner(out, client=FakeClient(reply=reply), poll_s=0), publish=False)
+    # appending code after the cited lines: the mirror moves, but no page is stale
+    (repo / "other.py").write_text(OTHER + "\n\ndef more():\n    return 3\n")
+    _commit(repo, "append")
+    _age_index(out, 8)
+    assert rf.plan(out).skipped["svc/internal"] == "mirror moved, but no cited file changed"
+    # inserting lines above them shifts the cited range: stale, or the line numbers would be wrong
+    (repo / "other.py").write_text("# header\n" + (repo / "other.py").read_text())
+    _commit(repo, "shift")
+    assert rf.plan(out).items[0].reasons == {"interfaces": "cited lines changed: other.py"}
+
+
+def test_old_entries_get_ranges_from_git_history(eco) -> None:
+    out, repo = eco
+    rf.refresh(out, runner=Runner(out, client=FakeClient(reply=reply), poll_s=0), publish=False)
+    p = out / "wiki" / "svc" / "INDEX.json"
+    idx = json.loads(p.read_text())
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    for page in idx["pages"]:
+        page.pop("cited_ranges", None)  # as written before ranges were recorded
+        page["source_sha"] = head
+    p.write_text(json.dumps(idx))
+    (repo / "other.py").write_text(OTHER + "\n\ndef more():\n    return 3\n")  # outside the cited lines
+    _commit(repo, "append")
+    _age_index(out, 8)
+    assert rf.plan(out).skipped["svc/internal"] == "mirror moved, but no cited file changed"
+    (repo / "other.py").write_text(OTHER.replace("return 2", "return 20"))
+    _commit(repo, "edit")
+    assert rf.plan(out).items[0].reasons == {"interfaces": "cited lines changed: other.py"}
+
+
+def test_old_entries_fall_back_to_file_hashes(eco) -> None:
+    out, repo = eco
+    rf.refresh(out, runner=Runner(out, client=FakeClient(reply=reply), poll_s=0), publish=False)
+    p = out / "wiki" / "svc" / "INDEX.json"
+    idx = json.loads(p.read_text())
+    for page in idx["pages"]:
+        page.pop("cited_ranges", None)
+        page["source_sha"] = "0" * 40  # history unavailable: whole-file hashes are all there is
+    p.write_text(json.dumps(idx))
+    (repo / "other.py").write_text(OTHER + "\n\ndef more():\n    return 3\n")
+    _commit(repo, "append")
+    _age_index(out, 8)
+    assert rf.plan(out).items[0].reasons == {"interfaces": "cited file changed: other.py"}
+
+
+def test_select_within_budget_prefers_what_reaches_the_site() -> None:
+    I = rf.PlanItem
+    items = [I("argus-a", "internal", ["overview"], {}), I("argus-b", "internal", ["overview"], {}),
+             I("argus-c", "public", ["overview"], {}), I("argus-c", "internal", ["overview"], {}),
+             I("composer", "internal", ["overview"], {})]
+    est = {(i.repo, i.variant): 1.0 for i in items}
+    built = {("argus-a", "internal"): "2026-11-01", ("argus-b", "internal"): "2026-10-01",
+             ("argus-c", "public"): "2026-11-02", ("argus-c", "internal"): "2026-09-01", ("composer", "internal"): "2026-08-01"}
+    live = {"argus-a", "argus-b", "argus-c"}
+    chosen, deferred = rf.select_within_budget(items, est, 3.0, live, built)
+    # tier 0: argus-c public (live via its variant), argus-a/b internal (live, no public variant): oldest first
+    assert [(i.repo, i.variant) for i in chosen] == [("argus-b", "internal"), ("argus-a", "internal"), ("argus-c", "public")]
+    assert [(i.repo, i.variant) for i in deferred] == [("composer", "internal"), ("argus-c", "internal")]  # oldest first
+    # a big item is skipped, a smaller one after it still fits
+    est[("argus-b", "internal")] = 5.0
+    chosen, _ = rf.select_within_budget(items, est, 3.0, live, built)
+    assert ("argus-b", "internal") not in [(i.repo, i.variant) for i in chosen] and len(chosen) == 3
+
+
+def test_refresh_defers_instead_of_failing_when_over_budget(eco, monkeypatch) -> None:
+    out, _repo = eco
+    monkeypatch.setenv("AI_AUDIT_BUDGET_WIKI_USD", "0.0001")
+    fake = FakeClient(reply=reply)
+    rec = rf.refresh(out, runner=Runner(out, client=fake, poll_s=0), publish=False)
+    assert [d["repo"] for d in rec["deferred"]] == ["svc"] and rec["builds"] == {}
+    assert not fake.batches_created
+    assert json.loads((out / "wiki" / "_refresh.json").read_text())["deferred"][0]["estimate_usd"] > 0
 
 
 def test_refresh_ingests_rebuilt_internal_pages(eco, monkeypatch) -> None:
