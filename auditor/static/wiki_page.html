@@ -26,11 +26,22 @@
   .wiki footer ul.dropped { margin: 6px 0 0; padding-left: 18px; }
   .wiki footer ul.dropped li { margin-bottom: 4px; }
   .ok-badge { color: var(--ok); } .warn-badge { color: var(--warn); }
-  .ask { margin-top: 14px; }
-  .ask textarea { width: 100%; resize: vertical; font: inherit; font-size: 14px; }
-  .ask .row { display: flex; gap: 10px; align-items: center; margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
-  .ask #ask-answer { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
-  .ask #ask-answer a code { background: none; padding: 0; font-size: 11px; color: var(--link); }
+  .wiki aside .ask-open { width: 100%; margin-top: 12px; }
+  dialog.ask { border: 1px solid var(--border); border-radius: 10px; padding: 0; width: min(760px, calc(100vw - 32px));
+    max-height: min(85vh, 900px); background: var(--surface-1); color: var(--text-primary); }
+  dialog.ask[open] { display: flex; flex-direction: column; }
+  dialog.ask::backdrop { background: rgba(0, 0, 0, .35); }
+  dialog.ask header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 18px 0; }
+  dialog.ask h2 { font-size: 15px; margin: 0; }
+  dialog.ask .close { font: inherit; font-size: 20px; line-height: 1; background: none; border: 0; color: var(--text-secondary); cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+  dialog.ask .close:hover { background: var(--surface-2); color: var(--text-primary); }
+  dialog.ask .body { padding: 8px 18px 16px; overflow-y: auto; }
+  dialog.ask .hint { font-size: 12px; color: var(--text-muted); margin: 0 0 10px; }
+  dialog.ask textarea { width: 100%; resize: vertical; font: inherit; font-size: 14px; }
+  dialog.ask .row { display: flex; gap: 10px; align-items: center; margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
+  dialog.ask .kbd { margin-left: auto; color: var(--text-muted); }
+  dialog.ask #ask-answer { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; max-width: none; }
+  dialog.ask #ask-answer a code { background: none; padding: 0; font-size: 11px; color: var(--link); }
   .regen { margin-left: 10px; display: inline-flex; gap: 8px; align-items: center; }
   .regen button { font-size: 12px; padding: 2px 10px; }
   @media (max-width: 800px) { .wiki { grid-template-columns: 1fr; } .wiki aside { position: static; } }
@@ -43,6 +54,7 @@
     <aside class="card" aria-label="Pages">
       <h2><a href="/ui/wiki"><!--#repo--></a></h2>
       <ul><!--#pages--></ul>
+      <button class="secondary ask-open" id="ask-open" type="button" aria-haspopup="dialog">Ask this repo…</button>
       <a class="back" href="/ui/wiki">All repos</a>
     </aside>
     <div>
@@ -52,18 +64,21 @@
           <span id="regen-status" role="status"></span></span></div>
       <article class="card prose"><!--#content--></article>
       <footer><!--#foot--></footer>
-      <section class="card ask" aria-labelledby="ask-h">
-        <h2 id="ask-h">Ask this repo</h2>
-        <p class="hint">Answered from this repo's wiki, file notes and structure facts by the auditor's model. Claims whose citations don't check out are removed. Costs a fraction of a cent.</p>
-        <form id="ask-form">
-          <textarea id="ask-q" rows="2" maxlength="2000" placeholder="e.g. Where are uploads validated, and what limits apply?" aria-label="Question"></textarea>
-          <div class="row"><button class="primary" type="submit">Ask</button><span id="ask-status" role="status"></span></div>
-        </form>
-        <div id="ask-answer" class="prose" hidden></div>
-      </section>
     </div>
   </div>
 </main>
+<dialog class="ask" id="ask-dlg" aria-labelledby="ask-h">
+  <header><h2 id="ask-h">Ask <!--#repo--></h2>
+    <button class="close" type="button" id="ask-close" aria-label="Close">&times;</button></header>
+  <div class="body">
+    <p class="hint">Answered from this repo's wiki, file notes and structure facts by the auditor's model. Claims whose citations don't check out are removed. Costs a fraction of a cent.</p>
+    <form id="ask-form">
+      <textarea id="ask-q" rows="3" maxlength="2000" placeholder="e.g. Where are uploads validated, and what limits apply?" aria-label="Question"></textarea>
+      <div class="row"><button class="primary" type="submit">Ask</button><span id="ask-status" role="status"></span><span class="kbd">Ctrl+Enter to ask · Esc to close</span></div>
+    </form>
+    <div id="ask-answer" class="prose" hidden></div>
+  </div>
+</dialog>
 <script>
 (() => {
   const btn = document.getElementById("regen"), status = document.getElementById("regen-status");
@@ -105,6 +120,11 @@
   const form = document.getElementById("ask-form"), q = document.getElementById("ask-q");
   const status = document.getElementById("ask-status"), answer = document.getElementById("ask-answer");
   const repo = document.getElementById("regen").dataset.repo;
+  const dlg = document.getElementById("ask-dlg");
+  // The dialog keeps the last question and answer, so reopening it picks up where you left off.
+  document.getElementById("ask-open").addEventListener("click", () => { dlg.showModal(); q.focus(); });
+  document.getElementById("ask-close").addEventListener("click", () => dlg.close());
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });  // backdrop click
   q.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) form.requestSubmit(); });
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
