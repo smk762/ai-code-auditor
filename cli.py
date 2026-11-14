@@ -213,6 +213,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Set lifecycle status on --id PACK_ID",
     )
     packs.add_argument("--note", default="", help="Optional note with --set-status")
+    packs.add_argument(
+        "--dedupe",
+        action="store_true",
+        help="Close open packs that repeat another (same file, reworded title) as wontfix 'duplicate of <id>'",
+    )
+    packs.add_argument("--dry-run", action="store_true", help="With --dedupe: list duplicates, change nothing")
 
     merge = sub.add_parser(
         "merge-refresh",
@@ -1041,6 +1047,17 @@ def main() -> None:
                     f"~{bundle['approx_tokens']}/{bundle['token_budget']} tokens "
                     f"truncated={bundle['truncated']} — GET {bundle['discovery']['bundle']}"
                 )
+        elif args.dedupe:
+            from auditor.agent_pack import dedupe_packs
+
+            dupes = dedupe_packs(out, dry_run=args.dry_run, public_base_url=public_base_url())
+            if args.json:
+                print(json.dumps({"dry_run": args.dry_run, "duplicates": dupes}, indent=2))
+            else:
+                for d in dupes:
+                    print(f"{d['id']} → duplicate of {d['duplicate_of']} ({d['keeper_status']}): {d['title']}")
+                verb = "would close" if args.dry_run else "closed"
+                print(f"{verb} {len(dupes)} duplicate pack(s) as wontfix")
         elif args.set_status:
             from auditor.agent_pack import refresh_pack_rag, update_pack_status
 

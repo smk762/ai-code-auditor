@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 
 from auditor import ui
 from auditor.db import AuditRun, FindingRecord, RepoRun, as_utc
+from auditor.finding_match import reworded_score
 from auditor.run_views import SUCCESS_STATUSES, repo_run_to_dict, run_to_dict
 
 SEVERITIES = ui.SEVERITIES
@@ -30,8 +31,9 @@ BASELINE_LOOKBACK = 50
 DELTA_LIST_LIMIT = 200
 FINDINGS_LIMIT = 500
 PROMPT_PACK_LIMIT = 200  # open packs listed for the "copy agent prompt" handoff
-# Lifecycle order: when one finding has several packs, the furthest-along one is shown.
-PACK_STATUS_ORDER = ("resolved", "wontfix", "in_progress", "claimed", "open")
+# When one finding has several packs, active work is shown first: a closed twin is either a
+# duplicate (wontfix "duplicate of …") or a fix the finding came back after (resolved).
+PACK_STATUS_ORDER = ("in_progress", "claimed", "open", "wontfix", "resolved")
 
 # Markdown reports each pipeline writes to output_dir (overwritten by the next run).
 REPORTS_BY_PIPELINE: dict[str, list[str]] = {
@@ -48,33 +50,16 @@ REPORT_SLACK = timedelta(minutes=10)
 Key = tuple[str, str, str, str]
 
 
-# Reworded-finding match (second pass); thresholds measured on real nightly runs.
-REWORD_JACCARD = 0.3
-REWORD_JACCARD_NEAR = 0.2
-REWORD_NEAR_LINES = 10
-_STOPWORDS = frozenset(
-    "the and for with when that from into not are its but can any has was via all only which this "
-    "than then their they use uses using without instead".split()
-)
-
-
 def _key(f: dict[str, Any]) -> Key:
     return (f["repo"], f["file_path"], f["type"], f["title"])
-
-
-def _tokens(title: str) -> frozenset[str]:
-    return frozenset(re.findall(r"[a-z0-9_]{3,}", title.lower())) - _STOPWORDS
 
 
 def _reworded(a: dict[str, Any], b: dict[str, Any]) -> float:
     """Title similarity if a and b look like the same issue reworded, else 0."""
     if (a["repo"], a["file_path"], a["type"]) != (b["repo"], b["file_path"], b["type"]):
         return 0.0
-    ta, tb = _tokens(a["title"]), _tokens(b["title"])
-    j = len(ta & tb) / max(1, len(ta | tb))
-    if j >= REWORD_JACCARD or (j >= REWORD_JACCARD_NEAR and abs(a["line"] - b["line"]) <= REWORD_NEAR_LINES):
-        return j
-    return 0.0
+    # lines are compared even when 0 here, as before: both runs record the same line scheme
+    return reworded_score(a["title"], b["title"], a["line"] + 1, b["line"] + 1)
 
 
 def _display_path(repo: str, path: str) -> str:
@@ -276,8 +261,9 @@ def _pack_lookup(output_dir: str | Path) -> dict[tuple[str, str, str], dict[str,
 
     Every pipeline that stores findings also emits a pack per finding with the same repo, path
     and title, so that key links them. Where several packs share it (a nightly and a diff-audit
-    pack for the same issue), the furthest along the lifecycle wins: a claimed pack is the one
-    to show, not a fresh open twin.
+    pack for the same issue), ``PACK_STATUS_ORDER`` picks one: a claimed pack over its open
+    twin, and an open pack over a closed one. A pack closed as a duplicate (``duplicate_of``) is shown as its keeper,
+    since the finding's work continues there.
     """
     from auditor.agent_pack import index_path
 
@@ -286,11 +272,13 @@ def _pack_lookup(output_dir: str | Path) -> dict[tuple[str, str, str], dict[str,
     except (OSError, ValueError):
         return {}
     rank = {st: i for i, st in enumerate(PACK_STATUS_ORDER)}
+    by_id = {e.get("id"): e for e in entries}
     out: dict[tuple[str, str, str], dict[str, Any]] = {}
     for e in entries:
         if e.get("layer") == "world_model" or not e.get("title"):
             continue
         k = (str(e.get("repo") or ""), str(e.get("file_path") or ""), str(e["title"]))
+        e = by_id.get(e.get("duplicate_of")) or e  # a closed duplicate stands for its keeper
         status = str(e.get("status") or "open")
         cur = out.get(k)
         if cur is None or rank.get(status, len(rank)) < rank.get(cur["status"], len(rank)):

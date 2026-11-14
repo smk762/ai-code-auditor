@@ -172,6 +172,13 @@ def test_findings_link_packs_and_hand_off_open_ones(history, tmp_path) -> None:
     assert "pack" not in ui_runs.findings_data("x-2")["findings"][0]  # no output_dir: no lookup
 
 
+def test_findings_show_a_closed_duplicate_as_its_keeper(history, tmp_path) -> None:
+    dup = {**_pk("pack-dup", "fresh", status="wontfix"), "duplicate_of": "pack-keeper"}
+    out = _pack_index(tmp_path, [dup, _pk("pack-keeper", "fresh, reworded", status="claimed")])
+    packs = {f["title"]: f["pack"] for f in ui_runs.findings_data("x-2", output_dir=out)["findings"]}
+    assert packs["fresh"] == {"id": "pack-keeper", "status": "claimed", "kind": "nightly"}
+
+
 def test_findings_without_pack_index(history, tmp_path) -> None:
     d = ui_runs.findings_data("x-2", output_dir=tmp_path)
     assert all(f["pack"] is None for f in d["findings"])
