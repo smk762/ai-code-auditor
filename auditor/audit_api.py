@@ -22,6 +22,7 @@ GET  /ui/reports/{name}               A markdown report from output_dir, rendere
 GET  /ui/pack-savings                 Pack token-savings page (data: /audit/pack-savings.json)
 GET  /ui/repos                        Repo summary cards (data: /audit/repos/summary.json)
 GET  /ui/packs, /ui/packs/{id}        Packs board and pack page (data: /audit/packs/board.json)
+GET  /ui/wiki, /ui/wiki/{repo}/{page}  Generated wiki (data: /audit/wiki[/{repo}[/{page}]])
 GET  /ui/night                        Night summary (data: /audit/night.json?run=)
 GET  /ui/architecture                 Architecture & patterns (data: /audit/architecture.json)
 POST /audit/extraction/{id}/approve   Approve an extraction candidate (adds a rule; auth)
@@ -660,6 +661,69 @@ def get_repos_summary_json() -> JSONResponse:
     from auditor.ui_repos import repos_data
 
     return JSONResponse(repos_data(_output_dir()))
+
+
+@app.get("/ui/wiki", response_class=HTMLResponse)
+def get_wiki_home() -> HTMLResponse:
+    """Generated wiki: every built repo with freshness, and repos without a wiki."""
+    from auditor.ui_wiki import render_wiki_home
+
+    return HTMLResponse(render_wiki_home(_output_dir()))
+
+
+@app.get("/ui/wiki/{repo}")
+def get_wiki_repo_page(repo: str):
+    """Redirect to the repo's first wiki page."""
+    from fastapi.responses import RedirectResponse
+
+    from auditor.ui_wiki import repo_index
+
+    idx = repo_index(_output_dir(), repo)
+    if idx is None or not idx.get("pages"):
+        raise HTTPException(status_code=404, detail=f"No wiki for {repo!r}.")
+    return RedirectResponse(f"/ui/wiki/{repo}/{idx['pages'][0]['slug']}", status_code=307)
+
+
+@app.get("/ui/wiki/{repo}/{page}", response_class=HTMLResponse)
+def get_wiki_page(repo: str, page: str) -> HTMLResponse:
+    """One wiki page, rendered server-side; citations link to GitHub at the built SHA."""
+    from auditor.ui_wiki import render_wiki_page
+
+    out = render_wiki_page(_output_dir(), repo, page)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No wiki page {page!r} for {repo!r}.")
+    return HTMLResponse(out)
+
+
+@app.get("/audit/wiki")
+def get_wiki_json() -> JSONResponse:
+    """Built wiki repos (source SHA, pages, behind-dev state) and enabled repos without one."""
+    from auditor.ui_wiki import wiki_repos
+
+    return JSONResponse(wiki_repos(_output_dir()))
+
+
+@app.get("/audit/wiki/{repo}")
+def get_wiki_repo_json(repo: str) -> JSONResponse:
+    """A repo's wiki INDEX (page tree, citation stats, cited files) plus behind-dev state."""
+    from auditor.ui_wiki import repo_index
+
+    idx = repo_index(_output_dir(), repo)
+    if idx is None:
+        raise HTTPException(status_code=404, detail=f"No wiki for {repo!r}.")
+    return JSONResponse(idx)
+
+
+@app.get("/audit/wiki/{repo}/{page}")
+def get_wiki_page_json(repo: str, page: str) -> JSONResponse:
+    """One page's markdown and metadata (citations as written, unlinked)."""
+    from auditor.ui_wiki import page_data
+
+    d = page_data(_output_dir(), repo, page)
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"No wiki page {page!r} for {repo!r}.")
+    return JSONResponse({"repo": d["repo"], "page": d["page"], "markdown": d["markdown"],
+                         "source_sha": d["index"].get("source_sha")})
 
 
 @app.get("/ui/night", response_class=HTMLResponse)

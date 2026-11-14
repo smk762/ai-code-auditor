@@ -72,7 +72,7 @@ function card(r) {
     (active ? ` · ${int(active)} in flight` : "") + (pk.resolved ? ` <span class="muted">· ${int(pk.resolved)} resolved</span>` : "");
   const viol = r.violations == null ? `<span class="muted">—</span>` : r.violations ? `<a href="/ui/reports/architecture_violations.md">${int(r.violations)}</a>` : "0";
   return `<article class="card repo-card span-4">
-    <h2>${esc(r.name)}${r.github_url ? `<a class="gh" href="${esc(r.github_url)}">GitHub</a>` : ""}</h2>
+    <h2>${esc(r.name)}<span>${r.wiki ? `<a class="gh" href="/ui/wiki/${encodeURIComponent(r.name)}">Wiki</a> ` : ""}${r.github_url ? `<a class="gh" href="${esc(r.github_url)}">GitHub</a>` : ""}</span></h2>
     <dl>
       <dt>${esc((r.tip && r.tip.branch) || "dev")} tip</dt><dd>${tip}</dd>
       <dt>Last audit</dt><dd>${audit}</dd>

@@ -186,6 +186,7 @@ def repos_data(output_dir: str | Path) -> dict[str, Any]:
             "findings": (f or {"by_severity": {}, "total": 0, "new": 0}) if findings else None,
             "packs": {st: packs[repo.name].get(st, 0) for st in PACK_STATUSES} | {"open_high": open_high[repo.name]},
             "violations": violations.get(repo.name, 0) if violations is not None else None,
+            "wiki": (out_dir / "wiki" / repo.name / "INDEX.json").is_file(),
         })
     return {
         "repos": cards,
