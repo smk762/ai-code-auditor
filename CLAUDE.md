@@ -69,7 +69,7 @@ Override any config value with env vars — all keys in `auditor/config.py` have
 
 ## Repo mirrors
 
-Scan set is all `smk762/argus-*` plus `agent-composer` and `voluptas` (Argus consumes both). Paths live under `/home/smk/<name>` or `/home/smk/mirrors/<name>`. `ai-audit rest-run` auto-syncs mirrors and checks out **`dev`** before scanning. Manual sync: `bash scripts/sync_repo_mirrors.sh`. SSHFS mounts are deprecated.
+Scan set is all `smk762/argus-*` plus `agent-composer` and `voluptas` (Argus consumes both). Paths live under `/home/smk/<name>` or `/home/smk/mirrors/<name>`. `ai-audit rest-run` auto-syncs mirrors and checks out **`dev`** before scanning. Manual sync: `bash scripts/sync_repo_mirrors.sh`. A mirror is fast-forwarded. If `dev` was rewritten upstream and every local commit is already there (`git cherry`, or a merge into upstream that would change nothing), the mirror is reset to `origin/dev`: the old tip goes to `backup/pre-sync-<sha>` and uncommitted changes are stashed. A mirror with any unique local commit is left as-is and reported as `fetch+diverged`. SSHFS mounts are deprecated.
 
 Canonical topology: [`ecosystem/ecosystem.md`](ecosystem/ecosystem.md).
 

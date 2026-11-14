@@ -39,8 +39,75 @@ def _branch_exists(repo: Path, ref: str) -> bool:
     return r.returncode == 0
 
 
-def checkout_scan_branch(repo: Path, preferred: str = "dev") -> str:
-    """Fetch + checkout preferred branch (dev), falling back to main/master."""
+def _local_only_commits(repo: Path, local: str, remote: str) -> list[str]:
+    """Non-merge commits on *local* with no patch-equivalent on *remote* (``git cherry`` "+" lines).
+
+    Raises RuntimeError when git can't answer, so a failed check never reads as "nothing unique"."""
+    r = _git(["cherry", remote, local], repo)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or "git cherry failed").strip()[:200])
+    return [ln[2:] for ln in r.stdout.splitlines() if ln.startswith("+ ")]
+
+
+def _contained_upstream(repo: Path, local: str, remote: str) -> bool:
+    """True when merging *local* into *remote* would change nothing (catches squashed rewrites,
+    which ``git cherry`` can't match commit by commit). Conflicts or old git mean False."""
+    r = _git(["merge-tree", "--write-tree", remote, local], repo)
+    if r.returncode != 0:
+        return False
+    merged = (r.stdout.splitlines() or [""])[0].strip()
+    return bool(merged) and merged == _git(["rev-parse", f"{remote}^{{tree}}"], repo).stdout.strip()
+
+
+def _update_local_branch(repo: Path, local: str, remote: str) -> str:
+    """Bring checked-out *local* up to *remote*. Returns ``ff`` / ``reset`` / ``diverged`` /
+    ``checkout-failed``.
+
+    A fast-forward is tried first. If the branches diverged and every local commit already exists
+    upstream (an upstream history rewrite: ``git cherry`` matches rebased commits, and a merge that
+    would change nothing covers squashes), the local branch is
+    reset to *remote*: its old tip is kept on ``backup/pre-sync-<sha>`` and uncommitted changes are
+    stashed, so nothing is lost. If any local commit is unique, the branch is left as-is."""
+    if _git(["rev-parse", "--abbrev-ref", "HEAD"], repo).stdout.strip() != local:
+        logger.warning("%s: could not check out %s; leaving it as-is", repo.name, local)
+        return "checkout-failed"
+    ff = _git(["merge", "--ff-only", remote], repo)
+    if ff.returncode == 0:
+        return "ff"
+    try:
+        unique = _local_only_commits(repo, local, remote)
+    except RuntimeError as exc:
+        logger.warning("could not compare %s %s with %s; leaving it as-is: %s", repo.name, local, remote, exc)
+        return "diverged"
+    if unique and not _contained_upstream(repo, local, remote):
+        logger.warning(
+            "%s: %s has %d commit(s) not on %s (e.g. %s); leaving local branch as-is",
+            repo.name, local, len(unique), remote, unique[0][:12],
+        )
+        return "diverged"
+    old = _git(["rev-parse", "--short=12", local], repo).stdout.strip()
+    backup = f"backup/pre-sync-{old}"
+    if _git(["branch", "-f", backup, local], repo).returncode != 0:
+        logger.warning("%s: could not create %s; not resetting %s", repo.name, backup, local)
+        return "diverged"
+    if _git(["status", "--porcelain"], repo).stdout.strip():
+        st = _git(["stash", "push", "--include-untracked", "-m", f"mirror sync: before reset of {local} ({old})"], repo)
+        if st.returncode != 0:
+            logger.warning("%s: could not stash local changes; not resetting %s", repo.name, local)
+            return "diverged"
+    _git(["reset", "--hard", remote], repo, check=True)
+    logger.warning(
+        "%s: %s was rewritten upstream (all local commits already on %s); reset to it, old tip kept on %s",
+        repo.name, local, remote, backup,
+    )
+    return "reset"
+
+
+def checkout_scan_branch(repo: Path, preferred: str = "dev", report: dict[str, str] | None = None) -> str:
+    """Fetch + checkout preferred branch (dev), falling back to main/master.
+
+    An existing local branch is updated with :func:`_update_local_branch`; its outcome goes in
+    ``report["update"]`` when *report* is given."""
     _git(["fetch", "--all", "--prune"], repo)
     candidates = [preferred, "main", "master"]
     for name in candidates:
@@ -48,19 +115,11 @@ def checkout_scan_branch(repo: Path, preferred: str = "dev") -> str:
         remote = f"origin/{name}"
         if _branch_exists(repo, local) or _branch_exists(repo, remote):
             if _branch_exists(repo, remote):
-                # Create/update local tracking branch from origin without
-                # destroying divergent local commits (never reset --hard).
                 if _branch_exists(repo, local):
                     _git(["checkout", local], repo)
-                    ff = _git(["merge", "--ff-only", remote], repo)
-                    if ff.returncode != 0:
-                        logger.warning(
-                            "ff-only update failed for %s (%s → %s); leaving local branch as-is: %s",
-                            repo.name,
-                            local,
-                            remote,
-                            (ff.stderr or ff.stdout or "diverged")[:200],
-                        )
+                    outcome = _update_local_branch(repo, local, remote)
+                    if report is not None:
+                        report["update"] = outcome
                 else:
                     _git(["checkout", "-B", local, remote], repo)
             else:
@@ -91,9 +150,14 @@ def _sync_mirror_item(
         return MirrorSyncResult(name=name, path="", ok=False, action="skip", error="empty path")
     try:
         if path.exists() and (path / ".git").exists():
-            checked = checkout_scan_branch(path, preferred)
+            rep: dict[str, str] = {}
+            checked = checkout_scan_branch(path, preferred, report=rep)
+            update = rep.get("update", "")
             return MirrorSyncResult(
-                name=name, path=str(path), ok=True, branch=checked, action="fetch"
+                name=name, path=str(path), ok=True, branch=checked,
+                action=f"fetch+{update}" if update else "fetch",
+                error={"diverged": "local commits not upstream; left as-is",
+                       "checkout-failed": f"could not check out {checked}; left as-is"}.get(update, ""),
             )
         if url:
             path.parent.mkdir(parents=True, exist_ok=True)
