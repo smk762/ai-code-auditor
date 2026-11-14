@@ -252,3 +252,26 @@ def test_refresh_ingests_rebuilt_internal_pages(eco, monkeypatch) -> None:
     _age_index(out, 8)
     rec = rf.refresh(out, runner=Runner(out, client=FakeClient(reply=reply), poll_s=0), publish=False)
     assert sent[-1] == {"svc": {"interfaces"}} and rec["rag"]["ingested"] is True
+
+
+def test_failed_page_retry_also_rebuilds_stale_pages(eco) -> None:
+    """A retry of a failed page must not hide a page whose cited lines changed: the build stamps
+    the repo with the mirror's HEAD, so a stale page left out would look up to date for good."""
+    out, repo = eco
+    fake = FakeClient(reply=reply)
+    rf.refresh(out, runner=Runner(out, client=fake, poll_s=0), publish=False)
+    p = out / "wiki" / "svc" / "INDEX.json"
+    idx = json.loads(p.read_text())
+    for e in idx["pages"]:
+        if e["slug"] == "overview":
+            e["stale"] = True  # its last build failed
+    p.write_text(json.dumps(idx))
+    (repo / "other.py").write_text(OTHER.replace("return 2", "return 20"))  # interfaces cites it
+    _commit(repo, "other")
+
+    # built today, so the weekly gate would hold back the stale page on its own
+    item, = rf.plan(out).items
+    assert item.pages == ["interfaces", "overview"]
+    assert item.reasons == {"overview": "last build failed", "interfaces": "cited lines changed: other.py"}
+    rf.refresh(out, runner=Runner(out, client=fake, poll_s=0), publish=False)
+    assert rf.plan(out).skipped["svc/internal"] == "up to date with the mirror"

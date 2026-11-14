@@ -1,11 +1,13 @@
 """Keep the wiki fresh: rebuild only stale pages, at most weekly per repo, then export + publish.
 
-A page is stale when a file it cites changed or disappeared (``cited_files`` in the repo's
-INDEX holds a content hash per cited file). Those are rebuilt only when the mirror moved past
-the SHA the repo was built from, and at most once every ``AI_AUDIT_WIKI_MIN_INTERVAL_DAYS``
-days (default 7) unless forced. Pages whose last build failed, or that don't exist yet, are
-retried on the next run regardless: they aren't waiting on new code. Both
-variants are kept: the internal wiki and, for public argus repos, the public one.
+A page is stale when the text at a line range it cites changed, or the cited file
+disappeared (``cited_ranges`` in the repo's INDEX; older entries fall back to whole-file
+hashes in ``cited_files``). Those are rebuilt only when the mirror moved past the SHA the repo
+was built from, and at most once every ``AI_AUDIT_WIKI_MIN_INTERVAL_DAYS`` days (default 7)
+unless forced. Pages whose last build failed, or that don't exist yet, are retried on the next
+run regardless: they aren't waiting on new code. That retry also rebuilds the repo's other
+stale pages, because the build stamps the repo with the mirror's HEAD. Both variants are kept:
+the internal wiki and, for public argus repos, the public one.
 
 After building, the public bundle is re-exported and published to the private docs repo; the
 publish step only commits when the bundle's content hash changed, and dragonhound-site's pin
@@ -180,14 +182,13 @@ def plan(output_dir: str | Path, repo_names: list[str] | None = None, *, force: 
             if variant == "public" and idx is None and not all_public and repo.name not in refused:
                 result.skipped[key] = "internal pages pass the gate (no public variant needed)"
                 continue
-            if idx is not None and not force:
-                # pages that failed or don't exist yet aren't waiting on new code: retry them now
-                have = {p["slug"]: p for p in idx.get("pages", [])}
-                incomplete = [p for p in pages_mod.PAGES if p not in have or have[p].get("stale")]
-                if incomplete:
-                    result.items.append(PlanItem(repo.name, variant, sorted(incomplete), {
-                        p: "last build failed" if p in have else "no page yet" for p in incomplete}))
-                    continue
+            have = {p["slug"]: p for p in (idx or {}).get("pages", [])}
+            incomplete = any(p not in have or have[p].get("stale") for p in pages_mod.PAGES)
+            # Pages that failed or don't exist yet aren't waiting on new code, so they skip the
+            # mirror and interval gates. stale_pages() still runs over every page: the build
+            # stamps the repo with the mirror's HEAD, so a page whose cited lines changed has to
+            # be rebuilt in the same build or the stamp would hide it.
+            if idx is not None and not force and not incomplete:
                 if head and idx.get("source_sha") == head:
                     result.skipped[key] = "up to date with the mirror"
                     continue

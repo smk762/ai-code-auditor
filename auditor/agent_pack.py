@@ -1345,6 +1345,20 @@ def emit_packs_from_extraction_candidates(
     return packs
 
 
+def refresh_pack_rag(output_dir: str | Path, updated: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Re-send (or retire, once closed) one pack's RAG doc after its status changed.
+
+    Every status writer calls this: the RAG title carries the status, and closed packs must
+    leave the collection. Best-effort; never raises."""
+    if updated is None or not pack_rag_ingest_enabled():
+        return None
+    try:
+        return ingest_packs_to_rag([AgentCodingPack.from_dict(updated)], output_dir=output_dir)
+    except Exception as exc:  # noqa: BLE001 — the status change stands; the next emit re-syncs
+        logger.warning("pack status RAG refresh failed for %s: %s", updated.get("id") or updated.get("work_item_id"), exc)
+        return {"ingested": False, "error": str(exc)[:300]}
+
+
 def ingest_packs_to_rag(packs: list[AgentCodingPack], *, output_dir: str | Path | None = None,
                         full: bool = False) -> dict[str, Any]:
     """Upsert slim pack summaries into the audit RAG collection for agent retrieval.
@@ -1354,7 +1368,7 @@ def ingest_packs_to_rag(packs: list[AgentCodingPack], *, output_dir: str | Path 
     are retired from the collection instead of re-sent, so retrieval surfaces open work. With
     ``full=True`` (``packs`` is every pack on disk), packs sent earlier that no longer exist are
     retired too. The record of what was sent is ``rag_ingested.json`` (scope ``packs``)."""
-    from auditor.rag_client import post_documents, recorded_ids, retire, update_ledger
+    from auditor.rag_client import post_documents, record_sent, recorded_ids, retire
 
     by_repo: dict[str, list[dict[str, Any]]] = {}
     closed: set[str] = set()
@@ -1377,13 +1391,13 @@ def ingest_packs_to_rag(packs: list[AgentCodingPack], *, output_dir: str | Path 
     result: dict[str, Any] = {"ingested": True, "skipped": False, "count": 0, "retired": 0}
     sent: set[str] = set()
     for repo, docs in sorted(by_repo.items()):
-        r = post_documents(docs, tags=["kind:agent_coding_pack", f"repo:{repo}"])
+        # each accepted batch is recorded as it lands, so a later failure can't orphan it
+        r = post_documents(docs, tags=["kind:agent_coding_pack", f"repo:{repo}"],
+                           on_sent=lambda batch: record_sent(output_dir, "packs", batch))
         result["count"] += r.get("count", 0)
         if not r.get("ingested"):
             return {**result, **{k: v for k, v in r.items() if k != "count"}, "ingested": False}
-        ids = {d["id"] for d in docs}
-        update_ledger(output_dir, "packs", add=ids)
-        sent |= ids
+        sent |= {d["id"] for d in docs}
     gone = set(closed)
     if full:
         gone |= recorded_ids(output_dir, "packs") - sent
