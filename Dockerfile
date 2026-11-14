@@ -25,6 +25,7 @@ COPY memory /app/memory
 COPY scripts /app/scripts
 COPY cli.py /app/cli.py
 
-RUN pip install --no-cache-dir .
+# ruff: fatal-only lint of patched files in validate_patch (per-project test venvs are built at runtime)
+RUN pip install --no-cache-dir . ruff
 
 CMD ["python", "pipelines/nightly_repo_audit.py"]

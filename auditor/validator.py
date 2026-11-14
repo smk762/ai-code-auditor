@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import Callable
 
 from auditor.config import RepoConfig
 from auditor.contracts import ValidationResult
@@ -359,3 +360,263 @@ def _npm_summary(lines: list[str]) -> list[str]:
         if re.search(r"(✕|●\s+\S|FAIL\s|\bExpected:\b|\bReceived:\b|Error:)", l):
             out.append(l)
     return out
+
+
+# ── Patch validation (per project, clean tree) ───────────────────────────────
+#
+# validate_patch applies a patch to a clean tree of the repo and validates the projects it touches.
+# A repo can hold several Python projects (agent-composer: rag-chat/, rag-ingest/, … each with
+# its own requirements and tests), so each changed .py file maps to its nearest project root and
+# that project's tests run in a venv built from its declared dependencies, cached by their hash.
+# The package itself is never installed: tests import the patched tree via PYTHONPATH.
+
+_PROJECT_MARKERS = ("pyproject.toml", "setup.py", "requirements.txt")
+_REQUIREMENT_FILES = ("requirements.txt", "requirements-dev.txt", "requirements_dev.txt", "requirements-test.txt")
+_PYPROJECT_EXTRAS = ("dev", "test", "tests")
+# Fatal-only lint (syntax errors, undefined names, bad comparisons): what flake8 calls the "E9,F63,F7,F82"
+# set. Style rules are left out on purpose, and --isolated ignores repo config that would add them.
+_RUFF_SELECT = "E9,F63,F7,F82"
+VENV_BUILD_TIMEOUT_S = 900
+_ENV_GAP_RE = re.compile(r"\b(ModuleNotFoundError|ImportError)\b")
+_RESULT_COUNTS_RE = re.compile(r"\b\d+ (passed|failed)\b")
+_FAILED_ID_RE = re.compile(r"^(?:FAILED|ERROR) (\S+)", re.M)
+
+
+def project_root(tree: Path, rel_path: str) -> Path:
+    """Nearest ancestor of *rel_path* inside *tree* that looks like a Python project, else *tree*."""
+    p = (tree / rel_path).parent
+    tree = tree.resolve()
+    while True:
+        try:
+            p.resolve().relative_to(tree)
+        except ValueError:
+            return tree
+        if any((p / m).exists() for m in _PROJECT_MARKERS) or (p / "tests").is_dir():
+            return p
+        if p.resolve() == tree:
+            return tree
+        p = p.parent
+
+
+def _declared_deps(root: Path) -> tuple[list[Path], list[str]]:
+    """Requirement files and pyproject dependency specs (project + dev/test extras) of *root*."""
+    req_files = [root / n for n in _REQUIREMENT_FILES if (root / n).is_file()]
+    specs: list[str] = []
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file():
+        import tomllib
+
+        try:
+            project = (tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project") or {})
+        except (OSError, ValueError):
+            project = {}
+        specs += [str(s) for s in project.get("dependencies") or []]
+        extras = project.get("optional-dependencies") or {}
+        for name in _PYPROJECT_EXTRAS:
+            specs += [str(s) for s in extras.get(name) or []]
+    return req_files, specs
+
+
+def _requirement_lines(path: Path, depth: int = 0) -> list[str]:
+    """Lines of a requirements file with ``-r`` includes inlined (relative to the file).
+
+    Lines that install the project itself (``.``, ``-e .``) and constraint files are dropped."""
+    out: list[str] = []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for ln in text.splitlines():
+        s = ln.split(" #", 1)[0].strip()
+        if not s or s.startswith("#") or s in (".", "-e .", "-e.") or s.startswith(("-c ", "--constraint")):
+            continue
+        m = re.match(r"^(?:-r|--requirement)[ =]?\s*(\S+)$", s)
+        if m:
+            if depth < 5:
+                out += _requirement_lines(path.parent / m.group(1), depth + 1)
+            continue
+        out.append(s)
+    return out
+
+
+def ensure_test_venv(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
+    """Python of a venv holding *root*'s declared deps plus pytest; built once per deps hash.
+
+    Returns ``(python, "")`` or ``(None, error)``. Requirement lines that install the project
+    itself (``-e .``, ``.``) are skipped: the venv outlives this tree, and tests import the
+    patched code through PYTHONPATH instead."""
+    import fcntl
+    import hashlib
+    import sys
+
+    req_files, specs = _declared_deps(root)
+    lines: list[str] = []
+    for f in req_files:
+        lines += _requirement_lines(f)
+    lines = list(dict.fromkeys(lines + specs))
+    key = hashlib.sha256("\n".join([sys.version, *sorted(lines)]).encode()).hexdigest()[:16]
+    cache_dir = cache_dir.resolve()  # tests run from the project dir, so a relative path would break
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    venv = cache_dir / f"{root.name or 'repo'}-{key}"
+    python = venv / "bin" / "python"
+    with open(cache_dir / f".{venv.name}.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # one build per env; others wait, then reuse it
+        if (venv / ".ready").exists():
+            return python, ""
+        shutil.rmtree(venv, ignore_errors=True)
+        reqs = cache_dir / f".{venv.name}.txt"
+        reqs.write_text("\n".join(["pytest", *lines]) + "\n", encoding="utf-8")
+        try:
+            subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, capture_output=True,
+                           text=True, timeout=120)
+            subprocess.run([str(python), "-m", "pip", "install", "-q", "--disable-pip-version-check",
+                            "-r", str(reqs)], check=True, capture_output=True, text=True,
+                           timeout=VENV_BUILD_TIMEOUT_S)
+        except subprocess.CalledProcessError as exc:
+            shutil.rmtree(venv, ignore_errors=True)
+            return None, ((exc.stderr or exc.stdout or "").strip()[-800:] or str(exc))
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            shutil.rmtree(venv, ignore_errors=True)
+            return None, str(exc)
+        (venv / ".ready").write_text(key, encoding="utf-8")
+        logger.info("built test venv %s for %s", venv.name, root)
+        return python, ""
+
+
+def _lint_files(tree: Path, files: list[str], timeout_s: int) -> ValidationResult:
+    """Fatal-only lint of the changed files: ruff when installed, else a compile check."""
+    if shutil.which("ruff"):
+        return _exec(["ruff", "check", "--isolated", "--no-cache", "--select", _RUFF_SELECT, *files],
+                     cwd=tree, tool="lint_only", timeout_s=timeout_s)
+    import sys
+
+    return _exec([sys.executable, "-m", "py_compile", *files], cwd=tree, tool="lint_only", timeout_s=timeout_s)
+
+
+def _run_project_tests(root: Path, python: Path, timeout_s: int) -> tuple[str, ValidationResult]:
+    """Run *root*'s tests. Returns ``(outcome, result)``: ``ran``, ``no_tests`` or ``env_gap``.
+
+    ``env_gap``: collection failed on a missing module, so the env, not the patch, is the
+    problem (a dependency the project doesn't declare, such as torch from a base image)."""
+    import os
+
+    paths = [str(root / "src")] if (root / "src").is_dir() else []
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([*paths, str(root)]), "PYTHONDONTWRITEBYTECODE": "1"}
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run([str(python), "-m", "pytest", "-q", "--tb=short", "-rfE", "-p", "no:cacheprovider"],
+                              cwd=root, env=env, capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        return "ran", ValidationResult(passed=False, tool="pytest", duration_ms=int((time.monotonic() - t0) * 1000),
+                                       errors=[f"tests timed out after {timeout_s}s"], raw_output="")
+    except OSError as exc:  # the env's interpreter is gone or broken: an env problem, not the patch's
+        return "env_gap", ValidationResult(passed=False, tool="pytest", duration_ms=0, errors=[str(exc)],
+                                           raw_output=f"ImportError: cannot run tests: {exc}")
+    out = (proc.stdout + proc.stderr)[-_OUTPUT_LIMIT:]
+    res = ValidationResult(passed=proc.returncode == 0, tool="pytest",
+                           duration_ms=int((time.monotonic() - t0) * 1000),
+                           errors=[] if proc.returncode == 0 else [proc.stderr.strip()[-1000:] or out[-1000:]],
+                           raw_output=out)
+    if proc.returncode == 5:  # pytest: no tests collected
+        return "no_tests", res
+    # only collection errors, at least one from a missing module, and no test ran at all
+    if proc.returncode != 0 and _ENV_GAP_RE.search(out) and not _RESULT_COUNTS_RE.search(out):
+        return "env_gap", res
+    return "ran", res
+
+
+def _failed_ids(output: str) -> set[str]:
+    return set(_FAILED_ID_RE.findall(output))
+
+
+def _has_project(root: Path) -> bool:
+    return any((root / m).exists() for m in _PROJECT_MARKERS) or (root / "tests").is_dir()
+
+
+def validate_patch_tree(
+    repo: RepoConfig, tree: Path, changed: list[str], *, timeout_s: int = 120, cache_dir: Path | None = None,
+    base_tree: "Callable[[], Path | None] | None" = None,
+) -> ValidationResult:
+    """Validate a patched clean *tree*: lint the changed .py files, then test each touched project.
+
+    Passes when lint passes and every project whose tests ran passed (tool ``pytest``); when no
+    tests could run (none exist, the env failed to build, or a module was missing), the lint
+    result stands (tool ``lint_only``) with a note saying why. Patches without Python changes
+    go to :func:`validate_repo` for the repo's own language.
+
+    *base_tree* returns the same tree without the patch (built on demand). When a project's tests
+    fail, they run there too, and only failures the patch introduced count: a test already
+    failing on the base branch is named in a note but doesn't fail the patch."""
+    py = sorted({f for f in changed if f.endswith(".py") and (tree / f).is_file()})
+    if not py:
+        return validate_repo(repo, path_override=tree, timeout_s=timeout_s)
+    lint = _lint_files(tree, py, timeout_s)
+    if not lint.passed:
+        return lint
+    cache = cache_dir or Path(".validate_venvs")
+    notes: list[str] = []
+    ran: list[tuple[str, ValidationResult]] = []
+    for root in sorted({project_root(tree, f) for f in py}):
+        label = str(root.relative_to(tree.resolve())) if root != tree.resolve() else "."
+        if not _has_project(root):
+            notes.append(f"{label}: no project (pyproject, setup.py, requirements or tests/) for "
+                         f"{', '.join(f for f in py if project_root(tree, f) == root)}; lint only")
+            continue
+        python, err = ensure_test_venv(root, cache)
+        if python is None:
+            notes.append(f"{label}: test env did not build, lint only: {err[:300]}")
+            continue
+        outcome, res = _run_project_tests(root, python, timeout_s)
+        if outcome == "no_tests":
+            notes.append(f"{label}: no tests collected, lint only")
+        elif outcome == "env_gap":
+            m = _ENV_GAP_RE.search(res.raw_output)
+            line = next((ln for ln in res.raw_output.splitlines() if m and m.group(1) in ln), "")
+            notes.append(f"{label}: tests need a module the env lacks, lint only: {line.strip()[:200]}")
+        elif not res.passed and base_tree is not None:
+            res = _against_base(root, tree, base_tree, python, timeout_s, res, label, notes)
+            ran.append((label, res))
+        else:
+            ran.append((label, res))
+    note = "\n".join(notes)
+    failed = [(lbl, r) for lbl, r in ran if not r.passed]
+    if failed:
+        return ValidationResult(
+            passed=False, tool="pytest", duration_ms=lint.duration_ms + sum(r.duration_ms for _, r in ran),
+            errors=[e for _, r in failed for e in r.errors],
+            raw_output="\n".join(f"== {lbl}\n{r.raw_output}" for lbl, r in failed)[-_OUTPUT_LIMIT:],
+        )
+    head = "tests passed: " + ", ".join(lbl for lbl, _ in ran) if ran else "lint passed; no tests ran"
+    if notes and ran:
+        head += " (see notes)"
+    return ValidationResult(
+        passed=True, tool="pytest" if ran else "lint_only",
+        duration_ms=lint.duration_ms + sum(r.duration_ms for _, r in ran), errors=[],
+        raw_output="\n".join(x for x in (head, note) if x)[-_OUTPUT_LIMIT:],
+    )
+
+
+def _against_base(
+    root: Path, tree: Path, base_tree: "Callable[[], Path | None]", python: Path, timeout_s: int,
+    res: ValidationResult, label: str, notes: list[str],
+) -> ValidationResult:
+    """Re-judge a failing run by what the patch broke: failures also present without it don't count."""
+    patched = _failed_ids(res.raw_output)
+    base = base_tree()
+    if base is None or not patched:
+        return res
+    base_root = base / root.relative_to(tree.resolve())
+    if not base_root.is_dir():
+        return res
+    outcome, base_res = _run_project_tests(base_root, python, timeout_s)
+    if outcome != "ran":
+        return res
+    already = _failed_ids(base_res.raw_output)
+    new = sorted(patched - already)
+    if new:
+        res.raw_output = (f"new failures from this patch: {', '.join(new)}\n" + res.raw_output)[-_OUTPUT_LIMIT:]
+        return res
+    notes.append(f"{label}: {len(patched)} test(s) fail on the base branch too, not counted: "
+                 f"{', '.join(sorted(patched))[:400]}")
+    return ValidationResult(passed=True, tool="pytest", duration_ms=res.duration_ms + base_res.duration_ms,
+                            errors=[], raw_output=res.raw_output)

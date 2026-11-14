@@ -36,6 +36,7 @@ reports/wiki/
 reports/wiki_public/
 reports/_brand/
 reports/repo_readiness/
+reports/_validate_venvs/
 graph/*.db
 index/code_embeddings.faiss
 index/code_embeddings.meta.json

@@ -53,6 +53,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -1304,6 +1305,52 @@ def audit_diff(request: _DiffAuditRequest) -> JSONResponse:
     })
 
 
+def _export_clean_tree(repo_path: Path, dest: Path) -> str:
+    """Write the committed tree of ``origin/dev`` (else ``HEAD``) of *repo_path* to *dest*.
+
+    Packs are cut against ``dev``, so that is the base a patch should apply to. Works on the
+    read-only mirror mounts (``git archive`` only reads). A path that isn't a git checkout is
+    copied as-is. Returns the ref used (``"copy"`` for a plain copy)."""
+    import shutil
+    import tarfile
+
+    def _git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(repo_path), *args], capture_output=True, text=True)
+
+    if _git("rev-parse", "--is-inside-work-tree").returncode != 0:
+        # Do not preserve symlinks: a crafted patch must not write through a
+        # repo symlink into the host filesystem outside this temp tree.
+        shutil.copytree(str(repo_path), str(dest), symlinks=False)
+        return "copy"
+    ref = next((r for r in ("origin/dev", "HEAD") if _git("rev-parse", "-q", "--verify", f"{r}^{{commit}}").returncode == 0),
+               "HEAD")
+    dest.mkdir(parents=True)
+    # archive the repo_path subtree (repo_path may be a subdirectory of the checkout)
+    proc = subprocess.Popen(["git", "-C", str(repo_path), "archive", "--format=tar", ref, "."],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    with tarfile.open(fileobj=proc.stdout, mode="r|") as tar:
+        tar.extractall(dest, filter="data")  # "data" refuses absolute paths, .. and links out of dest
+    if proc.wait() != 0:
+        raise RuntimeError(f"git archive {ref} failed: {proc.stderr.read().decode(errors='replace')[:300]}")
+    return ref
+
+
+def _patch_paths(patch_file: Path, cwd: Path) -> list[str]:
+    """Paths a unified diff touches (new side), from ``git apply --numstat``."""
+    r = subprocess.run(["git", "apply", "--numstat", str(patch_file)], cwd=cwd, capture_output=True, text=True)
+    out: list[str] = []
+    for ln in r.stdout.splitlines():
+        parts = ln.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        path = parts[2]
+        if " => " in path:  # rename: "dir/{old => new}.py" or "old => new"
+            m = re.match(r"^(.*)\{.* => (.*)\}(.*)$", path)
+            path = (m.group(1) + m.group(2) + m.group(3)) if m else path.split(" => ", 1)[1]
+        out.append(path.replace("//", "/"))
+    return out
+
+
 class _ValidatePatchRequest(BaseModel):
     repo: str
     patch: str
@@ -1366,8 +1413,7 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
     import shutil
     import tempfile
 
-    from auditor.validator import extract_failure_summary
-    from auditor.validator import validate_repo as _validate
+    from auditor.validator import extract_failure_summary, validate_patch_tree
     from auditor.repo_resolver import resolve_repo_path
 
     cfg = load_ecosystem_config()
@@ -1390,9 +1436,9 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
 
     try:
         repo_copy = tmp_root / "repo"
-        # Do not preserve symlinks: a crafted patch must not write through a
-        # repo symlink into the host filesystem outside this temp tree.
-        shutil.copytree(str(repo_path), str(repo_copy), symlinks=False)
+        # A clean committed tree, never the live checkout: whatever is uncommitted there (an
+        # agent's work in progress) must neither leak into the result nor make the patch clash.
+        base_ref = _export_clean_tree(Path(repo_path), repo_copy)
 
         patch_file = tmp_root / "changes.patch"
         patch_file.write_text(request.patch, encoding="utf-8")
@@ -1421,11 +1467,24 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
                 "skipped_reason":  "patch did not apply",
             })
         patch_applied = True
+        changed = _patch_paths(patch_file, repo_copy)
 
-        val_result = _validate(
-            repo_cfg,
-            path_override=repo_copy,
-            timeout_s=timeout_s,
+        base_dir = tmp_root / "base"
+
+        def _base_tree() -> Path | None:
+            """The same tree without the patch, exported once when a test failure needs comparing."""
+            if not base_dir.exists():
+                try:
+                    _export_clean_tree(Path(repo_path), base_dir)
+                except Exception as exc:  # noqa: BLE001 — without a base, failures simply count
+                    logger.warning("validate_patch: no base tree for %s: %s", request.repo, exc)
+                    return None
+            return base_dir
+
+        val_result = validate_patch_tree(
+            repo_cfg, repo_copy, changed, timeout_s=timeout_s,
+            cache_dir=Path(os.getenv("AI_AUDIT_VALIDATE_VENV_DIR") or Path(cfg.output_dir) / "_validate_venvs"),
+            base_tree=_base_tree,
         )
 
         summary = extract_failure_summary(val_result.raw_output, val_result.tool)
@@ -1448,6 +1507,7 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
             "repo":            request.repo,
             "patch_applied":   patch_applied,
             "patch_error":     patch_error,
+            "base_ref":        base_ref,
             "passed":          passed,
             "skipped":         skipped,
             "tool":            val_result.tool,
