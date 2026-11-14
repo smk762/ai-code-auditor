@@ -135,3 +135,44 @@ def test_packs_closed_are_retired_and_full_sync_drops_vanished(fake) -> None:
     agent_pack.ingest_packs_to_rag([c])
     agent_pack.ingest_packs_to_rag([a])
     assert _ledger()["packs"] == ["agent-pack::pack-a", "agent-pack::pack-c"]
+
+
+def test_partial_send_records_the_batches_that_landed(fake, monkeypatch) -> None:
+    """Batch 1 lands, batch 2 fails: batch 1's ids are recorded, so a later rename retires them."""
+    real, calls = fake.post, []
+
+    def flaky(url, data, headers, timeout):
+        calls.append(url)
+        if url.endswith("/ingest") and len([c for c in calls if c.endswith("/ingest")]) == 2:
+            return _Resp(503, {"detail": "down"})
+        return real(url, data, headers, timeout)
+
+    import requests
+
+    monkeypatch.setattr(requests, "post", flaky)
+    docs = [{"id": f"d{i}", "text": str(i)} for i in range(3)]
+    r = rag_client.sync_documents(None, "s", docs, tags=[], batch_size=2)
+    assert r["ingested"] is False and r["count"] == 2
+    assert _ledger() == {"s": ["d0", "d1"]}
+    # d0 is renamed before the next successful send: it must not be orphaned in the collection
+    r = rag_client.sync_documents(None, "s", [{"id": "d0x", "text": "0"}, *docs[1:]], tags=[])
+    assert fake.deleted_ids == ["d0"] and _ledger() == {"s": ["d0x", "d1", "d2"]}
+
+
+def test_every_status_writer_refreshes_the_pack_doc(fake, tmp_path, monkeypatch) -> None:
+    """validate_patch's auto-resolve retires the pack from RAG, like the status endpoint."""
+    from auditor import agent_pack
+    from auditor.audit_api import _resolve_pack_after_validation
+    from tests.test_agent_pack import _mk_pack
+
+    agent_pack.write_pack(_mk_pack("pack-a", repo="argus-cortex"), tmp_path)
+    agent_pack.ingest_packs_to_rag([_mk_pack("pack-a")], output_dir=tmp_path)
+    monkeypatch.setattr("auditor.audit_api._output_dir", lambda: str(tmp_path))
+    res = _resolve_pack_after_validation("pack-a", repo="argus-cortex", tool="pytest")
+    assert res["updated"] is True
+    assert fake.deleted_ids == ["agent-pack::pack-a"]
+
+    # the kill switch is honoured, and a missing pack is a no-op
+    monkeypatch.setenv("AI_AUDIT_PACK_RAG_INGEST", "0")
+    assert agent_pack.refresh_pack_rag(tmp_path, {"id": "pack-b", "status": "resolved"}) is None
+    assert agent_pack.refresh_pack_rag(tmp_path, None) is None

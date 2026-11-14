@@ -21,6 +21,7 @@ htmlcov/
 .vscode/
 reports/*.md
 reports/*.log
+reports/*.lock
 reports/*.json
 reports/*.jsonl
 reports/*.yaml

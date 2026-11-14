@@ -171,3 +171,25 @@ def test_ask_endpoint(client: TestClient, built, claude, monkeypatch) -> None:
     assert "create_app" in body["answer_html"] and body["source_sha"]
     assert client.post("/audit/wiki/nope/ask", json={"question": "q"}, headers=h).status_code == 404
     assert client.post("/audit/wiki/svc/ask", json={"question": ""}, headers=h).status_code == 422
+
+
+def test_ask_with_other_providers_books_the_ask_lane_without_touching_env(built, monkeypatch) -> None:
+    """The lane goes to the client, never into os.environ (audit subprocesses inherit that)."""
+    import os
+
+    from wiki.ask import ask
+
+    monkeypatch.delenv("AI_AUDIT_SPEND_LANE", raising=False)
+    monkeypatch.setattr("auditor.config.load_model_provider_config",
+                        lambda *a, **k: ModelProviderConfig(provider="ollama", model="qwen", endpoint="http://x"))
+    lanes = []
+
+    def generate(self, prompt):
+        lanes.append(self.lane)
+        return "`create_app` builds it [app.py:L9-L11]."
+
+    monkeypatch.setattr("auditor.llm_client.LLMClient.generate", generate)
+    monkeypatch.setattr("auditor.llm_client.build_ecosystem_overview", lambda: "")
+    res = ask(built[0], "svc", "How is the app built?")
+    assert "create_app" in res["answer_md"] and lanes == ["ask"]
+    assert "AI_AUDIT_SPEND_LANE" not in os.environ
