@@ -94,8 +94,9 @@ def ask(output_dir: str | Path, repo_name: str, question: str, *, client: Any = 
     else:  # other providers: the audit client's plain generate (no prompt caching)
         from auditor.llm_client import LLMClient
 
-        os.environ.setdefault("AI_AUDIT_SPEND_LANE", LANE)
-        text, stop, cost = LLMClient().generate(f"{ASK_SYSTEM}\n\n{context}\n\n## Question\n{question}"), "", 0.0
+        # the lane goes to this client only: setting it in os.environ would leak into the API
+        # process and every audit subprocess it starts
+        text, stop, cost = LLMClient(lane=LANE).generate(f"{ASK_SYSTEM}\n\n{context}\n\n## Question\n{question}"), "", 0.0
     if stop == "refusal" or not text.strip():
         return {"repo": repo_name, "question": question, "answer_md": "", "model": cfg.model, "cost_usd": cost,
                 "error": "The model declined or returned nothing; try rephrasing the question."}

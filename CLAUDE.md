@@ -123,6 +123,8 @@ Query routing (`copilot/query_router.py`) classifies queries → appropriate ret
 
 ### LLM client (`auditor/llm_client.py`)
 
+The review prompt is `AUDIT_INSTRUCTIONS_V2` (default, chosen by the 2026-11-13 eval); `AI_AUDIT_LLM_PROMPT=v3` adds state/ordering lenses and is opt-in until measured. `repo_review` in `config/prompts.yaml` is not what the scan uses.
+
 Supports `ollama` (POST `/api/generate`) and `openai-compatible` (POST `/v1/chat/completions`). Provider selected by `AI_AUDIT_LLM_PROVIDER` env var or `config/generator.yaml`. The healthcheck hits `/api/tags` for Ollama (fast probe, no model load) rather than generate.
 
 ## Generated wiki (`wiki/`)
@@ -170,9 +172,9 @@ Every sender goes through `auditor/rag_client.py` (`post_documents`), which spea
 - **Headers:** `X-Timestamp`, a single-use `X-Nonce`, and `X-Signature` (HMAC-SHA256 keyed by sha256(`INGEST_SHARED_SECRET`) over `ts.nonce.sha256(body)`). `INGEST_SHARED_SECRET` in `.env` must match agent-composer's.
 - **Metadata:** rag-ingest keeps only id, title, url, path and source per doc, so repo and kind go in `tags` (`kind:wiki`, `repo:<name>`).
 - **Collection:** each request names `audit_docs` (`AI_AUDIT_RAG_COLLECTION`). rag-ingest accepts its own `QDRANT_COLLECTION` (default `audit_docs` since agent-composer#25) or one in `INGEST_ALLOWED_COLLECTIONS`, and refuses others with 400. `project_docs` is deprecated.
-- **Replacing and retiring:** re-sending a doc id replaces its chunks (agent-composer#26). Ids that are no longer sent are retired with `POST /delete` (`rag_client.delete_documents`), using the record of ids sent per scope in `reports/rag_ingested.json` (`wiki:<repo>`, `packs`; `AI_AUDIT_RAG_LEDGER` overrides the path). A failed delete stays recorded and is retried on the next run.
+- **Replacing and retiring:** re-sending a doc id replaces its chunks (agent-composer#26). Ids that are no longer sent are retired with `POST /delete` (`rag_client.delete_documents`), using the record of ids sent per scope in `reports/rag_ingested.json` (`wiki:<repo>`, `packs`; `AI_AUDIT_RAG_LEDGER` overrides the path). A failed delete stays recorded and is retried on the next run. Ids are recorded per batch rag-ingest accepts, so a send that fails partway still records what landed.
   - **Wiki:** sections no longer in a repo's pages are retired. A refresh that rebuilt only some pages considers only those pages.
-  - **Packs:** resolved and wontfix packs are retired instead of re-sent, so retrieval shows open work. `scripts/emit_agent_packs.py` (a full send) also retires packs that no longer exist. Partial sends, such as a status change or new packs, never retire other packs.
+  - **Packs:** resolved and wontfix packs are retired instead of re-sent, so retrieval shows open work. `scripts/emit_agent_packs.py` (a full send) also retires packs that no longer exist. Every status writer (the API endpoint, `validate_patch` auto-resolve, `ai-audit packs --set-status`) re-sends or retires that pack through `refresh_pack_rag`. Partial sends, such as a status change or new packs, never retire other packs.
 
 Search goes through rag-chat's `POST /search` (`rag_client.search`), so the query is embedded by the model that wrote the vectors. `ai-audit search "q" [--repo R] [--kind wiki|agent_coding_pack] [--top-k N] [--json]` and `GET /audit/search?q=&repo=&kind=&top_k=` (read-only, no auth) both return hits with title, link, tags and text. rag-chat is at `RAG_CHAT_URL`, or the rag-ingest host on port 9150 when that's unset. `RAG_CHAT_API_KEY` is sent as a bearer token when set. rag-chat's `/chat` retrieves from the same collection.
 
@@ -197,7 +199,7 @@ ai-audit packs --bundle --repo <name>                   # == GET /audit/packs/bu
 ai-audit packs --id <pack-id> --brief
 ```
 
-Lifecycle: `POST /audit/packs/{id}/status {status, note?}` (mutating auth); `validate_patch` with `pack_id` auto-resolves on pass; conductor draft PRs set `in_progress`. Pack RAG ingest is on by default (`AI_AUDIT_PACK_RAG_INGEST=0` to disable).
+Lifecycle: `POST /audit/packs/{id}/status {status, note?}` (mutating auth); `validate_patch` with `pack_id` auto-resolves on pass (opt-in `semantic_check` / `AI_AUDIT_VALIDATE_SEMANTIC=1` runs `auditor/equivalence.py` first: a "trust me" change with a counterexample keeps the pack open); conductor draft PRs set `in_progress`. Pack RAG ingest is on by default (`AI_AUDIT_PACK_RAG_INGEST=0` to disable).
 
 Consuming-agent flow: `bundle?repo=` → `POST /audit/packs/{id}/status {"status":"claimed"}` → `ai-audit repair --pack-id <id>` (or implement from the brief) → `POST /audit/validate_patch` with `pack_id` (pass ⇒ `resolved`). Full detail in `AGENTS.md`.
 

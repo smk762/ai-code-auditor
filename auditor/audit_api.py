@@ -1305,13 +1305,15 @@ class _ValidatePatchRequest(BaseModel):
     patch: str
     timeout_s: int = 120
     pack_id: str | None = None  # when set and validation passes, the pack is marked resolved
+    # classify changes as equivalent / behaviour change / "trust me" (None: AI_AUDIT_VALIDATE_SEMANTIC)
+    semantic_check: bool | None = None
 
 
 def _resolve_pack_after_validation(
     pack_id: str, *, repo: str, tool: str
 ) -> dict[str, Any]:
     """Mark *pack_id* resolved after a passing validate_patch. Never raises."""
-    from auditor.agent_pack import load_pack, update_pack_status
+    from auditor.agent_pack import load_pack, refresh_pack_rag, update_pack_status
     from conductor.publish import public_base_url
 
     out = _output_dir()
@@ -1330,6 +1332,7 @@ def _resolve_pack_after_validation(
             f"validate_patch passed (repo={repo}, tool={tool})",
             public_base_url=public_base_url(),
         )
+        refresh_pack_rag(out, updated)  # a resolved pack leaves the RAG collection
         return {"id": pack_id, "updated": updated is not None, "status": "resolved"}
     except Exception as exc:  # closure is best-effort; the validation result stands
         logger.warning("could not mark pack %s resolved: %s", pack_id, exc)
@@ -1450,14 +1453,24 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
             "raw_output":      val_result.raw_output[-2000:],
             "skipped_reason":  val_result.skipped_reason,
         }
+        from auditor import equivalence
+
+        refuted: list[dict[str, Any]] = []
+        if passed and equivalence.enabled(request.semantic_check):
+            semantic = equivalence.classify_patch(request.patch)
+            response["semantic"] = semantic
+            refuted = semantic.get("refuted") or []
         if request.pack_id:
-            response["pack"] = (
-                _resolve_pack_after_validation(
+            if not passed:
+                response["pack"] = {"id": request.pack_id, "updated": False, "reason": "validation did not pass"}
+            elif refuted:
+                # tests pass, but a claimed-equivalent change has a counterexample: a human decides
+                response["pack"] = {"id": request.pack_id, "updated": False,
+                                    "reason": f"{len(refuted)} 'trust me' change(s) have a counterexample"}
+            else:
+                response["pack"] = _resolve_pack_after_validation(
                     request.pack_id, repo=request.repo, tool=val_result.tool
                 )
-                if passed
-                else {"id": request.pack_id, "updated": False, "reason": "validation did not pass"}
-            )
         return JSONResponse(response)
     except Exception as exc:
         logger.exception("validate_patch failed for repo %r", request.repo)
@@ -1930,12 +1943,7 @@ class _PackStatusRequest(BaseModel):
 @app.post("/audit/packs/{pack_id}/status", dependencies=[Depends(_require_mutating_auth)])
 def set_agent_pack_status(pack_id: str, request: _PackStatusRequest) -> JSONResponse:
     """Update a pack's lifecycle status (persisted in YAML and reflected in INDEX.json)."""
-    from auditor.agent_pack import (
-        AgentCodingPack,
-        ingest_packs_to_rag,
-        pack_rag_ingest_enabled,
-        update_pack_status,
-    )
+    from auditor.agent_pack import refresh_pack_rag, update_pack_status
     from conductor.publish import public_base_url
 
     updated = update_pack_status(
@@ -1947,12 +1955,7 @@ def set_agent_pack_status(pack_id: str, request: _PackStatusRequest) -> JSONResp
     )
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Pack {pack_id!r} not found.")
-    if pack_rag_ingest_enabled():
-        # Refresh the slim RAG doc so retrieval reflects the new status (best-effort).
-        try:
-            ingest_packs_to_rag([AgentCodingPack.from_dict(updated)], output_dir=_output_dir())
-        except Exception as exc:
-            logger.warning("pack status RAG refresh failed for %s: %s", pack_id, exc)
+    refresh_pack_rag(_output_dir(), updated)  # retrieval reflects the new status (best-effort)
     return JSONResponse({
         "id": pack_id,
         "status": updated["status"],

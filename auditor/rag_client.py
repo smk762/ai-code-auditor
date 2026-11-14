@@ -27,6 +27,7 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -47,8 +48,12 @@ def sign(secret: str, ts: str, nonce: str, body: bytes) -> str:
 
 
 def post_documents(docs: list[dict[str, Any]], *, tags: list[str] | None = None, source: str = SOURCE,
-                   batch_size: int = BATCH_SIZE, session: Any = None, url: str | None = None) -> dict[str, Any]:
-    """Send docs in batches. Returns {ingested, count, ...}; never raises on HTTP trouble."""
+                   batch_size: int = BATCH_SIZE, session: Any = None, url: str | None = None,
+                   on_sent: Callable[[list[dict[str, Any]]], None] | None = None) -> dict[str, Any]:
+    """Send docs in batches. Returns {ingested, count, ...}; never raises on HTTP trouble.
+
+    ``on_sent(batch)`` runs after each batch rag-ingest accepted, so a caller can record those
+    docs even when a later batch fails (they are in the collection either way)."""
     if not docs:
         return {"ingested": False, "skipped": True, "count": 0}
     secret = os.getenv("INGEST_SHARED_SECRET", "")
@@ -78,6 +83,8 @@ def post_documents(docs: list[dict[str, Any]], *, tags: list[str] | None = None,
                     "error": (resp.text or "")[:300]}
         result["count"] += len(batch)
         result["status_code"] = resp.status_code
+        if on_sent is not None:
+            on_sent(batch)
     return result
 
 
@@ -221,6 +228,11 @@ def update_ledger(output_dir: str | os.PathLike | None, scope: str, *, add: set[
     return before
 
 
+def record_sent(output_dir: str | os.PathLike | None, scope: str, batch: list[dict[str, Any]]) -> None:
+    """Add the ids of a batch rag-ingest accepted to the scope's record."""
+    update_ledger(output_dir, scope, add={d["id"] for d in batch if d.get("id")})
+
+
 def recorded_ids(output_dir: str | os.PathLike | None, scope: str) -> set[str]:
     return update_ledger(output_dir, scope)
 
@@ -241,12 +253,13 @@ def sync_documents(output_dir: str | os.PathLike | None, scope: str, docs: list[
 
     ``considered(id) -> bool`` limits retirement to the part of the scope being refreshed
     (e.g. the pages a wiki refresh rebuilt); by default the whole scope is. Nothing is retired
-    unless the send succeeded."""
-    r = post_documents(docs, tags=tags, **kw)
+    unless the whole send succeeded, but every batch that landed is recorded as it lands, so a
+    later failure can't leave docs in the collection that the record doesn't know about."""
+    before = recorded_ids(output_dir, scope)
+    r = post_documents(docs, tags=tags, on_sent=lambda batch: record_sent(output_dir, scope, batch), **kw)
     if not r.get("ingested"):
         return r
     new = {d["id"] for d in docs if d.get("id")}
-    before = update_ledger(output_dir, scope, add=new)
     gone = {i for i in before - new if considered is None or considered(i)}
     d = retire(output_dir, scope, gone)
     r["retired"] = d.get("count", 0)

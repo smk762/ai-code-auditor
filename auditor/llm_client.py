@@ -54,7 +54,31 @@ Severity:
 Return a JSON array of at most 5 findings, most important first. Each element: type (security|bug|contract), \
 severity (CRITICAL/HIGH/MEDIUM/LOW), title, description, line, recommendation. Return only the JSON array."""
 
-PROMPTS = {"v1": AUDIT_INSTRUCTIONS, "v2": AUDIT_INSTRUCTIONS_V2}
+# v3: v2 plus state/ordering lenses (shared mutable state, ordering, records that drift, dead work),
+# taken from a whole-program "semantic model" prompt that found real bugs here that v2 missed
+# (an os.environ write leaking a spend lane; a sent-docs record updated only after all batches).
+# Opt-in (AI_AUDIT_LLM_PROMPT=v3) until measured against v2 on the eval set.
+_V3_LENSES = """
+Also look for these, but only where the code shown makes them evident:
+- state that leaks beyond its scope: writes to os.environ, module globals, class attributes or \
+caches that outlive the call and change what later, unrelated calls do
+- order-dependence: read-modify-write without a lock, check-then-act on files or shared state, \
+results that depend on await/thread/event completion order
+- retries or re-runs that are not idempotent: a retried step that duplicates, double-charges or \
+re-sends; side effects that happen before the step that can fail
+- one fact stored in two places that can drift: a record/ledger/cache updated in a different step \
+(or only on full success) than the thing it records, so a partial failure leaves them disagreeing
+- work whose result is computed and then discarded or never returned
+
+For any finding of this kind, the description MUST give the concrete input, interleaving or failure \
+point that breaks it (e.g. "batch 2 of 3 fails → batch 1's ids are in the collection but not the \
+ledger"). If you cannot name one, do not report it."""
+
+AUDIT_INSTRUCTIONS_V3 = AUDIT_INSTRUCTIONS_V2.replace(
+    "\n\nDo NOT report:", _V3_LENSES + "\n\nDo NOT report:", 1
+).replace("type (security|bug|contract)", "type (security|bug|contract|state)", 1)
+
+PROMPTS = {"v1": AUDIT_INSTRUCTIONS, "v2": AUDIT_INSTRUCTIONS_V2, "v3": AUDIT_INSTRUCTIONS_V3}
 
 
 def _safe_line(value: Any, default: int) -> int:
@@ -70,7 +94,10 @@ class LLMClient:
         provider_config: ModelProviderConfig | None = None,
         num_gpu_layers: int = -1,
         repo_briefing: str = "",
+        lane: str | None = None,
     ):
+        # Spend-ledger lane; None means AI_AUDIT_SPEND_LANE (read per call), else "audit".
+        self.lane = lane
         self.provider_config = provider_config or load_model_provider_config()
         self.model = self.provider_config.model
         self.endpoint = self.provider_config.endpoint
@@ -147,7 +174,7 @@ class LLMClient:
             max_tokens=8192,
             effort=self.effort or None,
             use_fallbacks=False,
-            lane=os.getenv("AI_AUDIT_SPEND_LANE", "audit"),
+            lane=self.lane or os.getenv("AI_AUDIT_SPEND_LANE", "audit"),
             note=self._note,
         )
 

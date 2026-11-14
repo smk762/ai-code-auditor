@@ -1029,7 +1029,7 @@ def main() -> None:
                     f"truncated={bundle['truncated']} — GET {bundle['discovery']['bundle']}"
                 )
         elif args.set_status:
-            from auditor.agent_pack import update_pack_status
+            from auditor.agent_pack import refresh_pack_rag, update_pack_status
 
             if not args.pack_id:
                 raise SystemExit("--set-status requires --id PACK_ID")
@@ -1042,6 +1042,7 @@ def main() -> None:
             )
             if updated is None:
                 raise SystemExit(f"Pack not found: {args.pack_id}")
+            refresh_pack_rag(out, updated)
             print(json.dumps({"id": args.pack_id, "status": updated["status"]}, indent=2))
         elif args.pack_id:
             data = load_pack(out, args.pack_id)
