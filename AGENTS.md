@@ -24,7 +24,8 @@ Optional: `q=<keyword>` boosts matches, `status=open,claimed,in_progress` (defau
 1. **Bundle** — `GET /audit/packs/bundle?repo=<name>` (or `ai-audit packs --bundle --repo <name>`).
 2. **Claim** — `POST /audit/packs/<id>/status {"status":"claimed"}` for the specialist pack you pick.
 3. **Fix** — `ai-audit repair --pack-id <id>` (agent-composer repair loop; fetches the pack and injects
-   acceptance criteria / tests / constraints; `--audit-api-base` overrides the API base), **or** implement
+   acceptance criteria / tests / constraints; `--audit-api-base` overrides the API base, but rag-chat accepts only its configured audit API or a host in
+   its `AUDIT_API_ALLOWED_HOSTS`), **or** implement
    directly from the pack brief (`GET /audit/packs/<id>/brief`). `--mode review` / `suggest` needs no
    rag-chat credential; `--apply` / `--commit` / `--push` need a rag-chat API key in `RAG_CHAT_API_KEY`
    (or `--rag-chat-api-key`). The ai-audit JWT is never forwarded to rag-chat.

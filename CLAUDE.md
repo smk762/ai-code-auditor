@@ -30,7 +30,7 @@ ai-audit merge-poll --schedule               # hourly GitHub API → pack/RAG on
 ai-audit pr-intel                            # blocked PRs, why, suggested resolution path (read-only; --json, --cached)
 ai-audit merge-refresh --repo argus-cortex --schedule  # one-repo pack/RAG (or --now)
 ai-audit repair --pack-id pack-… --mode review   # agent-composer repair loop driven by a pack (fetches pack, no diff needed)
-ai-audit repair --pack-id pack-… --audit-api-base "$AI_AUDIT_PUBLIC_BASE_URL"   # real URL in local .env (see .env.example)
+ai-audit repair --pack-id pack-… --audit-api-base "$AI_AUDIT_PUBLIC_BASE_URL"   # real URL in local .env (see .env.example); rag-chat must allow it (its AUDIT_API_URL / AI_AUDIT_PUBLIC_BASE_URL, or AUDIT_API_ALLOWED_HOSTS), else 422
 ai-audit pack-savings                        # estimated token savings from packs vs crawling (--history, --cached, --json)
 ai-audit qa-benchmark --json
 ai-audit wiki build --repos argus-cortex --dry-run   # price a wiki build (no API calls)
