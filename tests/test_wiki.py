@@ -160,6 +160,16 @@ def test_check_classifies_citations(code: Path) -> None:
     assert [f["reason"] for f in rep.failed] == ["symbol", "missing", "range", "missing"]
 
 
+def test_symbol_check_accepts_any_named_identifier_or_own_module(code: Path) -> None:
+    md = ("| `CheckFailed` (`ghost_a`, `ghost_b`) | base error [app.py:L9-L11] |\n"
+          "| `svc.app` | the module itself [app.py:L1-L2] |\n"
+          "| `ghost_a`, `ghost_b` | wrong lines [app.py:L1-L2] |\n")
+    (code / "app.py").write_text(APP.replace("def create_app():", "class CheckFailed:  # noqa\ndef create_app():"))
+    rep = citations.check(md, code)
+    assert [f["reason"] for f in rep.failed] == ["symbol"]
+    assert rep.failed[0]["symbol"] == "ghost_b"
+
+
 def test_drop_failed_claims(code: Path) -> None:
     md = ("# Title\n\nIt has `create_app` [app.py:L9-L11]. It also has `ghost` [app.py:L9-L11]. And more.\n\n"
           "- good item [app.py:L1-L2]\n- bad item [nope.py:L1]\n\n"
@@ -272,6 +282,8 @@ def test_build_writes_checked_pages_index_and_findings(ecosystem: Path) -> None:
     top = json.loads((ecosystem / "wiki" / "INDEX.json").read_text())
     assert list(top["repos"]) == ["svc"] and top["repos"]["svc"]["pages"] == 5
     assert not list((ecosystem / "wiki" / "_results").glob("*.json"))  # cleaned up after writing
+    raw = (ecosystem / "wiki" / "_raw" / "svc" / "overview.md").read_text()
+    assert "nope.py" in raw  # the pre-citation-pass text is kept for free re-checks
 
     # a rebuild reuses the cached notes
     rep2 = build(["svc"], ecosystem, runner=Runner(ecosystem, client=fake, poll_s=0))

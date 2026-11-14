@@ -250,6 +250,11 @@ def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport
             if page in previous and (d / previous[page]["file"]).is_file():
                 entries[page] = previous[page] | {"stale": True}
             continue
+        # keep the checked text before the citation pass, so a checker change can be
+        # re-applied later without paying for the model calls again
+        raw_dir = wiki_dir(out) / "_raw" / name
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        (raw_dir / f"{page}.md").write_text(r.text or "", encoding="utf-8")
         md, dropped = citations.drop_failed_claims(r.text or "", root)
         rep = citations.check(md, root)
         (d / f"{page}.md").write_text(md, encoding="utf-8")

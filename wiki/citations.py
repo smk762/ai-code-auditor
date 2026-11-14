@@ -62,9 +62,16 @@ def _verdict(md: str, m: re.Match, files: _Files) -> tuple[str, str | None]:
     names = [x for x in _NAMED.findall(md, prev, m.start()) if x.rsplit(".", 1)[-1] not in _FILE_EXT]
     if not names:
         return "ok", None
-    ident = names[-1].split(".")[-1]
-    if re.search(rf"\b{re.escape(ident)}\b", "\n".join(lines[a - 1:b])):
-        return "ok", names[-1]
+    # The clause passes if ANY identifier it names occurs in the cited lines: table rows and
+    # lists name several things ("`CheckFailed` (`NudeNetCheckFailed`, `GuardCheckFailed`)")
+    # and only one of them need be at the cited lines. A module path naming the cited file
+    # itself (`pkg.xmp` citing xmp.py) also counts. Wrong-line citations still fail.
+    cited = "\n".join(lines[a - 1:b])
+    stem = Path(path).stem
+    for name in reversed(names):
+        ident = name.split(".")[-1]
+        if ident == stem or re.search(rf"\b{re.escape(ident)}\b", cited):
+            return "ok", name
     return "symbol", names[-1]
 
 
