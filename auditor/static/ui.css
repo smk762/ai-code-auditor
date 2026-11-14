@@ -120,6 +120,20 @@ table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-nu
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 th { font-weight: 600; color: var(--text-secondary); font-size: 12px; }
 td.num, th.num { text-align: right; }
+.sev { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; text-transform: capitalize; }
+.sev::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--sev-c, var(--neutral)); }
+.sev-critical { --sev-c: var(--sev-critical); } .sev-high { --sev-c: var(--sev-high); }
+.sev-medium { --sev-c: var(--sev-medium); } .sev-low { --sev-c: var(--sev-low); } .sev-info { --sev-c: var(--sev-info); }
+.delta-up { color: var(--critical); } .delta-down { color: var(--ok); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.muted { color: var(--text-muted); }
+.table-wrap { overflow-x: auto; }
+select, input[type="search"], input[type="text"] {
+  font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 6px;
+  background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border);
+}
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.toolbar label { font-size: 12px; color: var(--text-secondary); display: inline-flex; gap: 6px; align-items: center; }
 .empty { color: var(--text-muted); font-size: 13px; padding: 24px 0; text-align: center; }
 .err { color: var(--critical); }
 
@@ -131,5 +145,5 @@ td.num, th.num { text-align: right; }
 .prose pre { background: var(--surface-2); padding: 10px 12px; border-radius: 8px; overflow-x: auto; }
 .prose pre code { background: none; padding: 0; }
 .prose blockquote { margin: 0; padding-left: 12px; border-left: 3px solid var(--border); color: var(--text-secondary); }
-.prose table { width: auto; margin: 1em 0; }
+.prose table { width: auto; margin: 1em 0; display: block; overflow-x: auto; }
 .prose .align-left { text-align: left; } .prose .align-center { text-align: center; } .prose .align-right { text-align: right; }

@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audit run</title>
+<link rel="stylesheet" href="/audit/static/ui.css">
+<script src="/audit/static/ui.js"></script>
+<style>
+  .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--warn); font-weight: 600; }
+  .live::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  @media (prefers-reduced-motion: reduce) { .live::before { animation: none; } }
+  ul.errors { margin: 0; padding-left: 18px; }
+  ul.errors li { font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<!--#nav-->
+<main>
+  <header class="page">
+    <h1 id="title">Run</h1>
+    <span id="live" class="live" hidden>live</span>
+    <div class="sub" id="sub">Loading…</div>
+  </header>
+
+  <section class="grid" id="kpis" aria-label="Headline numbers"></section>
+
+  <section class="grid">
+    <div class="card span-6">
+      <h2>Findings by severity</h2>
+      <p class="hint" id="sev-hint">Compared with the previous run of this pipeline over the same repos.</p>
+      <table id="sev"><thead><tr><th>Severity</th><th class="num">This run</th><th class="num">Change</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="card span-6">
+      <h2>Per-repo results</h2>
+      <p class="hint">Status and attempts as recorded during the run; findings stored per repo.</p>
+      <div class="table-wrap"><table id="repos"><thead><tr><th>Repo</th><th>Status</th><th class="num">Attempts</th><th class="num">Findings</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card span-6">
+      <h2>New since previous run</h2>
+      <p class="hint" id="new-hint">Most severe first.</p>
+      <div class="table-wrap"><table id="new"><tbody></tbody></table></div>
+    </div>
+    <div class="card span-6">
+      <h2>Fixed since previous run</h2>
+      <p class="hint" id="fixed-hint">In the previous run, gone in this one.</p>
+      <div class="table-wrap"><table id="fixed"><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card span-6">
+      <h2>Stages</h2>
+      <p class="hint">Pipeline stages in order, with timings.</p>
+      <table id="stages"><thead><tr><th>Stage</th><th>Status</th><th class="num">Time</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="card span-6">
+      <h2>Reports</h2>
+      <p class="hint">Reports are overwritten by each run; a file written outside this run's window is marked.</p>
+      <div id="reports"></div>
+      <h2 style="margin-top:14px">Errors</h2>
+      <div id="errors"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const { esc, int } = UI;
+const runId = decodeURIComponent(location.pathname.split("/").filter(Boolean).pop());
+const ACTIVE = ["pending", "running"];
+let stream = null, lastLoad = 0, pending = null;
+
+function tile(label, value, note) {
+  return `<div class="card kpi span-3"><div class="label">${label}</div><div class="value">${value}</div><div class="note">${note}</div></div>`;
+}
+function signed(n) {
+  if (!n) return `<span class="muted">±0</span>`;
+  return `<span class="${n > 0 ? "delta-up" : "delta-down"}">${n > 0 ? "+" : "−"}${int(Math.abs(n))}</span>`;
+}
+function findingRows(list, run) {
+  if (!list.length) return `<tr><td class="empty">None.</td></tr>`;
+  return list.map((f) => `<tr><td>${UI.sevBadge(f.severity)}</td>
+    <td>${esc(f.title)}<div class="muted mono">${esc(f.repo)} · ${esc(f.path)}${f.line ? ":" + f.line : ""}</div></td></tr>`).join("");
+}
+
+function render(d) {
+  const r = d.run, f = d.findings, dl = f.delta, prev = d.previous;
+  document.title = `Run ${r.run_id}`;
+  document.getElementById("title").innerHTML = `${esc(r.pipeline)} <span class="muted mono">${esc(r.run_id)}</span>`;
+  const active = ACTIVE.includes(r.status);
+  document.getElementById("live").hidden = !active;
+  const started = r.started_at ? new Date(r.started_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
+  document.getElementById("sub").innerHTML = `Started ${esc(started)} (${UI.ago(r.started_at)})` +
+    (prev ? ` · previous: <a class="mono" href="/ui/runs/${encodeURIComponent(prev.run_id)}">${esc(prev.run_id)}</a>` : " · no earlier run to compare") +
+    ` · <a href="/audit/runs/${encodeURIComponent(r.run_id)}">JSON</a>`;
+
+  const repoNote = r.repos_total ? `${int(r.repos_completed)} of ${int(r.repos_total)} scanned` : `${int(r.scanned_repos.length)} scanned`;
+  document.getElementById("kpis").innerHTML = [
+    tile("Status", UI.runStatus(r.status), active ? `stage: ${esc(r.current_stage || "starting")}` : (r.finished_at ? `finished ${UI.ago(r.finished_at)}` : "")),
+    tile("Duration", UI.duration(r.duration_ms), active ? "so far" : `${int(r.code_units)} code units · ${int(r.scanned_files)} files`),
+    tile("Repos", int(r.repos_total || r.scanned_repos.length), repoNote),
+    tile("Findings", `<a href="/ui/findings?run_id=${encodeURIComponent(r.run_id)}">${int(f.stored)}</a>`,
+      dl ? `<a href="/ui/findings?run_id=${encodeURIComponent(r.run_id)}&change=new">${int(dl.new)} new</a> · <a href="/ui/findings?run_id=${encodeURIComponent(r.run_id)}&change=fixed">${int(dl.fixed)} fixed</a>${dl.reworded ? ` · <span title="same repo, file and type, title reworded by the model">${int(dl.reworded)} reworded</span>` : ""}`
+         : (f.stored ? "no baseline run" : (r.findings ? `${int(r.findings)} counted, none stored` : "none stored"))),
+  ].join("");
+
+  document.querySelector("#sev tbody").innerHTML = UI.SEVERITIES.map((s) =>
+    `<tr><td>${UI.sevBadge(s)}</td><td class="num">${int(f.by_severity[s])}</td><td class="num">${dl ? signed(dl.by_severity[s]) : "—"}</td></tr>`).join("");
+
+  const byRepo = f.by_repo || {};
+  const repoRows = d.repos.length ? d.repos.map((x) => ({ name: x.repo_name, status: x.status, attempts: x.attempts, err: x.error_message }))
+    : r.scanned_repos.map((name) => ({ name, status: "", attempts: null, err: "" }));
+  document.querySelector("#repos tbody").innerHTML = repoRows.length ? repoRows.map((x) => {
+    const n = Object.values(byRepo[x.name] || {}).reduce((a, b) => a + b, 0);
+    return `<tr><td>${esc(x.name)}${x.err ? `<div class="err mono">${esc(x.err.slice(0, 300))}</div>` : ""}</td>
+      <td>${x.status ? UI.runStatus(x.status) : "—"}</td><td class="num">${x.attempts ?? "—"}</td>
+      <td class="num">${n ? `<a href="/ui/findings?run_id=${encodeURIComponent(r.run_id)}&repo=${encodeURIComponent(x.name)}">${int(n)}</a>` : "0"}</td></tr>`;
+  }).join("") : `<tr><td colspan="4" class="empty">No per-repo rows recorded.</td></tr>`;
+
+  document.querySelector("#new tbody").innerHTML = dl ? findingRows(dl.new_findings, r) : `<tr><td class="empty">No baseline run to compare with.</td></tr>`;
+  document.querySelector("#fixed tbody").innerHTML = dl ? findingRows(dl.fixed_findings, r) : `<tr><td class="empty">No baseline run to compare with.</td></tr>`;
+  if (dl && dl.new > dl.new_findings.length) document.getElementById("new-hint").innerHTML = `Showing ${int(dl.new_findings.length)} of ${int(dl.new)}, most severe first · <a href="/ui/findings?run_id=${encodeURIComponent(r.run_id)}&change=new">all</a>`;
+  if (dl && dl.fixed > dl.fixed_findings.length) document.getElementById("fixed-hint").innerHTML = `Showing ${int(dl.fixed_findings.length)} of ${int(dl.fixed)} · <a href="/ui/findings?run_id=${encodeURIComponent(r.run_id)}&change=fixed">all</a>`;
+
+  const stages = Object.keys({ ...r.stage_timings_ms, ...r.stage_status });
+  document.querySelector("#stages tbody").innerHTML = stages.length ? stages.map((s) =>
+    `<tr><td>${esc(s.replace(/_/g, " "))}${s === r.current_stage && active ? ` <span class="live">now</span>` : ""}</td>
+     <td>${r.stage_status[s] ? UI.runStatus(r.stage_status[s]) : "—"}</td><td class="num">${UI.duration(r.stage_timings_ms[s])}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="empty">No stage timings recorded.</td></tr>`;
+
+  const reps = d.reports.map((x) => `<li><a href="${esc(x.url)}">${esc(x.name)}</a>
+    ${x.from_this_run ? "" : ` <span class="badge" title="written ${esc(x.modified_at)}">from another run</span>`}</li>`).join("");
+  document.getElementById("reports").innerHTML = (reps ? `<ul>${reps}</ul>` : `<div class="empty">No report files on disk for this pipeline.</div>`) +
+    (d.combined_report_url ? `<p class="hint"><a href="${esc(d.combined_report_url)}">Combined markdown</a> (raw, if this run's reports are still on disk).</p>` : "");
+  const errs = r.errors || [];
+  document.getElementById("errors").innerHTML = errs.length
+    ? `<ul class="errors">${errs.map((e) => `<li>${esc(typeof e === "string" ? e : JSON.stringify(e))}</li>`).join("")}</ul>` : `<div class="muted">None.</div>`;
+
+  if (active && !stream) follow();
+}
+
+function loadSummary() {
+  lastLoad = Date.now();
+  return UI.load(`/audit/runs/${encodeURIComponent(runId)}/summary.json`, render, document.getElementById("sub"));
+}
+// Live progress: the SSE stream says when something changed; re-fetch the summary at most every 3s.
+function follow() {
+  stream = new EventSource(`/audit/runs/${encodeURIComponent(runId)}/stream`);
+  const refresh = () => {
+    clearTimeout(pending);
+    pending = setTimeout(loadSummary, Math.max(0, 3000 - (Date.now() - lastLoad)));
+  };
+  stream.addEventListener("snapshot", refresh);
+  stream.addEventListener("terminal", () => { stream.close(); stream = null; clearTimeout(pending); loadSummary(); });
+  stream.addEventListener("error", () => { if (stream && stream.readyState === EventSource.CLOSED) stream = null; });
+}
+loadSummary();
+</script>
+</body>
+</html>

@@ -27,6 +27,8 @@ NAV_MARKER = "<!--#nav-->"
 # (path, label). Order is the nav order.
 NAV_ITEMS: list[tuple[str, str]] = [
     ("/", "Overview"),
+    ("/ui/runs", "Runs"),
+    ("/ui/findings", "Findings"),
     ("/audit/usage", "Usage"),
     ("/audit/topology", "Topology"),
     ("/docs", "API"),
@@ -53,10 +55,32 @@ def nav_html(active: str) -> str:
     )
 
 
-def render_page(filename: str, active: str) -> str:
-    """Read ``auditor/static/<filename>`` and inject the shared nav at ``<!--#nav-->``."""
+def render_page(filename: str, active: str, slots: dict[str, str] | None = None) -> str:
+    """Read ``auditor/static/<filename>``, inject the shared nav at ``<!--#nav-->`` and fill
+    any ``<!--#name-->`` slots with the given (already-escaped) HTML."""
     text = (STATIC_DIR / filename).read_text(encoding="utf-8")
-    return text.replace(NAV_MARKER, nav_html(active), 1)
+    text = text.replace(NAV_MARKER, nav_html(active), 1)
+    for name, value in (slots or {}).items():
+        text = text.replace(f"<!--#{name}-->", value)
+    return text
+
+
+def report_names(output_dir: str | Path) -> list[str]:
+    """Markdown reports directly under output_dir (the only files the report viewer serves)."""
+    return sorted(p.name for p in Path(output_dir).glob("*.md") if p.is_file())
+
+
+def render_report_page(name: str, output_dir: str | Path) -> str | None:
+    """A report from output_dir rendered to HTML inside the shell; None if it isn't one."""
+    if name not in report_names(output_dir):  # whitelist, so no path tricks
+        return None
+    path = Path(output_dir) / name
+    modified = datetime.fromtimestamp(path.stat().st_mtime).isoformat(sep=" ", timespec="minutes")
+    return render_page("report.html", "/ui/runs", {
+        "title": html.escape(name),
+        "meta": html.escape(f"{path.stat().st_size:,} bytes · written {modified} · overwritten by each run"),
+        "content": render_markdown(path.read_text(encoding="utf-8", errors="replace")),
+    })
 
 
 # ── markdown ─────────────────────────────────────────────────────────────────
@@ -103,55 +127,45 @@ def _db_session():
     return db_session()
 
 
-def _last_runs() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """(latest run of any pipeline, latest successful ecosystem-audit run)."""
+def _latest_run() -> dict[str, Any] | None:
     from sqlalchemy import select
 
     from auditor.db import AuditRun
-
-    def _row(r: AuditRun | None) -> dict[str, Any] | None:
-        if r is None:
-            return None
-        meta = r.metadata_json or {}
-        return {
-            "run_id": r.run_id,
-            "pipeline": r.pipeline,
-            "status": r.status,
-            "started_at": r.started_at.isoformat() if r.started_at else None,
-            "finished_at": r.finished_at.isoformat() if r.finished_at else None,
-            "duration_ms": meta.get("duration_ms"),
-            "findings": int(meta.get("findings", 0) or 0),
-            "violations": int(meta.get("violations", 0) or 0),
-            "repos": len(meta.get("scanned_repos") or []),
-        }
+    from auditor.run_views import run_to_dict
 
     with _db_session() as s:
-        latest = s.execute(select(AuditRun).order_by(AuditRun.started_at.desc()).limit(1)).scalar_one_or_none()
-        eco = s.execute(
-            select(AuditRun)
-            .where(AuditRun.pipeline == "ecosystem-audit", AuditRun.status == "success")
-            .order_by(AuditRun.started_at.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-        return _row(latest), _row(eco)
+        row = s.execute(select(AuditRun).order_by(AuditRun.started_at.desc()).limit(1)).scalar_one_or_none()
+        return run_to_dict(row) if row else None
 
 
-def _findings_by_severity(run_id: str) -> dict[str, int]:
+def _latest_findings() -> dict[str, Any] | None:
+    """Severity counts for the newest finished-ok run that has findings stored.
+
+    Ecosystem runs store no findings rows (only repo audits do), so "the last ecosystem
+    run" would always read zero.
+    """
     from sqlalchemy import func, select
 
     from auditor.db import FindingRecord
+    from auditor.run_views import run_to_dict
+    from auditor.ui_runs import _resolve_run
 
     with _db_session() as s:
+        row = _resolve_run(s, None)
+        if row is None:
+            return None
         rows = s.execute(
             select(FindingRecord.severity, func.count())
-            .where(FindingRecord.run_id == run_id)
+            .where(FindingRecord.run_id == row.run_id)
             .group_by(FindingRecord.severity)
         ).all()
+        run = run_to_dict(row)
     counts = {sev: 0 for sev in SEVERITIES}
     for sev, n in rows:
         key = str(sev or "INFO").upper()
         counts[key] = counts.get(key, 0) + int(n)
-    return counts
+    return {"run_id": run["run_id"], "pipeline": run["pipeline"], "started_at": run["started_at"],
+            "repos": len(run["scanned_repos"]), "by_severity": counts, "total": sum(counts.values())}
 
 
 def _pack_counts(output_dir: str | Path) -> dict[str, Any]:
@@ -186,7 +200,6 @@ def summary_data(output_dir: str | Path) -> dict[str, Any]:
     out: dict[str, Any] = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "last_run": None,
-        "last_ecosystem_run": None,
         "findings": None,
         "packs": None,
         "spend": None,
@@ -201,14 +214,8 @@ def summary_data(output_dir: str | Path) -> dict[str, Any]:
             out["errors"].append(f"{section}: {type(exc).__name__}: {exc}"[:300])
             return None
 
-    runs = _try("runs", _last_runs)
-    if runs:
-        out["last_run"], out["last_ecosystem_run"] = runs
-    eco = out["last_ecosystem_run"]
-    if eco:
-        by_sev = _try("findings", lambda: _findings_by_severity(eco["run_id"]))
-        if by_sev is not None:
-            out["findings"] = {"run_id": eco["run_id"], "by_severity": by_sev, "total": sum(by_sev.values())}
+    out["last_run"] = _try("runs", _latest_run)
+    out["findings"] = _try("findings", _latest_findings)
     out["packs"] = _try("packs", lambda: _pack_counts(output_dir))
     out["spend"] = _try("spend", _month_spend)
     return out

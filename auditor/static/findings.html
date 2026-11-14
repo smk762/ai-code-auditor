@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Findings</title>
+<link rel="stylesheet" href="/audit/static/ui.css">
+<script src="/audit/static/ui.js"></script>
+<style>
+  #matrix td.cell { text-align: right; cursor: pointer; font-variant-numeric: tabular-nums; }
+  #matrix td.cell:hover, #matrix td.cell.on { outline: 2px solid var(--text-primary); outline-offset: -2px; }
+  #matrix td.zero { color: var(--text-muted); cursor: default; }
+  #matrix td.zero:hover { outline: none; }
+  #matrix tr.on th { color: var(--text-primary); }
+  #matrix tbody th { font-weight: 500; cursor: pointer; text-align: left; }
+  .toolbar input[type="search"] { min-width: 220px; flex: 1; }
+  td.sev-col { white-space: nowrap; }
+  .new-tag { font-size: 11px; font-weight: 600; color: var(--critical); margin-left: 6px; }
+</style>
+</head>
+<body>
+<!--#nav-->
+<main>
+  <header class="page">
+    <h1>Findings</h1>
+    <div class="sub" id="sub">Loading…</div>
+    <div class="filters" role="group" aria-label="Change since previous run">
+      <button data-change="all" aria-pressed="true">All in run</button>
+      <button data-change="new">New</button>
+      <button data-change="fixed">Fixed</button>
+    </div>
+  </header>
+
+  <section class="grid">
+    <div class="card span-12">
+      <h2>Severity × repo</h2>
+      <p class="hint">Whole run. Click a cell to filter the table to that repo and severity; click it again to clear.</p>
+      <div class="table-wrap"><table id="matrix"></table></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card span-12">
+      <div class="toolbar" role="group" aria-label="Filters">
+        <input type="search" id="f-q" placeholder="Search title or file…" aria-label="Search title or file">
+        <label>Repo <select id="f-repo"><option value="">all</option></select></label>
+        <label>Severity <select id="f-severity"><option value="">all</option></select></label>
+        <label>Source <select id="f-source"><option value="">all</option></select></label>
+        <label>Type <select id="f-type"><option value="">all</option></select></label>
+      </div>
+      <p class="hint" id="count"></p>
+      <div class="table-wrap">
+        <table id="table">
+          <thead><tr><th>Severity</th><th>Finding</th><th>Repo</th><th>Location</th><th>Type</th><th>Source</th></tr></thead>
+          <tbody><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const { esc, int } = UI;
+const p = UI.params();
+const state = { run_id: p.run_id || "", repo: p.repo || "", severity: p.severity || "", source: p.source || "",
+                type: p.type || "", q: p.q || "", change: p.change || "all" };
+const els = { repo: "f-repo", severity: "f-severity", source: "f-source", type: "f-type", q: "f-q" };
+for (const k in els) els[k] = document.getElementById(els[k]);
+els.q.value = state.q;
+
+function fill(el, values, current, label = (v) => v) {
+  el.innerHTML = `<option value="">all</option>` + values.map((v) =>
+    `<option value="${esc(v)}"${v === current ? " selected" : ""}>${esc(label(v))}</option>`).join("");
+}
+
+function matrix(d) {
+  const sevs = UI.SEVERITIES, repos = d.facets.repos;
+  if (!repos.length) return `<tbody><tr><td class="empty">No findings stored for this run.</td></tr></tbody>`;
+  const head = `<thead><tr><th>Repo</th>${sevs.map((s) => `<th class="num">${UI.sevBadge(s)}</th>`).join("")}<th class="num">Total</th></tr></thead>`;
+  const totals = Object.fromEntries(sevs.map((s) => [s, 0]));
+  const body = repos.map((r) => {
+    const row = d.matrix[r];
+    let sum = 0;
+    const cells = sevs.map((s) => {
+      const n = row[s] || 0; sum += n; totals[s] += n;
+      const on = state.repo === r && state.severity === s;
+      return `<td class="cell${n ? "" : " zero"}${on ? " on" : ""}" data-repo="${esc(r)}" data-sev="${s}">${n ? int(n) : "·"}</td>`;
+    }).join("");
+    return `<tr class="${state.repo === r ? "on" : ""}"><th data-repo="${esc(r)}">${esc(r)}</th>${cells}<td class="num"><b>${int(sum)}</b></td></tr>`;
+  }).join("");
+  const foot = `<tr><th>All repos</th>${sevs.map((s) => `<td class="num"><b>${int(totals[s])}</b></td>`).join("")}<td class="num"><b>${int(d.total)}</b></td></tr>`;
+  return head + `<tbody>${body}${foot}</tbody>`;
+}
+
+function render(d) {
+  if (!d.run) {
+    document.getElementById("sub").textContent = "No finished run has findings stored yet.";
+    document.querySelector("#table tbody").innerHTML = `<tr><td colspan="6" class="empty">Nothing to show.</td></tr>`;
+    return;
+  }
+  const r = d.run;
+  document.getElementById("sub").innerHTML =
+    `<a href="/ui/runs/${encodeURIComponent(r.run_id)}">${esc(r.pipeline)} <span class="mono">${esc(r.run_id)}</span></a> · ${UI.ago(r.started_at)} · ` +
+    (d.delta ? `${int(d.delta.new)} new, ${int(d.delta.fixed)} fixed${d.delta.reworded ? ` (${int(d.delta.reworded)} reworded findings count as unchanged)` : ""} vs <a class="mono" href="/ui/runs/${encodeURIComponent(d.previous.run_id)}">${esc(d.previous.run_id)}</a>`
+             : "no earlier run to compare");
+  document.querySelectorAll("[data-change]").forEach((b) => {
+    b.setAttribute("aria-pressed", String(b.dataset.change === state.change));
+    b.disabled = b.dataset.change !== "all" && !d.delta;
+  });
+  document.getElementById("matrix").innerHTML = matrix(d);
+  fill(els.repo, d.facets.repos, state.repo);
+  fill(els.severity, UI.SEVERITIES, state.severity.toUpperCase(), (s) => s.toLowerCase());
+  fill(els.source, d.facets.sources, state.source);
+  fill(els.type, d.facets.types, state.type);
+
+  const what = { all: "in this run", new: "new since the previous run", fixed: "fixed since the previous run" }[state.change];
+  document.getElementById("count").textContent = d.filtered_total > d.findings.length
+    ? `${int(d.filtered_total)} findings ${what} match; showing the first ${int(d.findings.length)}, most severe first.`
+    : `${UI.plural(d.filtered_total, "finding")} ${what} match.`;
+  document.querySelector("#table tbody").innerHTML = d.findings.length ? d.findings.map((f) => `<tr>
+      <td class="sev-col">${UI.sevBadge(f.severity)}</td>
+      <td>${esc(f.title)}${f.is_new && state.change === "all" ? `<span class="new-tag">new</span>` : ""}</td>
+      <td>${esc(f.repo)}</td><td class="mono" title="${esc(f.file_path)}">${esc(f.path)}${f.line ? ":" + f.line : ""}</td>
+      <td>${esc(f.type)}</td><td>${esc(f.source)}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty">No findings match these filters.</td></tr>`;
+}
+
+function load() {
+  UI.setParams({ ...state, change: state.change === "all" ? "" : state.change });
+  const qs = new URLSearchParams(Object.entries(state).filter(([, v]) => v));
+  UI.load(`/audit/findings.json?${qs}`, render, document.getElementById("sub"));
+}
+
+for (const k of ["repo", "severity", "source", "type"]) els[k].addEventListener("change", () => { state[k] = els[k].value; load(); });
+let typing = null;
+els.q.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => { state.q = els.q.value.trim(); load(); }, 250); });
+document.querySelectorAll("[data-change]").forEach((b) => b.addEventListener("click", () => { state.change = b.dataset.change; load(); }));
+document.getElementById("matrix").addEventListener("click", (e) => {
+  const cell = e.target.closest("td.cell:not(.zero), tbody th[data-repo]");
+  if (!cell) return;
+  const repo = cell.dataset.repo, sev = cell.dataset.sev || "";
+  const same = state.repo === repo && state.severity === sev;
+  state.repo = same ? "" : repo;
+  state.severity = same ? "" : sev;
+  load();
+});
+load();
+</script>
+</body>
+</html>
