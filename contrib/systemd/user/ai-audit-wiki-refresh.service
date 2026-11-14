@@ -1,0 +1,18 @@
+[Unit]
+Description=AI Code Auditor — weekly wiki refresh (stale pages only) + publish to argus-docs
+Documentation=file:///home/smk/ai-code-auditor/CLAUDE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/ai-code-auditor
+EnvironmentFile=-%h/ai-code-auditor/.env
+# Rebuilds only pages whose cited files changed on dev (Batch API, wiki budget lane), then
+# exports the gated bundle and pushes it to the private docs repo when it changed.
+# dragonhound-site's docs.lock.json pin bump stays the review gate before anything goes live.
+ExecStart=%h/ai-code-auditor/.venv/bin/ai-audit wiki refresh
+TimeoutStartSec=8h
+
+[Install]
+WantedBy=default.target

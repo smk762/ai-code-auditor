@@ -26,6 +26,8 @@
   .wiki footer ul.dropped { margin: 6px 0 0; padding-left: 18px; }
   .wiki footer ul.dropped li { margin-bottom: 4px; }
   .ok-badge { color: var(--ok); } .warn-badge { color: var(--warn); }
+  .regen { margin-left: 10px; display: inline-flex; gap: 8px; align-items: center; }
+  .regen button { font-size: 12px; padding: 2px 10px; }
   @media (max-width: 800px) { .wiki { grid-template-columns: 1fr; } .wiki aside { position: static; } }
 </style>
 </head>
@@ -39,11 +41,52 @@
       <a class="back" href="/ui/wiki">All repos</a>
     </aside>
     <div>
-      <div class="meta"><!--#meta--></div>
+      <div class="meta"><!--#meta-->
+        <span class="regen"><button class="secondary" id="regen" type="button" data-repo="<!--#repo-->"
+          title="Rebuild this repo's stale pages now (Batch API, costs a little), then publish">Regenerate</button>
+          <span id="regen-status" role="status"></span></span></div>
       <article class="card prose"><!--#content--></article>
       <footer><!--#foot--></footer>
     </div>
   </div>
 </main>
+<script>
+(() => {
+  const btn = document.getElementById("regen"), status = document.getElementById("regen-status");
+  const repo = btn.dataset.repo;
+  let timer = null;
+  const show = async () => {
+    try {
+      const s = await UI.getJSON("/audit/wiki/refresh");
+      const last = s.last || {};
+      if (s.running) {
+        status.textContent = "Refreshing… (batch jobs usually take a few minutes)";
+        btn.disabled = true;
+        timer = timer || setInterval(show, 15000);
+        return;
+      }
+      btn.disabled = false;
+      if (timer) { clearInterval(timer); timer = null; }
+      if ((last.repos || []).includes(repo) && last.finished_at) {
+        const built = Object.values(last.builds || {}).flatMap((b) => ((b.repos || {})[repo] || {}).pages_written || []);
+        status.textContent = `Last regenerate ${UI.ago(last.finished_at)}: `
+          + (built.length ? `rebuilt ${[...new Set(built)].join(", ")}` : "nothing was stale")
+          + `, $${(last.cost_usd || 0).toFixed(2)}. Reload to see changes.`;
+      }
+    } catch (e) { /* the status line is a nicety */ }
+  };
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    try {
+      await UI.send("POST", `/audit/wiki/${encodeURIComponent(repo)}/regenerate`);
+      show();
+    } catch (e) {
+      btn.disabled = false;
+      status.innerHTML = `<span class="err">${UI.esc(e.message)}</span>`;
+    }
+  });
+  show();
+})();
+</script>
 </body>
 </html>

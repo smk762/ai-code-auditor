@@ -24,6 +24,7 @@ GET  /ui/pack-savings                 Pack token-savings page (data: /audit/pack
 GET  /ui/repos                        Repo summary cards (data: /audit/repos/summary.json)
 GET  /ui/packs, /ui/packs/{id}        Packs board and pack page (data: /audit/packs/board.json)
 GET  /ui/wiki, /ui/wiki/{repo}/{page}  Generated wiki (data: /audit/wiki[/{repo}[/{page}]])
+POST /audit/wiki/{repo}/regenerate   Rebuild stale (or all, force=1) pages + publish (auth); GET /audit/wiki/refresh
 GET  /ui/night                        Night summary (data: /audit/night.json?run=)
 GET  /ui/architecture                 Architecture & patterns (data: /audit/architecture.json)
 POST /audit/extraction/{id}/approve   Approve an extraction candidate (adds a rule; auth)
@@ -733,6 +734,40 @@ def get_wiki_page(repo: str, page: str) -> HTMLResponse:
     if out is None:
         raise HTTPException(status_code=404, detail=f"No wiki page {page!r} for {repo!r}.")
     return HTMLResponse(out)
+
+
+@app.post("/audit/wiki/{repo}/regenerate", status_code=202, dependencies=[Depends(_require_mutating_auth)])
+def post_wiki_regenerate(repo: str, force: bool = False) -> JSONResponse:
+    """Rebuild a repo's stale wiki pages now (or every page with force=1), then export + publish.
+
+    Runs in the background through the Batch API; GET /audit/wiki/refresh shows progress.
+    409 while another refresh is running.
+    """
+    from auditor.config import load_ecosystem_config
+    from wiki.refresh import is_running, refresh
+
+    if repo not in {r.name for r in load_ecosystem_config().repos if r.enabled}:
+        raise HTTPException(status_code=404, detail=f"Unknown repo {repo!r}.")
+    out = _output_dir()
+    if is_running(out):
+        raise HTTPException(status_code=409, detail="A wiki refresh is already running.")
+
+    def run() -> None:
+        try:
+            refresh(out, [repo], force=force)
+        except Exception as exc:  # noqa: BLE001 — recorded for the status endpoint
+            logger.warning("wiki regenerate for %s failed: %s", repo, exc)
+
+    threading.Thread(target=run, name=f"wiki-regenerate-{repo}", daemon=True).start()
+    return JSONResponse({"repo": repo, "force": force, "status": "started"}, status_code=202)
+
+
+@app.get("/audit/wiki/refresh")
+def get_wiki_refresh_status() -> JSONResponse:
+    """Whether a wiki refresh is running, and the record of the last one."""
+    from wiki.refresh import is_running, last_run
+
+    return JSONResponse({"running": is_running(_output_dir()), "last": last_run(_output_dir())})
 
 
 @app.get("/audit/wiki")
