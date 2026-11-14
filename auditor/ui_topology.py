@@ -150,6 +150,75 @@ def _scan(repos: list[Any]) -> tuple[dict[str, dict[str, list]], dict[str, dict[
     return imports, uses, dict(files)
 
 
+# ── what kind of package a repo is (from its files, not the declared role) ──
+FACET_ORDER = ["UI", "API", "CLI", "library", "infra", "CI", "template"]
+_API_RE = re.compile(r"FastAPI\(|APIRouter\(|Flask\(|Starlette\(|express\(\)|from aiohttp import web|@app\.(?:get|post|route)\(")
+_CLI_RE = re.compile(r"\btyper\.Typer\(|@click\.(?:command|group)|argparse\.ArgumentParser\(")
+_UI_EXT = (".tsx", ".jsx", ".vue", ".svelte", ".astro")
+_UI_DEPS = re.compile(r'"(?:vite|next|react|svelte|astro|vue)"\s*:')
+_SKIP = re.compile(r"(^|/)(tests?|docs?|examples?|vendor|node_modules|dist|build)/")
+
+
+def _facets(path: str) -> list[dict[str, str]]:
+    """UI / API / CLI / library / infra / CI / template, each with one piece of evidence."""
+    import tomllib
+
+    root = Path(path)
+    try:
+        r = subprocess.run(["git", "-C", path, "ls-files"], capture_output=True, text=True, timeout=10)
+        files = [f for f in r.stdout.splitlines() if f and not _SKIP.search(f)] if r.returncode == 0 else []
+    except (OSError, subprocess.TimeoutExpired):
+        files = []
+    found: dict[str, str] = {}
+
+    def text(rel: str) -> str:
+        try:
+            p = root / rel
+            return p.read_text(encoding="utf-8", errors="replace") if p.stat().st_size < 400_000 else ""
+        except OSError:
+            return ""
+
+    def hit(facet: str, evidence: str) -> None:
+        found.setdefault(facet, evidence)
+
+    for rel in files:
+        if rel.endswith(_UI_EXT):
+            hit("UI", rel)
+        elif rel.endswith("package.json") and _UI_DEPS.search(text(rel)):
+            hit("UI", rel)
+        elif rel.endswith(".tf"):
+            hit("infra", rel)
+        elif Path(rel).name in ("copier.yml", "copier.yaml", "cookiecutter.json"):
+            hit("template", rel)
+        elif rel.startswith(".github/workflows/") and "workflow_call" in text(rel):
+            hit("CI", rel)
+        elif rel.endswith((".py", ".ts", ".js", ".mjs")) and ("API" not in found or "CLI" not in found):
+            src = text(rel)
+            for facet, rx in (("API", _API_RE), ("CLI", _CLI_RE)):
+                if facet not in found and (m := rx.search(src)):
+                    hit(facet, f"{rel}:{src.count(chr(10), 0, m.start()) + 1}")
+    if "infra" in found:
+        found.pop("CI", None)  # an infra repo's workflows deploy it; they aren't a CI product
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file() and "pyproject.toml" in files:
+        try:
+            proj = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project") or {}
+        except (ValueError, OSError):
+            proj = {}
+        if proj.get("scripts"):
+            hit("CLI", "pyproject.toml [project.scripts]")
+        if proj.get("name") and "template" not in found:
+            hit("library", f"pyproject.toml: {proj['name']}")
+    return [{"facet": f, "evidence": found[f]} for f in FACET_ORDER if f in found]
+
+
+def _badges(facets: list[dict[str, str]]) -> list[str]:
+    """At most two short tags for the map: UI and/or API, else the repo's main kind."""
+    names = [f["facet"] for f in facets]
+    main = [n for n in ("UI", "API") if n in names]
+    return main or names[:1]
+
+
 def _head(path: str) -> str:
     try:
         r = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5)
@@ -204,6 +273,7 @@ def _build(out: Path, repos: list[Any], side: Path) -> dict[str, Any]:
             "service_role": (node_info.get(r.name) or {}).get("role"),
             "violations": int((node_info.get(r.name) or {}).get("violation_count") or 0),
             "files": files.get(r.name, 0),
+            "facets": (fc := _facets(r.path)), "badges": _badges(fc),
             "wiki": (out / "wiki" / r.name / "INDEX.json").is_file(),
             "github": f"https://github.com/{slug}" if slug else m.get("url"),
             "head": (poll.get(r.name) or {}).get("sha"),

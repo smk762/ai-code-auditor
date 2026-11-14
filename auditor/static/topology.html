@@ -30,6 +30,7 @@
   .legend-box i.svc { border-radius: 3px; background: var(--surface-2); border: 1px solid var(--text-muted); }
   .node text { font-size: 11px; fill: var(--text-primary); paint-order: stroke; stroke: var(--surface-1); stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
   .node.svc text { fill: var(--text-secondary); }
+  .badge-tag text { font-size: 8px; font-weight: 600; letter-spacing: .04em; fill: var(--text-secondary); stroke: none; }
   .node { cursor: pointer; }
   .dim { opacity: .12; }
   .side-label { font-size: 11px; fill: var(--text-muted); letter-spacing: .06em; text-transform: uppercase; }
@@ -66,7 +67,7 @@
     </section>
     <aside class="card" id="panel" aria-live="polite">
       <h2>How to read this</h2>
-      <p class="kv">Repos show their Argus package mark, or a ring, with one eye coloured by pipeline stage; size grows with connections. Boxes are external services: AI and moderation on the left, data stores and chain on the right, ML and geo tooling along the top.</p>
+      <p class="kv">Repos show their Argus package mark, or a ring, with one eye coloured by pipeline stage; size grows with connections. Tags under a name say what the repo is, read from its code: UI, API, CLI, library, infra, CI or template. Boxes are external services: AI and moderation on the left, data stores and chain on the right, ML and geo tooling along the top.</p>
       <p class="kv">Hover to see a node's neighbours. Click one for its details and the code that links it. Drag to rearrange, scroll to zoom.</p>
       <p class="kv">Edges come from the code (imports, service mentions in at least <span id="minf">2</span> files), the documented flow in <span class="mono">ecosystem.md</span>, and architecture-policy violations.</p>
     </aside>
@@ -134,7 +135,7 @@ function targets(nodes, W, H) {
   nodes.forEach((n) => { T[n.id] ||= { x: 0, y: 0.4 * H }; });
   return T;
 }
-let data = null, sim = null, zoom = null, selected = null;
+let data = null, sim = null, zoom = null, selected = null, icons = {};
 const pos = {};  // id → {x, y}: kept across re-renders so toggling edges doesn't reshuffle the map
 const shown = { flow: true, imports: true, uses: true, violation: true };
 const svg = d3.select("#svg");
@@ -217,14 +218,33 @@ function render() {
     });
   node.filter((n) => n.kind === "repo" && n.violations > 0).append("circle").attr("r", (n) => n.r + 4)
     .attr("fill", "none").attr("stroke", css("--critical")).attr("stroke-width", 1.5).attr("stroke-dasharray", "2 2");
-  node.filter((n) => n.kind === "repo").append("text").attr("x", (n) => n.r + 4).attr("y", 4).text((n) => n.label);
+  // label, then up to two type tags (UI / API, else the repo's main kind) underneath
+  repos.append("text").attr("x", (n) => n.r + 4).attr("y", (n) => (n.badges || []).length ? -1 : 4).text((n) => n.label);
+  repos.each(function (n) {
+    let x = n.r + 4;
+    (n.badges || []).forEach((b) => {
+      const g = d3.select(this).append("g").attr("class", "badge-tag").attr("transform", `translate(${x},5)`);
+      const label = g.append("text").attr("x", 4).attr("y", 8).text(b);
+      const w = label.node().getBBox().width + 8;
+      g.insert("rect", "text").attr("width", w).attr("height", 11).attr("rx", 3)
+        .attr("fill", css("--surface-2")).attr("stroke", css("--border"));
+      x += w + 3;
+    });
+  });
   const svcNodes = node.filter((n) => n.kind === "service");
-  svcNodes.append("text").attr("text-anchor", "middle").attr("y", 4).text((n) => n.label);
   svcNodes.each(function (n) {
-    const t = d3.select(this).select("text").node().getBBox();
-    n.w = t.width + 16; n.h = 22;
-    d3.select(this).insert("rect", "text").attr("x", -n.w / 2).attr("y", -11).attr("width", n.w).attr("height", 22).attr("rx", 6)
+    const g = d3.select(this), icon = icons[n.id.replace(/^svc:/, "")];
+    const text = g.append("text").attr("text-anchor", "middle").attr("y", 4).text(n.label);
+    const tw = text.node().getBBox().width;
+    const iw = icon ? 14 : 0;
+    n.w = tw + 16 + (icon ? iw + 5 : 0); n.h = 24;
+    g.insert("rect", "text").attr("x", -n.w / 2).attr("y", -12).attr("width", n.w).attr("height", 24).attr("rx", 6)
       .attr("fill", css("--surface-2")).attr("stroke", css("--text-muted")).attr("stroke-width", 1);
+    if (icon) {
+      text.attr("x", (iw + 5) / 2);
+      g.append("svg").attr("class", "svc-icon").attr("viewBox", "0 0 24 24").attr("x", -n.w / 2 + 8).attr("y", -iw / 2)
+        .attr("width", iw).attr("height", iw).style("color", css("--text-secondary")).html(icon.body);
+    }
   });
 
   // Structured layout: every node is pulled hard to a computed target (see targets()); the
@@ -304,8 +324,13 @@ function panel(n) {
   let html;
   if (n.kind === "repo") {
     const one = data.mentions.filter((m) => m.source === n.id);
-    html = `<h2>${esc(n.id)}</h2><p class="kv">${esc(data.groups[n.group] || "")}${n.group === "external" ? "" : " stage"} · ${esc(n.area)}${n.service_role ? ` · ${esc(n.service_role)}` : ""} · ${int(n.files)} source files scanned</p>
+    html = `<h2>${esc(n.id)}</h2><p class="kv">${esc(data.groups[n.group] || "")}${n.group === "external" ? "" : " stage"} · ${esc(n.area)} · ${int(n.files)} source files scanned</p>
       <p>${esc(n.role)}</p>
+      ${(n.facets || []).length ? `<h3>What it is (from the code)</h3><ul>${n.facets.map((f) => {
+        const m = /^(.*?):(\d+)$/.exec(f.evidence);
+        const ev = m ? evidenceList(n.id, [{ path: m[1], line: +m[2] }]) : esc(f.evidence);
+        return `<li><b>${esc(f.facet)}</b> <div class="ev">${ev}</div></li>`; }).join("")}</ul>` : ""}
+      ${n.service_role ? `<p class="kv">Declared role in the architecture rules: ${esc(n.service_role)}</p>` : ""}
       <p class="kv">${n.wiki ? `<a href="/ui/wiki/${encodeURIComponent(n.id)}">Wiki</a> · ` : ""}<a href="/ui/repos?q=${encodeURIComponent(n.id)}">Repo card</a>${n.github ? ` · <a href="${esc(n.github)}">GitHub</a>` : ""}${n.violations ? ` · <span class="status critical">${int(n.violations)} violation${n.violations === 1 ? "" : "s"}</span>` : ""}</p>
       ${out.length ? `<h3>Depends on</h3><ul>${out.map((e) => row(e, e.target.id || e.target, n.id)).join("")}</ul>` : ""}
       ${inc.length ? `<h3>Used by</h3><ul>${inc.map((e) => row(e, e.source.id || e.source, e.source.id || e.source)).join("")}</ul>` : ""}
@@ -338,6 +363,9 @@ UI.onThemeChange(render);
 let resizeT = null;
 addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(render, 200); });
 
+// service logos (Simple Icons, CC0) and generic glyphs; the map still works without them
+fetch("/audit/static/service-icons.json").then((r) => r.ok ? r.json() : { icons: {} })
+  .then((j) => { icons = j.icons || {}; render(); }).catch(() => {});
 UI.load("/audit/topology/map.json", (d) => {
   data = d;
   document.getElementById("minf").textContent = d.min_files;

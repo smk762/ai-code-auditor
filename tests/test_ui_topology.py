@@ -198,3 +198,50 @@ def test_mark_route(client: TestClient, eco: Path, monkeypatch) -> None:
     assert r.headers["content-security-policy"].startswith("default-src 'none'")
     assert client.get("/audit/brand/packages/nope.svg").status_code == 404
     assert client.get("/audit/brand/packages/forge.svg?variant=neon").status_code == 422
+
+
+# ── package types and service icons ──────────────────────────────────────────
+
+def _git_repo(path: Path, files: dict[str, str]) -> str:
+    import subprocess
+
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@example.invalid", "PATH": "/usr/bin:/bin"}
+    for rel, text in files.items():
+        (path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (path / rel).write_text(text)
+    subprocess.run(["git", "init", "-q", str(path)], check=True, env=env)
+    subprocess.run(["git", "-C", str(path), "add", "."], check=True, env=env)
+    subprocess.run(["git", "-C", str(path), "commit", "-qm", "x"], check=True, env=env)
+    return str(path)
+
+
+def test_facets_from_code(tmp_path: Path) -> None:
+    svc = _git_repo(tmp_path / "svc", {
+        "pyproject.toml": '[project]\nname = "argus-svc"\n[project.scripts]\nsvc = "svc.cli:main"\n',
+        "src/svc/server.py": "import x\n\napp = FastAPI()\n",
+        "web/package.json": '{"devDependencies": {"vite": "5"}}',
+        "tests/test_api.py": "app = Flask(__name__)\n",  # tests don't count
+    })
+    facets = ui_topology._facets(svc)
+    assert [f["facet"] for f in facets] == ["UI", "API", "CLI", "library"]
+    assert {f["facet"]: f["evidence"] for f in facets}["API"] == "src/svc/server.py:3"
+    assert ui_topology._badges(facets) == ["UI", "API"]
+
+    infra = _git_repo(tmp_path / "infra", {"main.tf": "", ".github/workflows/plan.yml": "on: workflow_call\n"})
+    assert [f["facet"] for f in ui_topology._facets(infra)] == ["infra"]  # its workflows aren't a CI product
+    ci = _git_repo(tmp_path / "ci", {".github/workflows/py.yml": "on:\n  workflow_call:\n"})
+    assert ui_topology._badges(ui_topology._facets(ci)) == ["CI"]
+    tpl = _git_repo(tmp_path / "tpl", {"copier.yml": "x: 1\n", "pyproject.toml": '[project]\nname = "t"\n'})
+    assert [f["facet"] for f in ui_topology._facets(tpl)] == ["template"]
+    lib = _git_repo(tmp_path / "lib", {"pyproject.toml": '[project]\nname = "argus-lib"\n', "src/lib/x.py": "pass\n"})
+    assert ui_topology._badges(ui_topology._facets(lib)) == ["library"]
+    assert ui_topology._facets(str(tmp_path / "missing")) == []
+
+
+def test_every_drawn_service_has_a_safe_icon() -> None:
+    icons = json.loads((Path(ui_topology.__file__).parent / "static" / "service-icons.json").read_text())["icons"]
+    drawn = {sid for sid, (_l, _c, _s, _rx, provider) in ui_topology.SERVICES.items() if provider is None}
+    assert drawn <= set(icons)
+    for body in (i["body"] for i in icons.values()):
+        assert "<script" not in body.lower() and " on" not in body.lower() and body.startswith("<path")
