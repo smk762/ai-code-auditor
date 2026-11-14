@@ -889,6 +889,33 @@ def get_architecture_json() -> JSONResponse:
     return JSONResponse(architecture_data(_output_dir(), names, rules_path()))
 
 
+class _ReportRequest(BaseModel):
+    question: str = ""
+    answer_md: str = ""
+    note: str = ""
+    source_sha: str = ""
+
+
+@app.post("/audit/wiki/{repo}/report", dependencies=[Depends(_require_mutating_auth)])
+def post_wiki_report(repo: str, request: _ReportRequest) -> JSONResponse:
+    """File a bug spotted in an "Ask this repo" answer as an open agent coding pack."""
+    from auditor.config import load_ecosystem_config
+    from conductor.publish import public_base_url
+    from wiki.report import report
+
+    cfg = next((r for r in load_ecosystem_config().repos if r.name == repo), None)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail=f"Repo {repo!r} not found in ecosystem config.")
+    try:
+        res = report(_output_dir(), repo, question=request.question[:2000], answer_md=request.answer_md,
+                     note=request.note[:2000], source_sha=request.source_sha[:64],
+                     repo_path=cfg.path or "", public_base_url=public_base_url())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    res["url"] = f"/ui/packs/{res['id']}"
+    return JSONResponse(res)
+
+
 @app.post("/audit/extraction/{candidate_id}/approve", dependencies=[Depends(_require_mutating_auth)])
 def post_approve_extraction(candidate_id: str) -> JSONResponse:
     """Approve an extraction candidate: add its use_<library> rule (same as `ai-audit approve-extraction`)."""

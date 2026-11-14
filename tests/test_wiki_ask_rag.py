@@ -171,3 +171,35 @@ def test_ask_endpoint(client: TestClient, built, claude, monkeypatch) -> None:
     assert "create_app" in body["answer_html"] and body["source_sha"]
     assert client.post("/audit/wiki/nope/ask", json={"question": "q"}, headers=h).status_code == 404
     assert client.post("/audit/wiki/svc/ask", json={"question": ""}, headers=h).status_code == 422
+
+
+# ── Report a bug from an answer ──────────────────────────────────────────────
+
+def test_report_files_an_open_pack_once(client: TestClient, built, monkeypatch) -> None:
+    from auditor.agent_pack import list_packs, load_pack
+
+    out, _ = built
+    monkeypatch.setenv("AI_AUDIT_PACK_RAG_INGEST", "0")
+    monkeypatch.setenv("AI_AUDIT_API_TOKEN", "tok")
+    body = {"question": "how many styles?", "answer_md": "Six, but seven listed [app.py:L9-L11].",
+            "note": "README count is wrong\nmore detail", "source_sha": "abc123"}
+    assert client.post("/audit/wiki/svc/report", json=body).status_code == 401
+    h = {"X-API-Token": "tok"}
+    r = client.post("/audit/wiki/svc/report", json=body, headers=h)
+    assert r.status_code == 200, r.text
+    res = r.json()
+    assert res["created"] is True and res["status"] == "open" and res["url"] == f"/ui/packs/{res['id']}"
+
+    pack = load_pack(out, res["id"])
+    assert pack["repo"]["name"] == "svc" and pack["kind"] == "bug"
+    assert pack["location"]["file_path"] == "app.py" and pack["location"]["line"] == 9
+    assert pack["narrative"]["title"] == "README count is wrong"
+    assert "how many styles?" in pack["narrative"]["description"] and "abc123" in pack["narrative"]["description"]
+    assert pack["provenance"]["source"] == "ask"
+    assert any(e["id"] == res["id"] for e in list_packs(out))
+
+    # the same report again is the same pack, not a duplicate
+    again = client.post("/audit/wiki/svc/report", json=body, headers=h).json()
+    assert again["id"] == res["id"] and again["created"] is False
+    assert client.post("/audit/wiki/nope/report", json=body, headers=h).status_code == 404
+    assert client.post("/audit/wiki/svc/report", json={"answer_md": "x"}, headers=h).status_code == 422
