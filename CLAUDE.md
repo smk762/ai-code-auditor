@@ -30,6 +30,7 @@ ai-audit pr-intel                            # blocked PRs, why, suggested resol
 ai-audit merge-refresh --repo argus-cortex --schedule  # one-repo pack/RAG (or --now)
 ai-audit repair --pack-id pack-… --mode review   # agent-composer repair loop driven by a pack (fetches pack, no diff needed)
 ai-audit repair --pack-id pack-… --audit-api-base "$AI_AUDIT_PUBLIC_BASE_URL"   # real URL in local .env (see .env.example)
+ai-audit pack-savings                        # estimated token savings from packs vs crawling (--history, --cached, --json)
 ai-audit qa-benchmark --json
 ai-audit approve-extraction --candidate-id ext-retry-core-001
 bash scripts/install_overnight_timers.sh         # rest 00:30 + ecosystem 02:00 user timers
@@ -106,7 +107,7 @@ Supports `ollama` (POST `/api/generate`) and `openai-compatible` (POST `/v1/chat
 
 ## Generated artifacts
 
-All written to `reports/` (overwritten each run): `pr_intel.json` (blocked-PR intel, hourly; UI at `GET /audit/prs`, data `GET /audit/prs.json`, also spoken in the morning briefing), `nightly_repo_report.md`, `security_report.md`, `ecosystem_report.md`, `architecture_violations.md`, `pattern_proposals.md`, `extraction_candidates.yaml/md`. Agent coding packs: `reports/agent_packs/` (+ `INDEX.json`; discover via `GET /audit/packs`). Graph: `graph/ecosystem_graph.db`. Embeddings: `index/code_embeddings.faiss`.
+All written to `reports/` (overwritten each run): `pr_intel.json` (blocked-PR intel, hourly; UI at `GET /audit/prs`, data `GET /audit/prs.json`, also spoken in the morning briefing), `nightly_repo_report.md`, `security_report.md`, `ecosystem_report.md`, `architecture_violations.md`, `pattern_proposals.md`, `extraction_candidates.yaml/md`. `pack_savings.json` + `pack_savings_history.jsonl` (estimated token savings from packs, chars/4, re-measured after each pack emit; `GET /audit/pack-savings.json[?history=1]`; the history file is appended, never overwritten). Agent coding packs: `reports/agent_packs/` (+ `INDEX.json`; discover via `GET /audit/packs`). Graph: `graph/ecosystem_graph.db`. Embeddings: `index/code_embeddings.faiss`.
 
 ## Branches
 

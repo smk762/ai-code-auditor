@@ -262,6 +262,14 @@ def _build_parser() -> argparse.ArgumentParser:
     pri.add_argument("--json", action="store_true", help="Print the full report as JSON")
     pri.add_argument("--cached", action="store_true", help="Show the last report instead of querying GitHub")
 
+    sav = sub.add_parser(
+        "pack-savings",
+        help="Estimated token savings from agent packs vs crawling, per repo (tracked over time)",
+    )
+    sav.add_argument("--json", action="store_true", help="Print the full report as JSON")
+    sav.add_argument("--cached", action="store_true", help="Show the last report instead of re-measuring")
+    sav.add_argument("--history", action="store_true", help="Show the recorded trend instead")
+
     return parser
 
 
@@ -275,6 +283,61 @@ def _refresh_pr_intel_quietly() -> dict:
         return {"counts": refresh()["counts"]}
     except Exception as exc:  # noqa: BLE001 - the poll result matters more
         return {"error": str(exc)[:300]}
+
+
+def _pct(v: float | None) -> str:
+    return "  n/a" if v is None else f"{v:>5.0%}"
+
+
+def _run_pack_savings(*, as_json: bool, cached: bool, history: bool) -> None:
+    from auditor.pack_savings import load_history, load_report, refresh
+
+    if history:
+        rows = load_history()
+        if as_json:
+            print(json.dumps(rows, indent=2))
+            return
+        if not rows:
+            raise SystemExit("No pack savings history yet; run `ai-audit pack-savings` first.")
+        print(f"{'measured':16} {'packs':>6} {'bundle':>7} {'session':>8} {'median':>7} {'file/brief':>10}")
+        for r in rows:
+            ratio = r.get("median_file_to_brief")
+            print(
+                f"{r['generated_at'][:16]:16} {r.get('pack_count') or 0:>6} {r['bundle_tokens']:>7} "
+                f"{_pct(r.get('session_saving')):>8} {_pct(r.get('median_saving_vs_targeted')):>7} "
+                f"{(f'{ratio:.1f}x' if ratio else 'n/a'):>10}"
+            )
+        return
+    report = load_report() if cached else refresh()
+    if report is None:
+        raise SystemExit("No cached pack savings; run `ai-audit pack-savings` first.")
+    if as_json:
+        print(json.dumps(report, indent=2))
+        return
+    print(f"{'repo':20} {'source':>9} {'orient':>7} {'bundle':>7} {'in/cand':>8} {'targeted':>9} {'vs tgt':>7} {'vs src':>7}")
+    for r in report["repos"]:
+        print(
+            f"{r['repo']:20} {r['source_tokens']:>9} {r['orientation_tokens']:>7} {r['bundle_tokens']:>7} "
+            f"{r['specialists_in_bundle']:>3}/{r['specialist_candidates']:<4} {r['targeted_tokens']:>9} "
+            f"{_pct(r['saving_vs_targeted']):>7} {_pct(r['saving_vs_source']):>7}"
+        )
+    s, p = report["summary"], report["per_pack"]
+    print(
+        f"\nmedian saving vs targeted crawl {_pct(s['median_saving_vs_targeted']).strip()} · "
+        f"session (incl. orientation) {_pct(s['session_saving']).strip()} · "
+        f"vs source crawl {_pct(s['saving_vs_source']).strip()}"
+    )
+    if p.get("packs"):
+        print(
+            f"per pack (n={p['packs']}): brief {p['median_brief_tokens']} vs cited file "
+            f"{p['median_cited_file_tokens']} tokens, {p['median_file_to_brief']}x "
+            f"(p25 {p['p25_file_to_brief']}x, p75 {p['p75_file_to_brief']}x)"
+        )
+    if s["repos_with_broken_imports"]:
+        print("CLAUDE.md imports that don't resolve: " + ", ".join(
+            f"{r['repo']} ({', '.join(r['broken_imports'])})" for r in report["repos"] if r["broken_imports"]
+        ))
+    print(f"({report['method']} estimate, {report['generated_at'][:16]}Z)")
 
 
 def _run_pr_intel(*, as_json: bool, cached: bool) -> None:
@@ -968,6 +1031,8 @@ def main() -> None:
         print(json.dumps(out, indent=2))
     elif args.command == "pr-intel":
         _run_pr_intel(as_json=args.json, cached=args.cached)
+    elif args.command == "pack-savings":
+        _run_pack_savings(as_json=args.json, cached=args.cached, history=args.history)
     elif args.command == "diff-audit":
         _run_diff_audit(
             repo_name=args.repo,

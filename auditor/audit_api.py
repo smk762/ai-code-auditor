@@ -668,6 +668,30 @@ def post_pr_intel_refresh() -> JSONResponse:
     return JSONResponse(report)
 
 
+@app.get("/audit/pack-savings.json")
+def get_pack_savings_json(history: bool = False) -> JSONResponse:
+    """Estimated token savings from agent packs (latest report, or the trend with ?history=1)."""
+    from auditor.pack_savings import load_history, load_report
+
+    if history:
+        return JSONResponse({"history": load_history(_output_dir())})
+    report = load_report(_output_dir())
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No pack savings yet: run `ai-audit pack-savings` or POST /audit/pack-savings/refresh.",
+        )
+    return JSONResponse(report)
+
+
+@app.post("/audit/pack-savings/refresh", dependencies=[Depends(_require_mutating_auth)])
+def post_pack_savings_refresh() -> JSONResponse:
+    """Re-measure pack token savings now (reads mirrors and packs; appends to the history)."""
+    from auditor.pack_savings import refresh
+
+    return JSONResponse(refresh(output_dir=_output_dir()))
+
+
 @app.get("/audit/topology.json")
 def get_service_topology_json() -> FileResponse:
     """Return the structured JSON sidecar for the latest topology.  404 if absent."""
