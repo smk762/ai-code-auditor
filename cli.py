@@ -124,7 +124,8 @@ def _build_parser() -> argparse.ArgumentParser:
     repair_cmd.add_argument(
         "--audit-api-base", dest="repair_audit_api_base", default="", metavar="URL",
         help="Audit API base rag-chat uses to fetch --pack-id "
-             "(default: rag-chat's AI_AUDIT_PUBLIC_BASE_URL / AUDIT_API_URL)",
+             "(default: rag-chat's AI_AUDIT_PUBLIC_BASE_URL / AUDIT_API_URL). rag-chat only accepts "
+             "its configured audit API or an origin in its AUDIT_API_ALLOWED_HOSTS; others are a 422.",
     )
     _repair_src = repair_cmd.add_mutually_exclusive_group(required=False)
     _repair_src.add_argument("--diff", dest="repair_diff_file", metavar="FILE", help="Path to a unified diff file")
@@ -786,6 +787,18 @@ def _run_repair(
                     f"rag-chat refused the repair run ({resp.status_code}"
                     f"{': ' + detail if detail else ''}); {hint}."
                 )
+            if resp.status_code == 422:
+                detail = ""
+                try:
+                    detail = str(resp.json().get("detail", ""))
+                except ValueError:
+                    pass
+                hint = (
+                    " Drop --audit-api-base to use rag-chat's configured audit API, or add that "
+                    "host:port to AUDIT_API_ALLOWED_HOSTS in rag-chat's .env."
+                    if "audit_api" in detail else ""
+                )
+                raise SystemExit(f"rag-chat rejected the repair request (422: {detail or 'invalid request'}).{hint}")
             resp.raise_for_status()
             event_name = ""
             for line in resp.iter_lines(decode_unicode=True):

@@ -128,3 +128,21 @@ def test_401_from_rag_chat_is_explained(monkeypatch) -> None:
                         apply=True, rag_chat_api_key="rk-bad")
     msg = str(exc.value)
     assert "401" in msg and "Invalid API key" in msg and "rk-bad" not in msg
+
+
+def test_disallowed_audit_base_explains_the_422(monkeypatch) -> None:
+    import requests
+
+    class _Refused(_FakeResp):
+        status_code = 422
+
+        def json(self):
+            return {"detail": "audit_api_base host 192.168.1.198:8765 is not allowed: use the configured "
+                              "audit API or add it to AUDIT_API_ALLOWED_HOSTS on rag-chat"}
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Refused())
+    with pytest.raises(SystemExit) as exc:
+        cli._run_repair(repo_name="", repair_api_url="http://rag.test", pack_id="ext-1",
+                        audit_api_base="http://192.168.1.198:8765")
+    msg = str(exc.value)
+    assert "422" in msg and "192.168.1.198:8765" in msg and "AUDIT_API_ALLOWED_HOSTS" in msg
