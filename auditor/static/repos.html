@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Repos</title>
+<link rel="stylesheet" href="/audit/static/ui.css">
+<script src="/audit/static/ui.js"></script>
+<style>
+  .repo-card h2 { font-size: 15px; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+  .repo-card h2 a.gh { font-size: 12px; font-weight: 400; }
+  .repo-card dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; font-size: 13px; }
+  .repo-card dt { color: var(--text-secondary); font-size: 12px; }
+  .repo-card dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .repo-card .sevbar { height: 6px; margin: 4px 0 0; max-width: 220px; }
+  .repo-card .links { margin-top: 10px; font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .hot { color: var(--critical); font-weight: 600; }
+</style>
+</head>
+<body>
+<!--#nav-->
+<main>
+  <header class="page">
+    <h1>Repos</h1>
+    <div class="sub" id="sub">Loading…</div>
+    <div class="filters" role="group" aria-label="Sort">
+      <input type="search" id="q" placeholder="Filter repos…" aria-label="Filter repos">
+      <label class="sub">Sort <select id="sort">
+        <option value="name">name</option>
+        <option value="open_high">open high-severity packs</option>
+        <option value="findings">findings</option>
+        <option value="new">new findings</option>
+        <option value="tip">latest dev commit</option>
+      </select></label>
+    </div>
+  </header>
+  <section class="grid" id="cards" aria-label="Repos"></section>
+</main>
+
+<script>
+const { esc, int } = UI;
+const p = UI.params();
+const sortEl = document.getElementById("sort"), qEl = document.getElementById("q");
+sortEl.value = p.sort || "name";
+qEl.value = p.q || "";
+let data = null;
+
+function sevBar(by) {
+  const total = UI.SEVERITIES.reduce((a, s) => a + (by[s] || 0), 0);
+  if (!total) return "";
+  return `<div class="track sevbar" role="img" aria-label="${UI.SEVERITIES.map((s) => `${s.toLowerCase()} ${by[s] || 0}`).join(", ")}">` +
+    UI.SEVERITIES.filter((s) => by[s]).map((s) => `<div class="fill" style="width:${(by[s] / total) * 100}%;background:var(--sev-${s.toLowerCase()})"></div>`).join("") + `</div>`;
+}
+
+function card(r) {
+  const repoQ = encodeURIComponent(r.name);
+  const tip = r.tip
+    ? `${r.github_url ? `<a class="mono" href="${esc(r.github_url)}/commit/${esc(r.tip.sha)}">${esc(r.tip.sha.slice(0, 8))}</a>` : `<span class="mono">${esc(r.tip.sha.slice(0, 8))}</span>`}
+       <span class="muted">${r.tip.committed_at ? `committed ${UI.ago(r.tip.committed_at)}` : `seen ${UI.ago(r.tip.checked_at)}`}</span>
+       ${r.tip.mirror_behind ? `<div class="status warn" title="Audits scanned the mirror's HEAD; mirrors sync in the nightly rest window">mirror behind, at <span class="mono">${esc(r.tip.mirror_sha.slice(0, 8))}</span></div>` : ""}`
+    : `<span class="muted">not polled</span>`;
+  const a = r.last_audit;
+  const audit = a ? `<a href="/ui/runs/${encodeURIComponent(a.run_id)}">${UI.runStatus(a.status)}</a> <span class="muted">${esc(a.pipeline)} · ${UI.ago(a.at)}</span>` : `<span class="muted">never</span>`;
+  const f = r.findings;
+  const findings = f == null ? `<span class="muted">—</span>`
+    : f.total ? `<a href="/ui/findings?repo=${repoQ}">${int(f.total)}</a>${f.new ? ` · <a href="/ui/findings?repo=${repoQ}&change=new">${int(f.new)} new</a>` : ""}
+       <span class="muted">· ${int((f.by_severity.HIGH || 0) + (f.by_severity.CRITICAL || 0))} high+</span>${sevBar(f.by_severity)}` : "0";
+  const pk = r.packs;
+  const active = pk.claimed + pk.in_progress;
+  const packs = `<a href="/ui/packs?repo=${repoQ}">${int(pk.open)} open</a>` +
+    (pk.open_high ? ` · <a class="hot" href="/ui/packs?repo=${repoQ}&severity=CRITICAL,HIGH">${int(pk.open_high)} high+</a>` : "") +
+    (active ? ` · ${int(active)} in flight` : "") + (pk.resolved ? ` <span class="muted">· ${int(pk.resolved)} resolved</span>` : "");
+  const viol = r.violations == null ? `<span class="muted">—</span>` : r.violations ? `<a href="/ui/reports/architecture_violations.md">${int(r.violations)}</a>` : "0";
+  return `<article class="card repo-card span-4">
+    <h2>${esc(r.name)}${r.github_url ? `<a class="gh" href="${esc(r.github_url)}">GitHub</a>` : ""}</h2>
+    <dl>
+      <dt>${esc((r.tip && r.tip.branch) || "dev")} tip</dt><dd>${tip}</dd>
+      <dt>Last audit</dt><dd>${audit}</dd>
+      <dt>Findings</dt><dd>${findings}</dd>
+      <dt>Packs</dt><dd>${packs}</dd>
+      <dt>Arch. violations</dt><dd>${viol}</dd>
+    </dl>
+  </article>`;
+}
+
+const SORTS = {
+  name: (a, b) => a.name.localeCompare(b.name),
+  open_high: (a, b) => b.packs.open_high - a.packs.open_high || b.packs.open - a.packs.open,
+  findings: (a, b) => ((b.findings || {}).total || 0) - ((a.findings || {}).total || 0),
+  new: (a, b) => ((b.findings || {}).new || 0) - ((a.findings || {}).new || 0),
+  tip: (a, b) => String((b.tip || {}).committed_at || "").localeCompare(String((a.tip || {}).committed_at || "")),
+};
+
+function render() {
+  if (!data) return;
+  const q = qEl.value.trim().toLowerCase();
+  UI.setParams({ sort: sortEl.value === "name" ? "" : sortEl.value, q });
+  const repos = data.repos.filter((r) => !q || r.name.toLowerCase().includes(q)).sort(SORTS[sortEl.value] || SORTS.name);
+  document.getElementById("cards").innerHTML = repos.map(card).join("") || `<div class="card span-12 empty">No repos match.</div>`;
+  const fr = data.findings_run;
+  let sub = `${UI.plural(data.repos.length, "repo")}` +
+    (fr ? ` · findings from <a class="mono" href="/ui/runs/${encodeURIComponent(fr.run_id)}">${esc(fr.run_id)}</a> (${UI.ago(fr.started_at)})${data.findings_has_baseline ? "" : ", no baseline for “new”"}` : "") +
+    (data.poll_updated_at ? ` · dev tips polled ${UI.ago(data.poll_updated_at)}` : "");
+  if (data.errors.length) sub += ` · <span class="err">partial data: ${esc(data.errors.join("; "))}</span>`;
+  document.getElementById("sub").innerHTML = sub;
+}
+
+sortEl.addEventListener("change", render);
+qEl.addEventListener("input", render);
+UI.load("/audit/repos/summary.json", (d) => { data = d; render(); }, document.getElementById("sub"));
+</script>
+</body>
+</html>

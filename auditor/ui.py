@@ -27,8 +27,10 @@ NAV_MARKER = "<!--#nav-->"
 # (path, label). Order is the nav order.
 NAV_ITEMS: list[tuple[str, str]] = [
     ("/", "Overview"),
+    ("/ui/repos", "Repos"),
     ("/ui/runs", "Runs"),
     ("/ui/findings", "Findings"),
+    ("/ui/packs", "Packs"),
     ("/ui/pack-savings", "Pack savings"),
     ("/audit/usage", "Usage"),
     ("/audit/topology", "Topology"),

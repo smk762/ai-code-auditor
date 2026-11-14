@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title><!--#title--></title>
+<link rel="stylesheet" href="/audit/static/ui.css">
+<script src="/audit/static/ui.js"></script>
+<style>
+  .status-form { display: grid; gap: 8px; }
+  .status-form textarea { width: 100%; min-height: 60px; resize: vertical; }
+  .status-form .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<!--#nav-->
+<main>
+  <header class="page">
+    <h1><!--#title--></h1>
+    <div class="sub" id="sub"></div>
+  </header>
+  <section class="grid">
+    <article class="card prose span-8"><!--#brief--></article>
+    <aside class="span-4">
+      <div class="card">
+        <h2>Lifecycle</h2>
+        <p class="hint">Changing status needs the API token or auth code. The note is kept in the pack's history.</p>
+        <form class="status-form" id="status-form">
+          <div class="row">
+            <select id="status" aria-label="Status">
+              <option value="open">open</option><option value="claimed">claimed</option>
+              <option value="in_progress">in progress</option><option value="resolved">resolved</option>
+              <option value="wontfix">wontfix</option>
+            </select>
+            <button class="primary" type="submit">Save</button>
+            <span id="flash" role="status"></span>
+          </div>
+          <textarea id="note" placeholder="Note (optional)" aria-label="Note"></textarea>
+        </form>
+      </div>
+      <div class="card" style="margin-top:12px">
+        <h2>History</h2>
+        <table id="history"><thead><tr><th>When</th><th>Status</th><th>Note</th></tr></thead><tbody></tbody></table>
+      </div>
+    </aside>
+  </section>
+</main>
+<script id="pack-data" type="application/json"><!--#data--></script>
+<script>
+const { esc } = UI;
+const pack = JSON.parse(document.getElementById("pack-data").textContent);
+
+function render() {
+  document.getElementById("status").value = pack.status;
+  document.getElementById("sub").innerHTML = `<span class="mono">${esc(pack.id)}</span> · ${esc(pack.status.replace("_", " "))}` +
+    (pack.draft_pr_url ? ` · <a href="${esc(pack.draft_pr_url)}">draft PR</a>` : "") +
+    ` · <a href="/audit/packs/${encodeURIComponent(pack.id)}">JSON</a> · <a href="/audit/packs/${encodeURIComponent(pack.id)}/brief">brief (markdown)</a> · <a href="/ui/packs">board</a>`;
+  const rows = [...(pack.history || [])].reverse();
+  document.querySelector("#history tbody").innerHTML = rows.length ? rows.map((h) =>
+    `<tr><td title="${esc(h.at || "")}">${UI.ago(h.at)}</td><td>${esc(String(h.status || "").replace("_", " "))}</td><td>${esc(h.note || "")}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="muted">No changes yet.</td></tr>`;
+}
+
+document.getElementById("status-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const flash = document.getElementById("flash");
+  const btn = e.target.querySelector("button");
+  btn.disabled = true;
+  try {
+    const out = await UI.send("POST", `/audit/packs/${encodeURIComponent(pack.id)}/status`,
+      { status: document.getElementById("status").value, note: document.getElementById("note").value.trim() });
+    pack.history = [...(pack.history || []), { status: out.status, note: out.status_note, at: out.status_updated_at }];
+    pack.status = out.status;
+    pack.draft_pr_url = out.draft_pr_url || pack.draft_pr_url;
+    document.getElementById("note").value = "";
+    flash.innerHTML = `<span class="status ok">Saved</span>`;
+    render();
+  } catch (err) {
+    flash.innerHTML = `<span class="err">${esc(err.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+render();
+</script>
+</body>
+</html>

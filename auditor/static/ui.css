@@ -128,7 +128,23 @@ td.num, th.num { text-align: right; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 .muted { color: var(--text-muted); }
 .table-wrap { overflow-x: auto; }
-select, input[type="search"], input[type="text"] {
+button.primary, button.secondary {
+  font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 6px; cursor: pointer; border: 1px solid var(--border);
+}
+button.primary { background: var(--text-primary); color: var(--surface-1); border-color: var(--text-primary); }
+button.secondary { background: var(--surface-1); color: var(--text-secondary); }
+button:disabled { opacity: .5; cursor: default; }
+dialog.ui-auth {
+  border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; width: min(360px, calc(100vw - 32px));
+  background: var(--surface-1); color: var(--text-primary);
+}
+dialog.ui-auth::backdrop { background: rgba(0, 0, 0, .35); }
+dialog.ui-auth h2 { font-size: 15px; margin: 0 0 6px; }
+dialog.ui-auth p { font-size: 13px; color: var(--text-secondary); margin: 0 0 10px; }
+dialog.ui-auth input { width: 100%; }
+dialog.ui-auth .row { display: flex; justify-content: flex-end; gap: 8px; margin: 12px 0 6px; }
+dialog.ui-auth .hint { font-size: 11px; color: var(--text-muted); margin: 0; }
+select, input[type="search"], input[type="text"], input[type="password"], textarea {
   font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 6px;
   background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border);
 }

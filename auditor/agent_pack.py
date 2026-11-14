@@ -141,6 +141,8 @@ class AgentCodingPack:
             "path": path,
             "url": url,
             "detected_at": (self.provenance or {}).get("detected_at", ""),
+            "status_updated_at": self.status_updated_at or "",
+            "draft_pr_url": (self.repair or {}).get("draft_pr_url") or "",
         }
 
     def to_brief_md(self) -> str:

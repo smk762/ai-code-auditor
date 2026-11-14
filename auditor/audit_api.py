@@ -20,6 +20,8 @@ GET  /ui/runs, /ui/runs/{run_id}      Runs list and run summary pages (live via 
 GET  /ui/findings                     Findings page: severity × repo matrix, filters, new/fixed
 GET  /ui/reports/{name}               A markdown report from output_dir, rendered server-side
 GET  /ui/pack-savings                 Pack token-savings page (data: /audit/pack-savings.json)
+GET  /ui/repos                        Repo summary cards (data: /audit/repos/summary.json)
+GET  /ui/packs, /ui/packs/{id}        Packs board and pack page (data: /audit/packs/board.json)
 GET  /audit/runs.json                 All pipelines' runs + facets (pipeline, status filters)
 GET  /audit/runs/{run_id}/summary.json  Run summary with findings delta vs the previous run
 GET  /audit/findings.json             Filtered findings + severity × repo matrix for a run
@@ -624,6 +626,37 @@ def get_run_page(run_id: str) -> HTMLResponse:
 def get_findings_page() -> HTMLResponse:
     """Findings: severity × repo matrix and a filterable table, with new/fixed since last run."""
     return HTMLResponse(render_page("findings.html", "/ui/findings"))
+
+
+@app.get("/ui/repos", response_class=HTMLResponse)
+def get_repos_page() -> HTMLResponse:
+    """Repo summary cards: dev tip, last audit, findings, packs, architecture violations."""
+    return HTMLResponse(render_page("repos.html", "/ui/repos"))
+
+
+@app.get("/ui/packs", response_class=HTMLResponse)
+def get_packs_board_page() -> HTMLResponse:
+    """Packs board: columns by lifecycle status, filters, status change (auth)."""
+    return HTMLResponse(render_page("packs.html", "/ui/packs"))
+
+
+@app.get("/ui/packs/{pack_id}", response_class=HTMLResponse)
+def get_pack_page(pack_id: str) -> HTMLResponse:
+    """One pack: rendered brief, lifecycle status form (auth) and status history."""
+    from auditor.ui_repos import render_pack_page
+
+    page = render_pack_page(_output_dir(), pack_id)
+    if page is None:
+        raise HTTPException(status_code=404, detail=f"Pack {pack_id!r} not found.")
+    return HTMLResponse(page)
+
+
+@app.get("/audit/repos/summary.json")
+def get_repos_summary_json() -> JSONResponse:
+    """Per-repo cards: dev tip + commit time, last audit, findings, packs by status, violations."""
+    from auditor.ui_repos import repos_data
+
+    return JSONResponse(repos_data(_output_dir()))
 
 
 @app.get("/ui/pack-savings", response_class=HTMLResponse)
@@ -1567,6 +1600,22 @@ def list_agent_packs(
         # Always serve current discovery (older INDEX.json files point specialist at kind=architecture).
         "discovery": {**PACK_DISCOVERY, "index_file": f"{out}/agent_packs/INDEX.json"},
     })
+
+
+@app.get("/audit/packs/board.json")
+def get_packs_board_json(
+    repo: str = Query(default=""),
+    layer: str = Query(default="", description="world_model | specialist"),
+    kind: str = Query(default=""),
+    severity: str = Query(default="", description="comma-separated, e.g. CRITICAL,HIGH"),
+    q: str = Query(default="", description="substring of id, title, file or repo"),
+    per_column: int = Query(default=50, ge=1, le=500),
+) -> JSONResponse:
+    """Packs grouped by lifecycle status for the board (filtered totals, top cards per column)."""
+    from auditor.ui_repos import packs_board
+
+    return JSONResponse(packs_board(_output_dir(), repo=repo, layer=layer, kind=kind,
+                                    severity=severity, q=q, per_column=per_column))
 
 
 @app.get("/audit/packs/bundle")

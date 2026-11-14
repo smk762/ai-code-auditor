@@ -12,6 +12,37 @@
   }
   applyTheme(storedTheme());
 
+  const TOKEN_KEY = "ai-audit-token";
+  let memToken = null;  // fallback when sessionStorage is blocked
+  function authToken() {
+    try { return sessionStorage.getItem(TOKEN_KEY) || memToken; } catch (_) { return memToken; }
+  }
+  function forgetToken() {
+    memToken = null;
+    try { sessionStorage.removeItem(TOKEN_KEY); } catch (_) {}
+  }
+  // Small modal asking for the token; resolves to the string, or null when cancelled.
+  function askToken(message) {
+    return new Promise((resolve) => {
+      const dlg = document.createElement("dialog");
+      dlg.className = "ui-auth";
+      dlg.innerHTML = `<form method="dialog">
+        <h2>Sign in for actions</h2><p></p>
+        <input type="password" name="token" autocomplete="current-password" aria-label="API token or auth code" required>
+        <div class="row"><button value="cancel" type="button" class="secondary">Cancel</button><button value="ok" class="primary">Continue</button></div>
+        <p class="hint">Kept for this browser tab only.</p></form>`;
+      dlg.querySelector("p").textContent = message;
+      const input = dlg.querySelector("input");
+      const done = (v) => { dlg.close(); dlg.remove(); resolve(v); };
+      dlg.querySelector("button.secondary").addEventListener("click", () => done(null));
+      dlg.querySelector("form").addEventListener("submit", (e) => { e.preventDefault(); done(input.value.trim() || null); });
+      dlg.addEventListener("cancel", (e) => { e.preventDefault(); done(null); });
+      document.body.appendChild(dlg);
+      dlg.showModal();
+      input.focus();
+    });
+  }
+
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -64,6 +95,28 @@
       history.replaceState(null, "", qs ? `?${qs}` : location.pathname);
       return qs;
     },
+    // Mutating request (POST etc.). Read-only pages never need this. On 401 it asks once for
+    // the API token or auth code, keeps it in sessionStorage (this tab only) and retries.
+    // The secret goes in both X-API-Token and X-Auth-Code; the server accepts whichever matches.
+    async send(method, url, body) {
+      const attempt = async () => {
+        const headers = { Accept: "application/json", "Content-Type": "application/json" };
+        const tok = authToken();
+        if (tok) { headers["X-API-Token"] = tok; headers["X-Auth-Code"] = tok; }
+        return fetch(url, { method, headers, body: body == null ? undefined : JSON.stringify(body) });
+      };
+      let r = await attempt();
+      if (r.status === 401) {
+        const given = await askToken(authToken() ? "That token was not accepted. Try again:" : "This action needs the API token or auth code.");
+        if (!given) throw new Error("cancelled: no token given");
+        try { sessionStorage.setItem(TOKEN_KEY, given); } catch (_) { memToken = given; }
+        r = await attempt();
+        if (r.status === 401) { forgetToken(); }
+      }
+      if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 300)}`);
+      return r.json();
+    },
+    forgetToken: () => forgetToken(),
     // Called on OS or manual theme change, so canvas charts can re-read tokens.
     onThemeChange(fn) {
       matchMedia("(prefers-color-scheme: dark)").addEventListener("change", fn);
