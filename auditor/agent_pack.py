@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from typing import Any
 import yaml
 
 from auditor.contracts import Finding, RuleViolation, utc_now_iso
+from auditor.finding_match import reworded_score
 from auditor.validator import suggest_test_commands
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,12 @@ DEFAULT_PACK_STATUS = "open"
 # Statuses a consuming agent should still pick up (resolved/wontfix are closed).
 ACTIVE_PACK_STATUSES = ("open", "claimed", "in_progress")
 _STATUS_HISTORY_MAX = 20
+# Dedupe: a re-found issue (same repo and file, reworded title, earlier emit) reuses the existing
+# pack. Resolved packs are not merge targets: an issue that comes back after a fix gets a fresh
+# open pack instead of hiding under "resolved". Kinds whose titles don't describe the issue
+# (architecture titles are "repo: path:line") dedupe on exact id only.
+_MERGE_INTO_STATUSES = ("in_progress", "claimed", "wontfix", "open")  # keeper preference order
+_NO_TITLE_MATCH_KINDS = frozenset({"architecture", "extraction", "world_model", "invariants"})
 
 # Bundle sizing: token_budget is approximated as chars / CHARS_PER_TOKEN.
 CHARS_PER_TOKEN = 4
@@ -136,6 +144,8 @@ class AgentCodingPack:
             "impacted_repos": list((self.impact or {}).get("impacted_repos") or []),
             "title": (self.narrative or {}).get("title", ""),
             "file_path": (self.location or {}).get("file_path", ""),
+            "line": int((self.location or {}).get("line") or 0),
+            "duplicate_of": (self.governance or {}).get("duplicate_of") or "",
             "run_id": (self.provenance or {}).get("run_id", ""),
             "path": path,
             "url": url,
@@ -469,6 +479,8 @@ def _carry_over_lifecycle(pack: AgentCodingPack, existing: dict[str, Any]) -> No
     pack.status_note = prev.status_note
     pack.status_updated_at = prev.status_updated_at
     pack.status_history = prev.status_history
+    if prev.governance.get("duplicate_of"):
+        pack.governance["duplicate_of"] = prev.governance["duplicate_of"]
     if not pack.repair.get("draft_pr_url") and prev.repair.get("draft_pr_url"):
         pack.repair["draft_pr_url"] = prev.repair["draft_pr_url"]
 
@@ -575,6 +587,17 @@ def load_pack(output_dir: str | Path, pack_id: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _index_entries(output_dir: str | Path) -> list[dict[str, Any]]:
+    """INDEX.json entries, rebuilding the index when it is missing or unreadable."""
+    idx_file = index_path(output_dir)
+    if idx_file.exists():
+        try:
+            return list(json.loads(idx_file.read_text(encoding="utf-8")).get("packs") or [])
+        except (OSError, json.JSONDecodeError):
+            pass
+    return list(rebuild_index(output_dir).get("packs") or [])
+
+
 def list_packs(
     output_dir: str | Path,
     *,
@@ -588,15 +611,7 @@ def list_packs(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """Filter INDEX entries. ``status`` may be comma-separated (e.g. ``open,claimed``)."""
-    idx_file = index_path(output_dir)
-    if idx_file.exists():
-        try:
-            payload = json.loads(idx_file.read_text(encoding="utf-8"))
-            entries = list(payload.get("packs") or [])
-        except (OSError, json.JSONDecodeError):
-            entries = rebuild_index(output_dir).get("packs", [])
-    else:
-        entries = rebuild_index(output_dir).get("packs", [])
+    entries = _index_entries(output_dir)
 
     repo_l = repo.lower().strip()
     sev_l = severity.upper().strip()
@@ -939,6 +954,122 @@ def emit_packs_from_worker_results(
     return packs
 
 
+def _rekey(pack: AgentCodingPack, new_id: str) -> None:
+    """Give *pack* another id, keeping the id-derived repair slug and pack URL in step."""
+    pack.work_item_id = new_id
+    pack.repair["slug"] = new_id.replace("pack-", "repair/", 1) if new_id.startswith("pack-") else f"repair/{new_id}"
+    if pack.repair.get("pack_url"):
+        pack.repair["pack_url"] = f"{str(pack.repair['pack_url']).rsplit('/', 1)[0]}/{new_id}"
+
+
+def _status_rank(status: str) -> int:
+    return _MERGE_INTO_STATUSES.index(status) if status in _MERGE_INTO_STATUSES else len(_MERGE_INTO_STATUSES)
+
+
+def _merge_targets(entries: list[dict[str, Any]]) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """Specialist packs a repeat may merge into, grouped by ``(repo, file_path)``.
+
+    Packs closed as a duplicate are left out: the issue lives on in their keeper."""
+    out: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for e in entries:
+        if (e.get("layer") == "world_model" or e.get("kind") in _NO_TITLE_MATCH_KINDS or e.get("duplicate_of")
+                or str(e.get("status") or DEFAULT_PACK_STATUS) not in _MERGE_INTO_STATUSES):
+            continue
+        out[(str(e.get("repo") or ""), str(e.get("file_path") or ""))].append(e)
+    return out
+
+
+def merge_into_existing(packs: list[AgentCodingPack], output_dir: str | Path) -> dict[str, str]:
+    """Re-key each new pack that repeats an existing pack to that pack's id, in place.
+
+    A repeat is in the same repo and file with a reworded title (``finding_match``), from a
+    different run: within one run, near-identical titles in a file are often distinct bugs.
+    Each existing pack absorbs at most one new pack, best match first, preferring the pack
+    furthest along the lifecycle. Writing the re-keyed pack then carries that pack's status
+    over (``write_pack``), so a claimed or wontfix issue stays claimed or wontfix instead of
+    reappearing as a fresh open twin. Returns ``{new_id: existing_id}``.
+    """
+    targets = _merge_targets(_index_entries(output_dir))
+    if not targets:
+        return {}
+    batch_ids = {p.work_item_id for p in packs}
+    cands: list[tuple[float, int, int, str]] = []
+    for i, p in enumerate(packs):
+        if p.kind in _NO_TITLE_MATCH_KINDS or pack_file_path(output_dir, p.work_item_id).exists():
+            continue  # an exact-id re-emit already updates its own pack
+        run = str((p.provenance or {}).get("run_id") or "")
+        loc = p.location or {}
+        for e in targets.get(((p.repo or {}).get("name", ""), loc.get("file_path", "")), []):
+            if e["id"] in batch_ids or (run and str(e.get("run_id") or "") == run):
+                continue
+            score = reworded_score((p.narrative or {}).get("title", ""), str(e.get("title") or ""),
+                                   loc.get("line"), e.get("line"))
+            if score > 0:
+                cands.append((-score, _status_rank(str(e.get("status") or "")), i, e["id"]))
+    merged: dict[str, str] = {}
+    used_new: set[int] = set()
+    used_old: set[str] = set()
+    for _neg, _rank, i, eid in sorted(cands):
+        if i in used_new or eid in used_old:
+            continue
+        used_new.add(i)
+        used_old.add(eid)
+        merged[packs[i].work_item_id] = eid
+        _rekey(packs[i], eid)
+    return merged
+
+
+def dedupe_packs(
+    output_dir: str | Path, *, dry_run: bool = False, public_base_url: str = "",
+) -> list[dict[str, Any]]:
+    """Close open packs that repeat another pack as ``wontfix`` ("duplicate of <id>").
+
+    Same matching as ``merge_into_existing``: same repo and file, reworded title, different
+    runs, title-bearing kinds only. In each file the keeper is the pack furthest along the
+    lifecycle (in progress, claimed, wontfix, open), newest first; only open packs are closed,
+    so nobody's claimed work is touched. Closed duplicates leave the RAG collection like any
+    wontfix pack. Returns ``[{id, duplicate_of, title, keeper_status}]``.
+    """
+    entries = list(rebuild_index(output_dir, public_base_url=public_base_url).get("packs") or [])
+    dupes: list[dict[str, Any]] = []
+    for group in _merge_targets(entries).values():
+        group = sorted(group, key=lambda e: str(e.get("detected_at") or ""), reverse=True)
+        group.sort(key=lambda e: _status_rank(str(e.get("status") or "")))
+        keepers: list[dict[str, Any]] = []
+        for e in group:
+            best, best_score = None, 0.0
+            for k in keepers:
+                if str(k.get("run_id") or "") == str(e.get("run_id") or ""):
+                    continue
+                sc = reworded_score(str(e.get("title") or ""), str(k.get("title") or ""), e.get("line"), k.get("line"))
+                if sc > best_score:
+                    best, best_score = k, sc
+            if best is not None and str(e.get("status") or DEFAULT_PACK_STATUS) == "open":
+                dupes.append({"id": e["id"], "duplicate_of": best["id"], "title": e.get("title", ""),
+                              "keeper_status": best.get("status", "")})
+            else:
+                keepers.append(e)
+    if dry_run or not dupes:
+        return dupes
+    closed: list[AgentCodingPack] = []
+    for d in dupes:
+        data = load_pack(output_dir, d["id"])
+        if data is None:
+            continue
+        pack = AgentCodingPack.from_dict(data, fallback_id=d["id"])
+        pack.apply_status("wontfix", f"duplicate of {d['duplicate_of']}")
+        pack.governance["duplicate_of"] = d["duplicate_of"]
+        write_pack(pack, output_dir, preserve_status=False)
+        closed.append(pack)
+    rebuild_index(output_dir, public_base_url=public_base_url)
+    if closed and pack_rag_ingest_enabled():
+        try:
+            ingest_packs_to_rag(closed, output_dir=output_dir)  # retires them (wontfix)
+        except Exception as exc:  # noqa: BLE001 — the next emit re-syncs
+            logger.warning("RAG retire of duplicate packs failed: %s", exc)
+    return dupes
+
+
 def emit_packs_from_findings(
     findings: list[Finding],
     *,
@@ -956,7 +1087,7 @@ def emit_packs_from_findings(
     paths = repo_paths or {}
     for finding in findings:
         root = paths.get(finding.repo, repo_path)
-        pack = build_pack_from_finding(
+        packs.append(build_pack_from_finding(
             finding,
             repo_path=root,
             kind=kind,
@@ -964,9 +1095,12 @@ def emit_packs_from_findings(
             directly_changed=directly_changed,
             transitively_affected=transitively_affected,
             public_base_url=public_base_url,
-        )
+        ))
+    merged = merge_into_existing(packs, output_dir)
+    if merged:
+        logger.info("%d of %d %s packs repeat an existing pack; reusing its id", len(merged), len(packs), kind)
+    for pack in packs:
         write_pack(pack, output_dir)
-        packs.append(pack)
     rebuild_index(output_dir, public_base_url=public_base_url)
     if ingest_rag and packs:
         ingest_packs_to_rag(packs, output_dir=output_dir)

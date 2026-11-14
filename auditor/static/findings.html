@@ -16,6 +16,12 @@
   .toolbar input[type="search"] { min-width: 220px; flex: 1; }
   td.sev-col { white-space: nowrap; }
   .new-tag { font-size: 11px; font-weight: 600; color: var(--critical); margin-left: 6px; }
+  td.pack-col { white-space: nowrap; }
+  td.pack-col button { margin-left: 6px; padding: 1px 6px; font-size: 11px; }
+  .handoff { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 10px; }
+  #prompt-box[hidden] { display: none; }
+  #prompt-box textarea { width: 100%; min-height: 220px; font: 12px/1.45 var(--font-mono, ui-monospace, monospace);
+    background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--grid); border-radius: 6px; padding: 8px; box-sizing: border-box; }
 </style>
 </head>
 <body>
@@ -47,12 +53,22 @@
         <label>Severity <select id="f-severity"><option value="">all</option></select></label>
         <label>Source <select id="f-source"><option value="">all</option></select></label>
         <label>Type <select id="f-type"><option value="">all</option></select></label>
+        <label>Pack <select id="f-pack_status"><option value="">all</option></select></label>
       </div>
       <p class="hint" id="count"></p>
+      <div class="handoff">
+        <button class="primary" id="copy-all" disabled>Copy agent prompt</button>
+        <span class="hint" id="pack-summary" style="margin:0"></span>
+        <span class="flash" id="flash" role="status"></span>
+      </div>
+      <div id="prompt-box" hidden>
+        <p class="hint">Paste this into a coding agent (Claude Code, Cursor) opened in the repo. It points at the packs rather than copying them, so the agent reads each brief, claims the pack and closes it with <span class="mono">validate_patch</span>, and this page shows the progress.</p>
+        <textarea id="prompt-text" readonly aria-label="Agent prompt"></textarea>
+      </div>
       <div class="table-wrap">
         <table id="table">
-          <thead><tr><th>Severity</th><th>Finding</th><th>Repo</th><th>Location</th><th>Type</th><th>Source</th></tr></thead>
-          <tbody><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+          <thead><tr><th>Severity</th><th>Finding</th><th>Repo</th><th>Location</th><th>Type</th><th>Source</th><th>Pack</th></tr></thead>
+          <tbody><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -63,8 +79,12 @@
 const { esc, int } = UI;
 const p = UI.params();
 const state = { run_id: p.run_id || "", repo: p.repo || "", severity: p.severity || "", source: p.source || "",
-                type: p.type || "", q: p.q || "", change: p.change || "all" };
-const els = { repo: "f-repo", severity: "f-severity", source: "f-source", type: "f-type", q: "f-q" };
+                type: p.type || "", q: p.q || "", change: p.change || "all", pack_status: p.pack_status || "" };
+const els = { repo: "f-repo", severity: "f-severity", source: "f-source", type: "f-type", q: "f-q", pack_status: "f-pack_status" };
+const PACK_STATUSES = ["open", "claimed", "in_progress", "resolved", "wontfix", "none"];
+const PACK_CLASS = { claimed: "warn", in_progress: "warn", resolved: "ok", wontfix: "muted" };
+let openPacks = { list: [], total: 0 };
+const rowPacks = new Map();
 for (const k in els) els[k] = document.getElementById(els[k]);
 els.q.value = state.q;
 
@@ -92,10 +112,57 @@ function matrix(d) {
   return head + `<tbody>${body}${foot}</tbody>`;
 }
 
+function packCell(f) {
+  const pk = f.pack;
+  if (!pk) return `<span class="muted">none</span>`;
+  const st = pk.status.replace("_", " ");
+  return `<a class="status ${PACK_CLASS[pk.status] || ""}" href="/ui/packs/${encodeURIComponent(pk.id)}" title="${esc(pk.id)} (${esc(pk.kind)})">${esc(st)}</a>` +
+    (pk.status === "open" ? `<button class="secondary" data-copy="${esc(pk.id)}" title="Copy an agent prompt for this pack">copy</button>` : "");
+}
+
+// The handoff prompt names the packs and the loop; the agent fetches each brief itself.
+function agentPrompt(packs, total) {
+  const base = location.origin;
+  const repos = [...new Set(packs.map((pk) => pk.repo))];
+  const auth = `-H "X-API-Token: $AI_AUDIT_API_TOKEN"`;
+  const lines = [
+    `Fix ${packs.length === 1 ? "this finding" : `these ${packs.length} findings`} from the ai-code-auditor. ${packs.length === 1 ? "It has" : "Each has"} an agent coding pack with the code, the recommendation and acceptance criteria.`,
+    ``,
+    `Audit API: ${base} (status changes and validate_patch need ${auth}).`,
+    repos.length === 1 ? `Repo: ${repos[0]}. Work on a branch cut from origin/dev.`
+                       : `Repos: ${repos.join(", ")}. One branch per repo, cut from origin/dev; do one repo at a time.`,
+    ``,
+    `For each pack:`,
+    `1. Read the brief: curl -s ${base}/audit/packs/<id>/brief`,
+    `2. Claim it: curl -s -X POST ${base}/audit/packs/<id>/status -H 'Content-Type: application/json' ${auth} -d '{"status":"claimed"}'`,
+    `3. Check the finding against the current code. If it is wrong or already fixed, set status "wontfix" (or "resolved") with a note saying why, and move on.`,
+    `4. Fix it, with a test where one fits. Packs in the same file may be one fix; claim them all.`,
+    `5. Validate: POST ${base}/audit/validate_patch {"repo": "<repo>", "patch": "<unified diff>", "pack_id": "<id>"}. A pass marks the pack resolved; on a fail, fix and re-run.`,
+    ``,
+    `Packs, most severe first:`,
+    ...packs.map((pk) => `- ${pk.id} · ${pk.severity} ${pk.type} · ${pk.repo}/${pk.path}${pk.line ? ":" + pk.line : ""} — ${pk.title}`),
+  ];
+  if (total > packs.length) lines.push(``, `(${total - packs.length} more open packs match the same filter; list them with GET ${base}/audit/packs?status=open after these.)`);
+  return lines.join("\n");
+}
+
+async function showPrompt(text, label) {
+  const box = document.getElementById("prompt-box"), ta = document.getElementById("prompt-text");
+  box.hidden = false;
+  ta.value = text;
+  ta.focus(); ta.select();
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }  // needs a secure context (https or localhost)
+  catch (_) { try { ok = document.execCommand("copy"); } catch (_) { ok = false; } }
+  document.getElementById("flash").innerHTML = ok
+    ? `<span class="status ok">Copied ${esc(label)}</span>`
+    : `<span class="status warn">Select the text below and copy it</span>`;
+}
+
 function render(d) {
   if (!d.run) {
     document.getElementById("sub").textContent = "No finished run has findings stored yet.";
-    document.querySelector("#table tbody").innerHTML = `<tr><td colspan="6" class="empty">Nothing to show.</td></tr>`;
+    document.querySelector("#table tbody").innerHTML = `<tr><td colspan="7" class="empty">Nothing to show.</td></tr>`;
     return;
   }
   const r = d.run;
@@ -112,6 +179,18 @@ function render(d) {
   fill(els.severity, UI.SEVERITIES, state.severity.toUpperCase(), (s) => s.toLowerCase());
   fill(els.source, d.facets.sources, state.source);
   fill(els.type, d.facets.types, state.type);
+  fill(els.pack_status, PACK_STATUSES, state.pack_status, (s) => s === "none" ? "no pack" : s.replace("_", " "));
+
+  const ps = d.packs || { by_status: {}, open_total: 0, open: [] };
+  openPacks = { list: ps.open, total: ps.open_total };
+  rowPacks.clear();
+  for (const f of d.findings) if (f.pack && f.pack.status === "open")
+    rowPacks.set(f.pack.id, { id: f.pack.id, repo: f.repo, severity: f.severity, type: f.type, path: f.path, line: f.line, title: f.title });
+  const copyAll = document.getElementById("copy-all");
+  copyAll.disabled = !ps.open_total;
+  copyAll.textContent = ps.open_total ? `Copy agent prompt (${int(ps.open_total)} open ${ps.open_total === 1 ? "pack" : "packs"})` : "Copy agent prompt";
+  document.getElementById("pack-summary").textContent = PACK_STATUSES.filter((s) => ps.by_status[s])
+    .map((s) => `${int(ps.by_status[s])} ${s === "none" ? "without a pack" : s.replace("_", " ")}`).join(" · ");
 
   const what = { all: "in this run", new: "new since the previous run", fixed: "fixed since the previous run" }[state.change];
   document.getElementById("count").textContent = d.filtered_total > d.findings.length
@@ -121,8 +200,8 @@ function render(d) {
       <td class="sev-col">${UI.sevBadge(f.severity)}</td>
       <td>${esc(f.title)}${f.is_new && state.change === "all" ? `<span class="new-tag">new</span>` : ""}</td>
       <td>${esc(f.repo)}</td><td class="mono" title="${esc(f.file_path)}">${esc(f.path)}${f.line ? ":" + f.line : ""}</td>
-      <td>${esc(f.type)}</td><td>${esc(f.source)}</td></tr>`).join("")
-    : `<tr><td colspan="6" class="empty">No findings match these filters.</td></tr>`;
+      <td>${esc(f.type)}</td><td>${esc(f.source)}</td><td class="pack-col">${packCell(f)}</td></tr>`).join("")
+    : `<tr><td colspan="7" class="empty">No findings match these filters.</td></tr>`;
 }
 
 function load() {
@@ -131,7 +210,15 @@ function load() {
   UI.load(`/audit/findings.json?${qs}`, render, document.getElementById("sub"));
 }
 
-for (const k of ["repo", "severity", "source", "type"]) els[k].addEventListener("change", () => { state[k] = els[k].value; load(); });
+document.getElementById("copy-all").addEventListener("click", () => {
+  if (openPacks.list.length) showPrompt(agentPrompt(openPacks.list, openPacks.total), `a prompt for ${UI.plural(openPacks.list.length, "pack")}`);
+});
+document.querySelector("#table tbody").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-copy]");
+  const pk = b && rowPacks.get(b.dataset.copy);
+  if (pk) showPrompt(agentPrompt([pk], 1), pk.id);
+});
+for (const k of ["repo", "severity", "source", "type", "pack_status"]) els[k].addEventListener("change", () => { state[k] = els[k].value; load(); });
 let typing = null;
 els.q.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => { state.q = els.q.value.trim(); load(); }, 250); });
 document.querySelectorAll("[data-change]").forEach((b) => b.addEventListener("click", () => { state.change = b.dataset.change; load(); }));
