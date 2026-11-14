@@ -20,6 +20,7 @@ pip install -e .[semantic]     # adds faiss-cpu
 ai-audit repo-run              # nightly single-repo audit
 ai-audit ecosystem-run         # full multi-repo ecosystem audit
 ai-audit ask "question"        # copilot Q&A over indexed code
+ai-audit search "question" --repo argus-cortex --kind wiki   # semantic search over audit_docs (via rag-chat)
 ai-audit ask "..." --deep --iterations 4 --enable-subagents --agent-brief
 ai-audit packs --json          # discover agent coding packs (no paste)
 ai-audit packs --bundle --repo argus-cortex   # one-call mission bundle (world model + specialists)
@@ -168,8 +169,10 @@ Every sender goes through `auditor/rag_client.py` (`post_documents`), which spea
 - **Body:** `{"docs", "source", "tags"}`.
 - **Headers:** `X-Timestamp`, a single-use `X-Nonce`, and `X-Signature` (HMAC-SHA256 keyed by sha256(`INGEST_SHARED_SECRET`) over `ts.nonce.sha256(body)`). `INGEST_SHARED_SECRET` in `.env` must match agent-composer's.
 - **Metadata:** rag-ingest keeps only id, title, url, path and source per doc, so repo and kind go in `tags` (`kind:wiki`, `repo:<name>`).
-- **Collection:** chosen by the service's `QDRANT_COLLECTION` (today `project_docs`), not by the request. A `collection` field is sent but ignored, so "a separate `audit_docs` collection" only exists if the URL points at an instance configured for it.
-- **Duplicates:** point ids hash the chunk text and there is no delete, so a changed document adds chunks next to the old ones.
+- **Collection:** each request names `audit_docs` (`AI_AUDIT_RAG_COLLECTION`). rag-ingest accepts its own `QDRANT_COLLECTION` (default `audit_docs` since agent-composer#25) or one in `INGEST_ALLOWED_COLLECTIONS`, and refuses others with 400. `project_docs` is deprecated.
+- **Duplicates:** point ids hash the chunk text and there is no delete, so a changed document adds chunks next to the old ones (agent-composer#24).
+
+Search goes through rag-chat's `POST /search` (`rag_client.search`), so the query is embedded by the model that wrote the vectors. `ai-audit search "q" [--repo R] [--kind wiki|agent_coding_pack] [--top-k N] [--json]` and `GET /audit/search?q=&repo=&kind=&top_k=` (read-only, no auth) both return hits with title, link, tags and text. rag-chat is at `RAG_CHAT_URL`, or the rag-ingest host on port 9150 when that's unset. `RAG_CHAT_API_KEY` is sent as a bearer token when set. rag-chat's `/chat` retrieves from the same collection.
 
 Wiki ingest (`wiki/rag.py`, `ai-audit wiki ingest`) sends one doc per `##` section of the four content pages (internal variant). Each has id `wiki::<repo>::<page>::<section>` and a link to the section. The refresh ingests the pages it rebuilt; `AI_AUDIT_WIKI_RAG_INGEST=0` turns it off. "Ask this repo" (`wiki/ask.py`, `POST /audit/wiki/{repo}/ask`, auth, `ask` spend lane) answers from the repo's wiki pages, notes and structure facts with the configured LLM. The context is prompt cached, so follow-ups cost ~10%. Answers go through the citation pass and link at the mirror HEAD.
 

@@ -45,6 +45,17 @@ Give up on a pack with `status: wontfix` (+ `note`). Other repos get this flow v
 `bash scripts/install_agent_pack_awareness.sh` (idempotent `AGENTS.md` section +
 `.cursor/rules/agent-coding-packs.mdc`; `--dry-run`, `--repo NAME`; local files only, no git).
 
+### Search the wiki and packs
+
+To find where something lives or how a repo does something, search the audit collection (wiki sections and agent packs) before crawling code:
+
+```bash
+ai-audit search "where are uploads validated" --repo argus-mint --kind wiki
+curl -s "$AI_AUDIT_PUBLIC_BASE_URL/audit/search?q=where+are+uploads+validated&repo=argus-mint&kind=wiki&top_k=5"
+```
+
+Each hit has `title`, `url` (the wiki section), `tags` and `text`. Wiki text cites `[path:Lx-Ly]`, so open the cited lines to confirm. `kind=agent_coding_pack` searches the packs instead. Read-only, no auth.
+
 ### Status lifecycle (claim → fix → close)
 
 Statuses: `open` (default) · `claimed` · `in_progress` · `resolved` · `wontfix`.

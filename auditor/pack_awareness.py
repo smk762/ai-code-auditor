@@ -44,6 +44,9 @@ The audit API base URL is `$AI_AUDIT_PUBLIC_BASE_URL`. The real host/IP is in th
 4. **Close:** `POST {base}/audit/validate_patch` `{{"repo":"{repo}","patch":"<diff>","pack_id":"<id>"}}`
    — a passing run marks the pack `resolved`.
 
+**Search** before crawling: `GET {base}/audit/search?q=<question>&repo={repo}&kind=wiki`
+(wiki sections and packs with links; CLI `ai-audit search "<question>" --repo {repo}`).
+
 World-model constraints (ownership, boundaries, scan branch `dev`) win over guesswork.
 Full flow: ai-code-auditor `AGENTS.md`."""
 

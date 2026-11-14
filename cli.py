@@ -93,6 +93,13 @@ def _build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--auth-code", default="", help="Auth code when auth mode is enabled")
     ask.add_argument("--auth-token", default="", help="JWT token with analyst role")
 
+    srch = sub.add_parser("search", help="Semantic search over the audit RAG collection (wiki sections, packs) via rag-chat")
+    srch.add_argument("query", type=str, help="Natural language query")
+    srch.add_argument("--repo", default="", help="Only hits tagged repo:<name>")
+    srch.add_argument("--kind", default="", help="Only hits tagged kind:<kind> (wiki, agent_coding_pack, ...)")
+    srch.add_argument("--top-k", type=int, default=5, help="Number of hits (1-20)")
+    srch.add_argument("--json", action="store_true", help="Print rag-chat's JSON response")
+
     qa = sub.add_parser("qa-benchmark", help="Run benchmark dataset for precision/recall")
     qa.add_argument("--dataset", default="qa/fixtures/benchmark_queries.yaml", help="Path to benchmark dataset")
     qa.add_argument("--json", action="store_true", help="Output as JSON")
@@ -144,7 +151,7 @@ def _build_parser() -> argparse.ArgumentParser:
     repair_cmd.add_argument("--remote", default="origin", help="Remote name for push (default: origin)")
     repair_cmd.add_argument("--author-name", default="ai-code-auditor", help="Git commit author name")
     repair_cmd.add_argument("--author-email", default="noreply@ai-audit.local", help="Git commit author e-mail")
-    repair_cmd.add_argument("--repair-api-url", default="", help="rag-chat base URL (default: RAG_CHAT_URL env or http://127.0.0.1:9150)")
+    repair_cmd.add_argument("--repair-api-url", default="", help="rag-chat base URL (default: RAG_CHAT_URL env, else the rag-ingest host on :9150)")
     repair_cmd.add_argument("--auth-code", default="")
     repair_cmd.add_argument("--auth-token", default="", help="ai-audit JWT, checked locally only (never sent to rag-chat)")
     repair_cmd.add_argument(
@@ -308,6 +315,29 @@ def _build_parser() -> argparse.ArgumentParser:
     wks.add_argument("--json", action="store_true", help="Print as JSON")
 
     return parser
+
+
+def _run_search(args) -> None:
+    import json as _json
+
+    from auditor import rag_client
+
+    try:
+        res = rag_client.search(args.query, repo=args.repo or None, kind=args.kind or None, top_k=args.top_k)
+    except (ValueError, RuntimeError) as exc:
+        raise SystemExit(f"search failed: {exc}") from exc
+    if args.json:
+        print(_json.dumps(res, indent=2))
+        return
+    hits = res.get("hits") or []
+    tags = ", ".join(res.get("tags") or []) or "no filter"
+    print(f"{len(hits)} hit(s) from {res.get('collection')} ({tags})")
+    for i, h in enumerate(hits, 1):
+        print(f"\n{i}. {h.get('title') or h.get('doc_id')}  [{h.get('score')}]")
+        if h.get("url"):
+            print(f"   {h['url']}")
+        text = " ".join((h.get("text") or "").split())
+        print(f"   {text[:300]}{'…' if len(text) > 300 else ''}")
 
 
 def _run_wiki(args) -> None:
@@ -681,7 +711,9 @@ def _run_repair(
     if token:
         enforce_role(token, "admin" if write_ops else "analyst", "cli:repair")
 
-    base_url = repair_api_url or os.getenv("RAG_CHAT_URL", "http://127.0.0.1:9150")
+    from auditor.rag_client import chat_url
+
+    base_url = repair_api_url or chat_url()
     rag_key = (rag_chat_api_key or os.getenv("RAG_CHAT_API_KEY", "")).strip()
     if write_ops and not rag_key:
         raise SystemExit(
@@ -1071,6 +1103,8 @@ def main() -> None:
             auth_code=args.auth_code,
             auth_token=args.auth_token,
         )
+    elif args.command == "search":
+        _run_search(args)
     elif args.command == "qa-benchmark":
         if token:
             enforce_role(token, "analyst", "cli:qa-benchmark")
