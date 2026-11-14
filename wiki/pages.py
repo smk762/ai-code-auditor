@@ -63,11 +63,26 @@ Do not add new sections or new claims. Keep the draft's structure, headings and 
 Output only the corrected page markdown, nothing else."""
 
 
-def repo_context(repo, notes: list[dict[str, Any]], structure: str) -> str:
-    """The shared, cacheable context every page of one repo is drafted from."""
+# Appended to the system prompts for the public variant (wiki/public.py), whose inputs are
+# already scrubbed; this keeps the model from reintroducing what was taken out.
+PUBLIC_RULES = """This page will be published on a public website.
+- Name only public things: this repository, other public Argus packages, and public third-party \
+projects. Refer to anything else by its role (for example "an external ComfyUI service").
+- Never mention hosts, machine names, LAN or IP addresses, file-system paths outside the \
+repository, personal names or people's aliases, or internal operations tooling.
+- Describe what the repository does. Do not list things it does not use or connect to."""
+
+
+def repo_context(repo, notes: list[dict[str, Any]], structure: str, *, ecosystem_text: str | None = None) -> str:
+    """The shared, cacheable context every page of one repo is drafted from.
+
+    ``ecosystem_text`` replaces the shared ecosystem doc (the public variant passes a scrubbed one).
+    """
     parts = [f"# Repository: {repo.name}\n"]
-    if ECOSYSTEM_DOC.is_file():
-        parts += ["## Ecosystem topology (shared doc)\n", ECOSYSTEM_DOC.read_text(encoding="utf-8")]
+    eco = ecosystem_text if ecosystem_text is not None else (
+        ECOSYSTEM_DOC.read_text(encoding="utf-8") if ECOSYSTEM_DOC.is_file() else "")
+    if eco:
+        parts += ["## Ecosystem topology (shared doc)\n", eco]
     try:
         base = resolve_repo_path(repo)
         readme = next(iter(sorted(base.glob("README*"))), None)
@@ -88,26 +103,28 @@ def repo_context(repo, notes: list[dict[str, Any]], structure: str) -> str:
     return "\n".join(parts)
 
 
-def draft_params(page: str, context: str) -> dict[str, Any]:
+def draft_params(page: str, context: str, *, public: bool = False) -> dict[str, Any]:
     _, brief = PAGES[page]
+    system = PAGE_SYSTEM + ("\n\n" + PUBLIC_RULES if public else "")
     return {
         "model": PAGE_MODEL,
         "max_tokens": PAGE_MAX_TOKENS,
         "output_config": {"effort": PAGE_EFFORT},
         # the repo context is identical for every page of a repo, so it is cached
-        "system": [{"type": "text", "text": PAGE_SYSTEM},
+        "system": [{"type": "text", "text": system},
                    {"type": "text", "text": context, "cache_control": {"type": "ephemeral"}}],
         "messages": [{"role": "user", "content": f"Write the **{page}** page.\n\nBrief: {brief}"}],
     }
 
 
-def verify_params(page: str, draft: str, structure: str, cited: str) -> dict[str, Any]:
+def verify_params(page: str, draft: str, structure: str, cited: str, *, public: bool = False) -> dict[str, Any]:
     _, brief = PAGES[page]
+    system = VERIFY_SYSTEM + ("\n\nAlso remove anything that breaks these publication rules:\n" + PUBLIC_RULES if public else "")
     return {
         "model": PAGE_MODEL,
         "max_tokens": PAGE_MAX_TOKENS,
         "output_config": {"effort": PAGE_EFFORT},
-        "system": [{"type": "text", "text": VERIFY_SYSTEM},
+        "system": [{"type": "text", "text": system},
                    {"type": "text", "text": structure, "cache_control": {"type": "ephemeral"}}],
         "messages": [{"role": "user", "content": f"## Cited code\n{cited}\n\n## Page brief\n{brief}\n\n## Draft\n{draft}"}],
     }

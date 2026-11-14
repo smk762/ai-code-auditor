@@ -25,6 +25,8 @@ DENY = ["Jarrah", "holly"]
     ("renders through voluptas", "private repo named"),
     ("runs on JARRAH overnight", "deny-listed term"),
     ("persona alias holly", "deny-listed term"),
+    ("reads VOLUPTAS_URL from the env", "private repo named"),  # inside an identifier
+    ("the argus-voluptas bridge", "private repo named"),
 ])
 def test_gate_refuses(text: str, reason: str) -> None:
     assert public.gate(text, DENY, ["voluptas"])[0] == reason
@@ -32,8 +34,8 @@ def test_gate_refuses(text: str, reason: str) -> None:
 
 @pytest.mark.parametrize("text", [
     "binds 127.0.0.1:8188 and 0.0.0.0", "public 8.8.8.8", "see https://github.com/o/r/blob/x/a.py#L3",
-    "user@example.com", "bot@users.noreply.github.com", "the dragonhound site", "argus-voluptas-bridge",
-    "version 1.2.3.4 of the schema", "release 10.0.0.4.1 notes", "holly-berry (hyphenated: not the term)",
+    "user@example.com", "bot@users.noreply.github.com", "the dragonhound site",
+    "version 1.2.3.4 of the schema", "release 10.0.0.4.1 notes", "a hollyhock (longer word: not the term)",
 ])
 def test_gate_allows(text: str) -> None:
     assert public.gate(text, DENY, ["voluptas"]) is None
@@ -120,3 +122,80 @@ def test_export_refuses_to_run_without_denylist(wiki: Path, monkeypatch) -> None
     with pytest.raises(FileNotFoundError):
         public.export(wiki, denylist_path=wiki.parent / "nope.txt", visibility=VIS.get)
     assert not (wiki / "wiki_public").exists()
+
+
+# ── public variant: scrubbed inputs ("placeholders at the source") ───────────
+
+ECO = """| Area | Repo | Role |
+|------|------|------|
+| Captioning | [argus-good](https://github.com/o/argus-good) | Captions |
+| ComfyUI | [voluptas](https://github.com/o/voluptas) | ComfyUI node |
+
+**Not scanned (integration only):** mithrandir receives status.
+
+## Ecosystem flow
+
+```
+  good ──► voluptas (ComfyUI :8188)
+```
+
+## Deployment notes (current)
+
+| Jarrah `<STATEFUL_HOST>` | Postgres |
+"""
+
+
+def test_public_ecosystem_doc_and_scrubber() -> None:
+    doc = public.public_ecosystem_doc(ECO, ["voluptas", "mithrandir"])
+    assert "Deployment notes" not in doc and "Jarrah" not in doc and "Not scanned" not in doc
+    assert "[voluptas]" not in doc and "argus-good" in doc  # private table row dropped
+    scrub = public.scrubber_for(["Jarrah", "holly"], ["voluptas", "mithrandir"], ECO)
+    out = scrub(doc + "\nuses VOLUPTAS and mithrandir on jarrah via holly, at 192.168.1.9:9000 or /home/u/x or nas.lan.")
+    assert "an external ComfyUI service (ComfyUI :8188)" in out and "an external service" in out
+    for leak in ("voluptas", "mithrandir", "jarrah", "holly", "192.168", "/home/", "nas.lan"):
+        assert leak not in out.lower()
+    assert public.gate(out, ["Jarrah", "holly"], ["voluptas", "mithrandir"]) is None
+
+
+def test_public_build_scrubs_every_model_input(tmp_path: Path, monkeypatch, memdb) -> None:
+    from tests.test_wiki import APP, FakeClient
+    from wiki import pages as pages_mod
+    from wiki.batch import Runner
+    from wiki.build import build
+
+    good = tmp_path / "m" / "argus-good"
+    good.mkdir(parents=True)
+    (good / "app.py").write_text(APP + "\nVOLUPTAS_URL = 'http://192.168.1.198:8188'  # on Jarrah\n")
+    (good / "README.md").write_text("# good\nRenders via voluptas.\n")
+
+    class _Cfg:
+        repos = [RepoConfig("argus-good", str(good)), RepoConfig("argus-private", str(good)),
+                 RepoConfig("voluptas", str(good))]
+        output_dir = str(tmp_path / "reports")
+
+    monkeypatch.setattr("auditor.config.load_ecosystem_config", lambda: _Cfg())
+    eco = tmp_path / "ecosystem.md"
+    eco.write_text(ECO)
+    monkeypatch.setattr(pages_mod, "ECOSYSTEM_DOC", eco)
+    (tmp_path / "deny.txt").write_text("Jarrah\n")
+    vis = {"argus-good": "public", "argus-private": "private", "voluptas": "private"}.get
+    out = tmp_path / "reports"
+    fake = FakeClient()
+    rep = build(None, out, runner=Runner(out, client=fake, poll_s=0), public=True,
+                denylist_path=tmp_path / "deny.txt", visibility=vis)
+
+    assert rep.repos["argus-private"].skipped == "not a public argus repo"
+    assert rep.repos["voluptas"].skipped == "not a public argus repo"
+    page_reqs = [r for batch in fake.batches_created for r in batch if r["params"]["model"].startswith("claude-opus")]
+    assert page_reqs and all(pages_mod.PUBLIC_RULES in r["params"]["system"][0]["text"] for r in page_reqs)
+    sent = json.dumps(page_reqs)
+    for leak in ("voluptas", "Jarrah", "192.168.1.198"):
+        assert leak.lower() not in sent.lower(), leak
+    d = out / "wiki" / "_public" / "argus-good"
+    idx = json.loads((d / "INDEX.json").read_text())
+    assert idx["variant"] == "public" and [p["slug"] for p in idx["pages"]] == list(pages_mod.PAGES)
+    assert not (d / "findings.md").exists() and not (out / "wiki" / "argus-good").exists()  # internal wiki untouched
+
+    # the export picks the public variant
+    rep2 = public.export(out, denylist_path=tmp_path / "deny.txt", visibility=vis)
+    assert rep2.exported == {"argus-good": list(pages_mod.PAGES)}
