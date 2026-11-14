@@ -131,6 +131,14 @@ Public export (`wiki/public.py`, `ai-audit wiki export`) writes the gated bundle
 - **Pages:** overview, architecture, interfaces and integration only. Never "Notable findings" or the internal INDEX data. Mermaid is omitted for now.
 - **Opsec gate:** refuses a page outright, never redacts it, and fails closed. It refuses private or link-local IPs, home or mount paths, emails, LAN hostnames, names of private non-argus repos (from GitHub), and terms from the private deny-list at `~/.config/ai-code-auditor/opsec-denylist.txt` or `AI_AUDIT_OPSEC_DENYLIST`. That file is never committed, and the export won't run without it.
 - **Refusals:** a repo with a refused page is left out whole. The refusal report, which quotes the leak, goes to `reports/wiki_public_report.json`, outside the bundle.
+- **Bundle:** built output only: HTML fragments plus `manifest.json`. Its `bundle_sha256` covers the content files, not the manifest's timestamp, so an unchanged export keeps the same hash.
+- **Public variant:** `ai-audit wiki build --public` regenerates pages from scrubbed inputs into `reports/wiki/_public/`, and the export prefers them.
+
+Publish (`wiki/publish.py`, `ai-audit wiki publish [--push]`) commits the bundle to the private `smk762/argus-docs` repo, using a machine-managed checkout at `~/.cache/ai-code-auditor/argus-docs`.
+- **Checks first:** it verifies the bundle hash and re-runs the gate.
+- **Commits** as `argus-docs-bot <noreply@dragonhound.dev>`, and only when the bundle hash changed.
+- **Output:** it prints the `docs.lock.json` values (repo, commit, bundle_sha256).
+- **Going live:** dragonhound-site deploys by direct upload (not git-connected Pages) and pins docs in `docs.lock.json`. A pin bump on its `dev` is the review gate. Never add deploy hooks or commit docs into dragonhound-site.
 
 ## RAG ingest integration
 

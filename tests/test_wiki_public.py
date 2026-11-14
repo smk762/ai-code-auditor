@@ -98,13 +98,14 @@ def test_export_bundle(wiki: Path) -> None:
     assert rep.skipped["argus-unbuilt"] == "no wiki built" and rep.skipped["agent-composer"].startswith("not an argus")
     assert [(r.repo, r.page, r.reason) for r in rep.refused] == [("argus-leaky", "integration", "private or link-local IP")]
     assert sorted(p.name for p in b.iterdir()) == ["README.md", "argus-good", "manifest.json"]
-    assert not (b / "argus-good" / "findings.md").exists()
-    md = (b / "argus-good" / "overview.md").read_text()
-    assert "mermaid" not in md and "[src/a.py:L1-L2]" in md
+    assert sorted(f.name for f in (b / "argus-good").iterdir()) == ["interfaces.html", "overview.html"]  # built output only
     html = (b / "argus-good" / "overview.html").read_text()
+    assert "mermaid" not in html
     assert 'href="https://github.com/smk762/argus-good/blob/abc123/src/a.py#L1-L2"' in html
     m = json.loads((b / "manifest.json").read_text())["repos"]["argus-good"]
-    assert m["sha"] == "abc123" and m["pypi"] == "argus-good" and len(m["pages"][0]["sha256_md"]) == 64
+    assert m["sha"] == "abc123" and m["pypi"] == "argus-good" and len(m["pages"][0]["sha256"]) == 64
+    manifest = json.loads((b / "manifest.json").read_text())
+    assert manifest["bundle_sha256"] == public.bundle_hash_of(b) == rep.bundle_sha256
     report = json.loads((wiki / "wiki_public_report.json").read_text())  # outside the bundle
     assert report["refused"][0]["match"] == "192.168.1.109"
     assert "192.168" not in "".join(f.read_text() for f in b.rglob("*") if f.is_file())
@@ -199,3 +200,62 @@ def test_public_build_scrubs_every_model_input(tmp_path: Path, monkeypatch, memd
     # the export picks the public variant
     rep2 = public.export(out, denylist_path=tmp_path / "deny.txt", visibility=vis)
     assert rep2.exported == {"argus-good": list(pages_mod.PAGES)}
+
+
+
+def test_bundle_hash_ignores_manifest_timestamp(wiki: Path) -> None:
+    deny = wiki.parent / "deny.txt"
+    first = public.export(wiki, denylist_path=deny, visibility=VIS.get).bundle_sha256
+    second = public.export(wiki, denylist_path=deny, visibility=VIS.get).bundle_sha256
+    assert first == second  # nothing changed, so no new commit or pin bump
+
+
+# ── publish to the docs repo ─────────────────────────────────────────────────
+
+def _bare(tmp_path: Path) -> str:
+    import subprocess
+
+    remote = tmp_path / "argus-docs.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    return str(remote)
+
+
+def test_publish_commits_as_bot_only_on_change(wiki: Path, tmp_path: Path) -> None:
+    import subprocess
+
+    from wiki import publish as pub
+
+    deny = wiki.parent / "deny.txt"
+    public.export(wiki, denylist_path=deny, visibility=VIS.get)
+    remote, co = _bare(tmp_path), tmp_path / "co"
+    first = pub.publish(wiki / "wiki_public", repo=remote, checkout=co, push=True, denylist_path=deny, visibility=VIS.get)
+    assert first["changed"] and first["pushed"] and first["pin"]["commit"] == first["commit"]
+    log = subprocess.run(["git", "-C", remote, "log", "-1", "--format=%an <%ae>%n%B"], capture_output=True, text=True).stdout
+    assert log.startswith("argus-docs-bot <noreply@dragonhound.dev>") and first["bundle_sha256"] in log
+    assert (co / "argus-good" / "overview.html").exists() and not (co / "argus-leaky").exists()
+
+    public.export(wiki, denylist_path=deny, visibility=VIS.get)  # same content, new timestamp
+    again = pub.publish(wiki / "wiki_public", repo=remote, checkout=co, push=True, denylist_path=deny, visibility=VIS.get)
+    assert not again["changed"] and not again["pushed"] and again["commit"] == first["commit"]
+
+    (wiki / "wiki" / "argus-good" / "interfaces.md").write_text("# Interfaces\n\nCLI and API.\n")
+    public.export(wiki, denylist_path=deny, visibility=VIS.get)
+    third = pub.publish(wiki / "wiki_public", repo=remote, checkout=co, push=False, denylist_path=deny, visibility=VIS.get)
+    assert third["changed"] and not third["pushed"] and third["commit"] != first["commit"]
+    remote_head = subprocess.run(["git", "-C", remote, "rev-parse", "main"], capture_output=True, text=True).stdout.strip()
+    assert remote_head == first["commit"]  # not pushed without --push
+
+
+def test_publish_refuses_tampered_or_leaky_bundles(wiki: Path, tmp_path: Path) -> None:
+    from wiki import publish as pub
+
+    deny = wiki.parent / "deny.txt"
+    public.export(wiki, denylist_path=deny, visibility=VIS.get)
+    b = wiki / "wiki_public"
+    (b / "argus-good" / "overview.html").write_text("<p>edited after export</p>")
+    with pytest.raises(RuntimeError, match="bundle hash mismatch"):
+        pub.publish(b, repo=_bare(tmp_path), checkout=tmp_path / "co", denylist_path=deny, visibility=VIS.get)
+    public.export(wiki, denylist_path=deny, visibility=VIS.get)
+    (deny).write_text("Jarrah\nCLI\n")  # a term that now appears in the bundle
+    with pytest.raises(RuntimeError, match="opsec gate failed"):
+        pub.publish(b, repo=_bare(tmp_path), checkout=tmp_path / "co2", denylist_path=deny, visibility=VIS.get)
