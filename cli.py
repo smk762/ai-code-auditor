@@ -327,6 +327,8 @@ def _run_wiki(args) -> None:
             print(f"  rebuild   {item['repo'] + '/' + item['variant']:32} {', '.join(item['pages'])}")
         for key, why in sorted(rec["skipped"].items()):
             print(f"  skip      {key:32} {why}")
+        for item in rec.get("deferred") or []:
+            print(f"  deferred  {item['repo'] + '/' + item['variant']:32} ~${item['estimate_usd']:.2f} (over the wiki budget left)")
         money = rec["estimate_usd"] if args.dry_run else rec["cost_usd"]
         print(f"{'estimated' if args.dry_run else 'cost'} ${money:.2f}")
         for variant, b in rec["builds"].items():

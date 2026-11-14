@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from wiki import pages as pages_mod
+from wiki.citations import range_hash
 from wiki.sources import content_hash, read_text
 
 logger = logging.getLogger(__name__)
@@ -57,8 +58,41 @@ def _head(path: str) -> str | None:
     return r.stdout.strip() or None
 
 
-def stale_pages(repo, idx: dict[str, Any] | None) -> tuple[set[str], dict[str, str]]:
-    """(pages to rebuild, why per page) from the cited-file hashes in the index."""
+def _text_at(repo, sha: str, path: str) -> str | None:
+    """A file as it was at ``sha`` in the mirror (scan-root-relative path), or None."""
+    sub = (getattr(repo, "subpath", "") or "").strip("/")
+    try:
+        r = subprocess.run(["git", "-C", repo.path, "show", f"{sha}:{'/'.join(p for p in (sub, path) if p)}"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _ranges_from_history(repo, entry: dict[str, Any], page_dir: Path | None) -> dict[str, dict[str, Any]] | None:
+    """cited_ranges for an entry built before they were recorded: the page's citations, hashed
+    against the cited files as they were at the entry's source SHA (read from the mirror)."""
+    from wiki.citations import _ranges
+
+    sha = entry.get("source_sha")
+    if not sha or page_dir is None:
+        return None
+    md = read_text(page_dir / entry.get("file", ""))
+    if md is None:
+        return None
+    out: dict[str, dict[str, Any]] = {}
+    for path, ranges in _ranges(md).items():
+        old = _text_at(repo, sha, path)
+        h = range_hash(old.splitlines(), ranges) if old is not None else None
+        if h is None:
+            return None  # can't reconstruct: use the whole-file check instead
+        out[path] = {"ranges": ranges, "hash": h}
+    return out
+
+
+def stale_pages(repo, idx: dict[str, Any] | None, page_dir: Path | None = None) -> tuple[set[str], dict[str, str]]:
+    """(pages to rebuild, why per page) from the cited line ranges (or, failing that, the
+    cited-file hashes) in the index."""
     from auditor.repo_resolver import resolve_scan_root
 
     if idx is None:
@@ -72,8 +106,18 @@ def stale_pages(repo, idx: dict[str, Any] | None) -> tuple[set[str], dict[str, s
             why[page] = "no page yet"
         elif e.get("stale"):
             why[page] = "last build failed"
+        elif ranges := (e.get("cited_ranges") or _ranges_from_history(repo, e, page_dir)):
+            # precise: only the cited lines matter
+            for path, info in ranges.items():
+                text = read_text(root / path)
+                if text is None:
+                    why[page] = f"cited file removed: {path}"
+                    break
+                if range_hash(text.splitlines(), info["ranges"]) != info["hash"]:
+                    why[page] = f"cited lines changed: {path}"
+                    break
         else:
-            for path, h in (e.get("cited_files") or {}).items():
+            for path, h in (e.get("cited_files") or {}).items():  # older entries: whole-file hashes
                 text = read_text(root / path)
                 if text is None:
                     why[page] = f"cited file removed: {path}"
@@ -154,12 +198,48 @@ def plan(output_dir: str | Path, repo_names: list[str] | None = None, *, force: 
                 if built and now - built < min_interval():
                     result.skipped[key] = f"built {(now - built).days}d ago (weekly at most)"
                     continue
-            pages, why = (set(pages_mod.PAGES), {p: "forced" for p in pages_mod.PAGES}) if force else stale_pages(repo, idx)
+            pages, why = (set(pages_mod.PAGES), {p: "forced" for p in pages_mod.PAGES}) if force else stale_pages(
+                repo, idx, _wiki(out) / ("_public" if variant == "public" else "") / repo.name)
             if not pages:
                 result.skipped[key] = "mirror moved, but no cited file changed"
                 continue
             result.items.append(PlanItem(repo.name, variant, sorted(pages), why))
     return result
+
+
+def _live_repos(out: Path) -> set[str]:
+    """Repos whose pages are in the published bundle (their rebuilds reach the public site)."""
+    try:
+        return set(json.loads((out / "wiki_public" / "manifest.json").read_text(encoding="utf-8")).get("repos") or {})
+    except (OSError, ValueError):
+        return set()
+
+
+def select_within_budget(items: list[PlanItem], estimates: dict[tuple[str, str], float], budget: float,
+                         live: set[str], built_at: dict[tuple[str, str], str]) -> tuple[list[PlanItem], list[PlanItem]]:
+    """(items to build, items deferred) so the total estimate fits ``budget``.
+
+    Pages that reach the public bundle go first: the public variant, and the internal pages of
+    published repos that have no public variant. Then everything else. Within a tier, the
+    oldest build first. An item too big for what's left is deferred, and smaller ones after it
+    can still fit.
+    """
+    variants = {(i.repo, i.variant) for i in items}
+
+    def tier(i: PlanItem) -> int:
+        reaches_site = i.variant == "public" or (i.repo in live and (i.repo, "public") not in variants
+                                                 and not built_at.get((i.repo, "public")))
+        return 0 if reaches_site else 1
+
+    chosen, deferred, spent = [], [], 0.0
+    for i in sorted(items, key=lambda i: (tier(i), built_at.get((i.repo, i.variant)) or "", i.repo)):
+        cost = estimates.get((i.repo, i.variant), 0.0)
+        if spent + cost <= budget:
+            chosen.append(i)
+            spent += cost
+        else:
+            deferred.append(i)
+    return chosen, deferred
 
 
 @contextmanager
@@ -206,9 +286,22 @@ def refresh(output_dir: str | Path, repo_names: list[str] | None = None, *, forc
     with _lock(out):
         pl = plan(out, repo_names, force=force, all_public=all_public)
         record |= {"plan": [asdict(i) for i in pl.items], "skipped": pl.skipped, "builds": {}, "cost_usd": 0.0,
-                   "estimate_usd": 0.0}
+                   "estimate_usd": 0.0, "deferred": []}
+        # price each item, and if the lot won't fit the wiki lane, build the most valuable part
+        # (a busy week then defers some pages instead of the budget check refusing everything)
+        from auditor.spend_ledger import get_ledger
+
+        estimates = {(i.repo, i.variant): build([i.repo], out, mode=mode, dry_run=True, public=i.variant == "public",
+                                                pages={i.repo: set(i.pages)}).estimate_usd for i in pl.items}
+        built_at = {(i.repo, i.variant): (_index(out, i.repo, i.variant == "public") or {}).get("built_at") or ""
+                    for i in pl.items} | {(i.repo, "public"): (_index(out, i.repo, True) or {}).get("built_at") or ""
+                                          for i in pl.items}
+        budget = get_ledger().remaining("wiki") * 0.95  # estimates run a little high; keep a margin anyway
+        selected, deferred = select_within_budget(pl.items, estimates, budget, _live_repos(out), built_at)
+        record["deferred"] = [asdict(i) | {"estimate_usd": round(estimates[(i.repo, i.variant)], 4)} for i in deferred]
+        record["budget_usd"] = round(budget, 2)
         for variant in ("internal", "public"):
-            items = [i for i in pl.items if i.variant == variant]
+            items = [i for i in selected if i.variant == variant]
             if not items:
                 continue
             pages = {i.repo: set(i.pages) for i in items}
