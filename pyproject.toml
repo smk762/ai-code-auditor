@@ -17,6 +17,7 @@ dependencies = [
   "fastapi>=0.111.0",
   "uvicorn[standard]>=0.29.0",
   "graphviz>=0.20.0",
+  "markdown-it-py>=3.0.0",
 ]
 
 [project.optional-dependencies]
@@ -47,3 +48,7 @@ py-modules = ["cli"]
 
 [tool.setuptools.packages.find]
 include = ["auditor*", "conductor*", "ecosystem*", "patterns*", "semantic*", "copilot*", "pipelines*", "qa*"]
+
+[tool.setuptools.package-data]
+# Web UI pages and shared assets served by audit-api (auditor/ui.py).
+auditor = ["static/*"]

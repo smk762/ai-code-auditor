@@ -92,6 +92,8 @@ Canonical topology: [`ecosystem/ecosystem.md`](ecosystem/ecosystem.md).
 
 Single-slot run model: only one ecosystem audit runs at a time. `POST /audit/run` starts a subprocess running `pipelines/ecosystem_audit.py` and returns `{run_id}` immediately. Poll `GET /audit/runs/{run_id}` or stream `GET /audit/runs/{run_id}/stream` (SSE). `POST /audit/ingest` pushes the latest reports to the RAG collection in rag-ingest.
 
+Web UI (`auditor/ui.py`): static pages in `auditor/static/` served at `/` (landing, data from `/audit/summary.json`) and `/audit/usage`, with assets mounted at `/audit/static/`. Every page links the shared `ui.css` (tokens, light/dark) and `ui.js` (fetch and format helpers, theme toggle), and puts `<!--#nav-->` where the server injects the shared nav. Each page has its own JSON endpoint and there is no build step. Markdown goes through `render_markdown()` on the server (raw HTML escaped, no inline styles) so the internal UI and the public wiki export share one renderer. Read-only pages need no auth; any action goes through `_require_mutating_auth`.
+
 ### Copilot (`copilot/copilot_engine.py`)
 
 Query routing (`copilot/query_router.py`) classifies queries → appropriate retrieval path. `ContextOrchestrator` budgets semantic hits + report snippets + notes under a token cap. `--deep` mode runs iterative research with up to N refinement loops. `--agent-brief` appends a structured brief for handing off to an external agent.
