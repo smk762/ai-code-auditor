@@ -5,6 +5,12 @@
 mirror_root: /home/smk/mirrors
 default_branch: dev
 
+# Checkout-name aliases (alias: mirror name), kept as symlinks next to every directory that
+# holds a mirror. Suite repos import `@../argus-core/SUITE.md`: SUITE.md's own convention keeps
+# cortex's checkout at ../argus-core (its pre-rename name), so the import must resolve there.
+aliases:
+  argus-core: argus-cortex
+
 mirrors:
   - name: argus-assay
     url: https://github.com/smk762/argus-assay.git
