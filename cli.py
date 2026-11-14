@@ -277,6 +277,8 @@ def _build_parser() -> argparse.ArgumentParser:
     wkb.add_argument("--dry-run", action="store_true", help="Price the build without calling the API")
     wkb.add_argument("--sync", action="store_true", help="Streaming Messages API instead of Batch (2x price, no wait)")
     wkb.add_argument("--json", action="store_true", help="Print the build report as JSON")
+    wkb.add_argument("--public", action="store_true",
+                     help="Build the public variant (public argus repos only, scrubbed inputs) under reports/wiki/_public/")
     wke = wk_sub.add_parser("export", help="Gated public bundle for dragonhound.dev (public argus repos only; no API spend)")
     wke.add_argument("--out", default="", help="Bundle directory (default: <output_dir>/wiki_public)")
     wke.add_argument("--denylist", default="", help="Private deny-list file (default: $AI_AUDIT_OPSEC_DENYLIST or "
@@ -335,7 +337,8 @@ def _run_wiki(args) -> None:
     from wiki.build import build
 
     names = [n.strip() for n in args.repos.split(",") if n.strip()] or None
-    rep = build(names, out, mode="sync" if args.sync else "batch", dry_run=args.dry_run).to_dict()
+    rep = build(names, out, mode="sync" if args.sync else "batch", dry_run=args.dry_run,
+                public=getattr(args, "public", False)).to_dict()
     if args.json:
         print(_json.dumps(rep, indent=2))
         return

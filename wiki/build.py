@@ -109,7 +109,11 @@ def _write_top_index(output_dir: str | Path) -> None:
 
 
 def build(repo_names: list[str] | None, output_dir: str | Path, *, mode: str = "batch",
-          dry_run: bool = False, runner: Runner | None = None) -> BuildReport:
+          dry_run: bool = False, runner: Runner | None = None, public: bool = False,
+          denylist_path: str | Path | None = None, visibility=None) -> BuildReport:
+    """Build the internal wiki, or with ``public=True`` the public variant of each public argus
+    repo: same notes, but every model input scrubbed (wiki/public.py), publication rules added
+    to the prompts, output under reports/wiki/_public/ and no findings page."""
     from auditor.config import load_ecosystem_config
 
     out = Path(output_dir)
@@ -119,6 +123,15 @@ def build(repo_names: list[str] | None, output_dir: str | Path, *, mode: str = "
         raise ValueError(f"unknown or disabled repos: {', '.join(unknown)}")
     repos = [enabled[n] for n in (repo_names or sorted(enabled))]
     report = BuildReport(dry_run=dry_run)
+    scrub = lambda s: s  # noqa: E731
+    eco_text = None
+    if public:
+        from wiki.public import public_inputs
+
+        scrub, eco_text, vis = public_inputs(denylist_path, visibility)
+        for r in repos:
+            if not r.name.startswith("argus-") or vis.get(r.name) != "public":
+                report.repos[r.name] = RepoResult(r.name, skipped="not a public argus repo")
     runner = runner or Runner(out, mode=mode)
     batch = mode == "batch"
 
@@ -170,12 +183,12 @@ def build(repo_names: list[str] | None, output_dir: str | Path, *, mode: str = "
         if not repo_notes:
             res.skipped = "no file notes"
             continue
-        structure = structure_block(repo)
-        context = pages_mod.repo_context(repo, repo_notes, structure)
+        structure = scrub(structure_block(repo))
+        context = scrub(pages_mod.repo_context(repo, repo_notes, structure, ecosystem_text=eco_text))
         ctx[repo.name] = {"repo": repo, "structure": structure, "root": resolve_scan_root(repo), "drafts": {}}
         for page in pages_mod.PAGES:
-            params = pages_mod.draft_params(page, context)
-            cid = request_id(f"d-{repo.name}-{page}", params)
+            params = pages_mod.draft_params(page, context, public=public)
+            cid = request_id(f"{'pd' if public else 'd'}-{repo.name}-{page}", params)
             ctx[repo.name]["drafts"][page] = cid
             draft_reqs.append(Request(cid, params, estimate_usd(params, EST_OUTPUT["draft"], batch=batch), f"wiki:{repo.name}"))
     try:
@@ -194,8 +207,9 @@ def build(repo_names: list[str] | None, output_dir: str | Path, *, mode: str = "
             if not d.ok:
                 report.repos[name].pages_failed[page] = f"draft: {d.error or d.stop_reason}"
                 continue
-            params = pages_mod.verify_params(page, d.text or "", c["structure"], citations.cited_code(d.text or "", c["root"]))
-            cid = request_id(f"v-{name}-{page}", params)
+            cited = scrub(citations.cited_code(d.text or "", c["root"]))  # code can hold LAN URLs too
+            params = pages_mod.verify_params(page, d.text or "", c["structure"], cited, public=public)
+            cid = request_id(f"{'pv' if public else 'v'}-{name}-{page}", params)
             c["verify"][page] = cid
             verify_reqs.append(Request(cid, params, estimate_usd(params, EST_OUTPUT["verify"], batch=batch), f"wiki:{name}"))
     try:
@@ -207,10 +221,11 @@ def build(repo_names: list[str] | None, output_dir: str | Path, *, mode: str = "
 
     # ── 4. citation pass + write ─────────────────────────────────────────────
     for name, c in ctx.items():
-        written = _write_repo(name, c, checked, report, out)
+        written = _write_repo(name, c, checked, report, out, public=public)
         # a page's paid-for draft is kept until its checked version is written
         runner.forget([cid for page in written for cid in (c["drafts"][page], c["verify"][page])])
-    _write_top_index(out)
+    if not public:
+        _write_top_index(out)
     return report
 
 
@@ -231,12 +246,16 @@ def _estimate_pages(repos, report: BuildReport, out: Path, jobs_by_repo, batch: 
     return total
 
 
-def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport, out: Path) -> list[str]:
+def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport, out: Path,
+                *, public: bool = False) -> list[str]:
     """Write the repo's pages and INDEX.json; returns the LLM pages written this run."""
     repo, root, res = c["repo"], c["root"], report.repos[name]
-    d = wiki_dir(out) / name
+    d = wiki_dir(out) / "_public" / name if public else wiki_dir(out) / name
     d.mkdir(parents=True, exist_ok=True)
-    previous = {p["slug"]: p for p in (load_index(out, name) or {}).get("pages", [])}
+    try:
+        previous = {p["slug"]: p for p in json.loads((d / "INDEX.json").read_text(encoding="utf-8")).get("pages", [])}
+    except (OSError, ValueError):
+        previous = {}
     base = Path(repo.path) if "://" not in (repo.path or "") else root
     sha, branch = _git(base, "rev-parse", "HEAD"), _git(base, "rev-parse", "--abbrev-ref", "HEAD")
     entries: dict[str, dict[str, Any]] = {}
@@ -252,7 +271,7 @@ def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport
             continue
         # keep the checked text before the citation pass, so a checker change can be
         # re-applied later without paying for the model calls again
-        raw_dir = wiki_dir(out) / "_raw" / name
+        raw_dir = wiki_dir(out) / ("_raw_public" if public else "_raw") / name
         raw_dir.mkdir(parents=True, exist_ok=True)
         (raw_dir / f"{page}.md").write_text(r.text or "", encoding="utf-8")
         md, dropped = citations.drop_failed_claims(r.text or "", root)
@@ -265,14 +284,15 @@ def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport
                          "dropped_claims": dropped[:30], "cited_files": citations.cited_files(md, root),
                          "generator": "llm", "model": pages_mod.PAGE_MODEL}
 
-    fmd = build_findings_page(name, out)
-    (d / f"{FINDINGS_SLUG}.md").write_text(fmd, encoding="utf-8")
-    entries[FINDINGS_SLUG] = {"slug": FINDINGS_SLUG, "title": "Notable findings", "file": f"{FINDINGS_SLUG}.md",
-                              "generated_at": _now(), "source_sha": sha, "generator": "data",
-                              "citations": citations.check(fmd, root).to_dict(), "cited_files": {}}
+    if not public:  # findings are internal only
+        fmd = build_findings_page(name, out)
+        (d / f"{FINDINGS_SLUG}.md").write_text(fmd, encoding="utf-8")
+        entries[FINDINGS_SLUG] = {"slug": FINDINGS_SLUG, "title": "Notable findings", "file": f"{FINDINGS_SLUG}.md",
+                                  "generated_at": _now(), "source_sha": sha, "generator": "data",
+                                  "citations": citations.check(fmd, root).to_dict(), "cited_files": {}}
     order = list(pages_mod.PAGES) + [FINDINGS_SLUG]
     index = {
-        "repo": name, "branch": branch, "source_sha": sha, "built_at": _now(),
+        "repo": name, "branch": branch, "source_sha": sha, "built_at": _now(), "variant": "public" if public else "internal",
         "models": {"notes": notes_mod.NOTES_MODEL, "pages": pages_mod.PAGE_MODEL, "effort": pages_mod.PAGE_EFFORT},
         "notes": {"cached": res.notes_cached, "written": res.notes_written, "failed": res.notes_failed,
                   "oversize_skipped": res.oversize},

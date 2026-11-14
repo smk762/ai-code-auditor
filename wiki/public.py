@@ -95,7 +95,11 @@ def _bad_ip(text: str) -> str | None:
 
 
 def gate(text: str, denylist: list[str], private_names: list[str]) -> tuple[str, str] | None:
-    """(reason, matched text) for the first thing that must not go public, else None."""
+    """(reason, matched text) for the first thing that must not go public, else None.
+
+    Names and terms match unless they are part of a longer alphanumeric word, so
+    ``VOLUPTAS_URL`` and ``argus-voluptas`` name voluptas but ``dragonhound`` doesn't name Dragon.
+    """
     if ip := _bad_ip(text):
         return "private or link-local IP", ip
     if m := _PATHS.search(text):
@@ -106,12 +110,78 @@ def gate(text: str, denylist: list[str], private_names: list[str]) -> tuple[str,
     if m := _LAN_HOST.search(text):
         return "LAN hostname", m.group(0)
     for name in private_names:
-        if re.search(rf"(?i)(?<![\w-]){re.escape(name)}(?![\w-])", text):
+        if re.search(rf"(?i)(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])", text):
             return "private repo named", name
     for term in denylist:
-        if re.search(rf"(?i)(?<![\w-]){re.escape(term)}(?![\w-])", text):
+        if re.search(rf"(?i)(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])", text):
             return "deny-listed term", term
     return None
+
+
+# ── scrubbing the inputs of the public variant ("placeholders at the source") ──
+
+@dataclass
+class Scrubber:
+    """Replaces private names and deny-listed terms in model inputs with neutral wording.
+
+    Private ecosystem repos are described by their area in the ecosystem doc ("an external
+    ComfyUI service"); deny-listed terms become "an internal host". The gate still checks the
+    output: scrubbing lowers the refusal rate, it isn't the safety net.
+    """
+    denylist: list[str]
+    private: dict[str, str]  # private repo name → neutral description
+
+    def __call__(self, text: str) -> str:
+        for name, desc in self.private.items():
+            text = re.sub(rf"(?i)(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])", desc, text)
+        for term in self.denylist:
+            text = re.sub(rf"(?i)(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])", "an internal host", text)
+        text = _PATHS.sub("<path>", text)
+        text = _LAN_HOST.sub("<host>", text)
+        for m in list(_IPV4.finditer(text)):
+            if _bad_ip(m.group(1)):
+                text = text.replace(m.group(1), "<host>")
+        return text
+
+
+def public_ecosystem_doc(text: str, private_names: list[str]) -> str:
+    """The ecosystem doc for public pages: no deployment or ops sections, no private rows."""
+    for marker in ("\n## Deployment notes", "\n## Night conductor"):
+        if marker in text:
+            text = text.split(marker, 1)[0]
+    keep = []
+    for line in text.splitlines():
+        low = line.lower()
+        if "not scanned (integration only)" in low:
+            continue
+        if line.lstrip().startswith("|") and any(re.search(rf"(?<![A-Za-z0-9]){re.escape(n)}(?![A-Za-z0-9])", low) for n in private_names):
+            continue  # a table row describing a private repo
+        keep.append(line)
+    return "\n".join(keep).rstrip() + "\n"
+
+
+def scrubber_for(denylist: list[str], private_names: list[str], ecosystem_text: str) -> Scrubber:
+    areas = {m.group(2): m.group(1) for m in re.finditer(
+        r"^\|\s*([^|]+?)\s*\|\s*\[([\w.-]+)\]\([^)]+\)\s*\|", ecosystem_text, re.M)}
+    return Scrubber(denylist, {n: (f"an external {areas[n]} service" if n in areas else "an external service")
+                               for n in private_names})
+
+
+def public_inputs(denylist_path: str | Path | None = None,
+                  visibility: Callable[[str], str | None] | None = None) -> tuple[Scrubber, str, dict[str, str | None]]:
+    """(scrubber, public ecosystem doc, visibility per enabled repo) for a public build."""
+    from auditor.config import load_ecosystem_config
+    from auditor.merge_poll import github_token
+    from wiki.pages import ECOSYSTEM_DOC
+
+    denylist = load_denylist(denylist_path)
+    token = github_token()
+    lookup = visibility or (lambda r: github_visibility(r, token))
+    vis = {r.name: lookup(r.name) for r in load_ecosystem_config().repos if r.enabled}
+    private_names = sorted(n for n, v in vis.items() if v != "public" and not n.startswith("argus-"))
+    raw = ECOSYSTEM_DOC.read_text(encoding="utf-8") if ECOSYSTEM_DOC.is_file() else ""
+    scrub = scrubber_for(denylist, private_names, raw)
+    return scrub, scrub(public_ecosystem_doc(raw, private_names)), vis
 
 
 # ── scope ────────────────────────────────────────────────────────────────────
@@ -173,8 +243,10 @@ def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_pa
         if vis[name] != "public":
             report.skipped[name] = f"GitHub visibility: {vis[name] or 'lookup failed'}"
             continue
+        # the public variant (built from scrubbed inputs) wins over the internal pages
+        base = src / "_public" / name if (src / "_public" / name / "INDEX.json").is_file() else src / name
         try:
-            idx = json.loads((src / name / "INDEX.json").read_text(encoding="utf-8"))
+            idx = json.loads((base / "INDEX.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             report.skipped[name] = "no wiki built"
             continue
@@ -182,7 +254,7 @@ def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_pa
         for entry in idx.get("pages", []):
             if entry.get("slug") not in PUBLIC_PAGES or entry.get("stale"):
                 continue
-            md = (src / name / entry["file"]).read_text(encoding="utf-8")
+            md = (base / entry["file"]).read_text(encoding="utf-8")
             md = _MERMAID.sub("", md)  # diagrams are omitted until they are rendered to SVG at build time
             hit = gate(md, denylist, private_names)
             if hit:
