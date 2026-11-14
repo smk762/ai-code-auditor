@@ -22,6 +22,9 @@ GET  /ui/reports/{name}               A markdown report from output_dir, rendere
 GET  /ui/pack-savings                 Pack token-savings page (data: /audit/pack-savings.json)
 GET  /ui/repos                        Repo summary cards (data: /audit/repos/summary.json)
 GET  /ui/packs, /ui/packs/{id}        Packs board and pack page (data: /audit/packs/board.json)
+GET  /ui/night                        Night summary (data: /audit/night.json?run=)
+GET  /ui/architecture                 Architecture & patterns (data: /audit/architecture.json)
+POST /audit/extraction/{id}/approve   Approve an extraction candidate (adds a rule; auth)
 GET  /audit/runs.json                 All pipelines' runs + facets (pipeline, status filters)
 GET  /audit/runs/{run_id}/summary.json  Run summary with findings delta vs the previous run
 GET  /audit/findings.json             Filtered findings + severity × repo matrix for a run
@@ -657,6 +660,49 @@ def get_repos_summary_json() -> JSONResponse:
     from auditor.ui_repos import repos_data
 
     return JSONResponse(repos_data(_output_dir()))
+
+
+@app.get("/ui/night", response_class=HTMLResponse)
+def get_night_page() -> HTMLResponse:
+    """Conductor / night summary: missions, findings, draft PRs, decisions, spend per rest session."""
+    return HTMLResponse(render_page("night.html", "/ui/night"))
+
+
+@app.get("/ui/architecture", response_class=HTMLResponse)
+def get_architecture_page() -> HTMLResponse:
+    """Architecture violations, extraction candidates (approve: auth) and pattern proposals."""
+    return HTMLResponse(render_page("architecture.html", "/ui/architecture"))
+
+
+@app.get("/audit/night.json")
+def get_night_json(run: str = Query(default="", description="rest session id; default: newest")) -> JSONResponse:
+    """One rest session in detail (missions, problems, decisions, spend) plus recent sessions."""
+    from auditor.ui_night import night_data
+
+    out = night_data(_output_dir(), run)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"Rest session {run!r} not found.")
+    return JSONResponse(out)
+
+
+@app.get("/audit/architecture.json")
+def get_architecture_json() -> JSONResponse:
+    """Architecture violations, pattern proposals and extraction candidates (with approval state)."""
+    from auditor.ui_arch import architecture_data, rules_path
+
+    names = [r.name for r in load_ecosystem_config().repos]
+    return JSONResponse(architecture_data(_output_dir(), names, rules_path()))
+
+
+@app.post("/audit/extraction/{candidate_id}/approve", dependencies=[Depends(_require_mutating_auth)])
+def post_approve_extraction(candidate_id: str) -> JSONResponse:
+    """Approve an extraction candidate: add its use_<library> rule (same as `ai-audit approve-extraction`)."""
+    from auditor.ui_arch import approve_extraction, rules_path
+
+    out = approve_extraction(_output_dir(), candidate_id, rules_path())
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"Extraction candidate {candidate_id!r} not found.")
+    return JSONResponse(out)
 
 
 @app.get("/ui/pack-savings", response_class=HTMLResponse)
