@@ -51,6 +51,19 @@
         else console.error(e);
       }
     },
+    SEVERITIES: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
+    sevBadge: (sev) => `<span class="sev sev-${esc(String(sev || "INFO").toLowerCase())}">${esc(String(sev || "INFO").toLowerCase())}</span>`,
+    runStatus(st) {
+      const cls = { success: "ok", completed: "ok", failed: "critical", partial_success: "warn", running: "warn", pending: "warn" }[st] || "";
+      return `<span class="status ${cls}">${esc(String(st || "").replace("_", " "))}</span>`;
+    },
+    // Query-string state, so filtered views are deep-linkable.
+    params: () => Object.fromEntries(new URLSearchParams(location.search)),
+    setParams(obj) {
+      const qs = new URLSearchParams(Object.entries(obj).filter(([, v]) => v !== "" && v != null)).toString();
+      history.replaceState(null, "", qs ? `?${qs}` : location.pathname);
+      return qs;
+    },
     // Called on OS or manual theme change, so canvas charts can re-read tokens.
     onThemeChange(fn) {
       matchMedia("(prefers-color-scheme: dark)").addEventListener("change", fn);

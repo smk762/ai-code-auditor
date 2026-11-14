@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audit runs</title>
+<link rel="stylesheet" href="/audit/static/ui.css">
+<script src="/audit/static/ui.js"></script>
+</head>
+<body>
+<!--#nav-->
+<main>
+  <header class="page">
+    <h1>Audit runs</h1>
+    <div class="sub" id="sub">Loading…</div>
+  </header>
+
+  <section class="card">
+    <div class="toolbar" role="group" aria-label="Filters">
+      <label>Pipeline <select id="f-pipeline"><option value="">all</option></select></label>
+      <label>Status <select id="f-status"><option value="">all</option></select></label>
+      <label>Show <select id="f-limit"><option>50</option><option selected>100</option><option>200</option></select></label>
+    </div>
+    <div class="table-wrap">
+      <table id="runs">
+        <thead><tr><th>Started</th><th>Pipeline</th><th>Status</th><th class="num">Duration</th><th class="num">Repos</th><th class="num">Findings</th><th class="num">Violations</th><th>Run</th></tr></thead>
+        <tbody><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const { esc, int } = UI;
+const sel = { pipeline: document.getElementById("f-pipeline"), status: document.getElementById("f-status"), limit: document.getElementById("f-limit") };
+const initial = UI.params();
+
+function options(el, counts, current) {
+  el.innerHTML = `<option value="">all</option>` + Object.entries(counts)
+    .map(([k, n]) => `<option value="${esc(k)}"${k === current ? " selected" : ""}>${esc(k.replace("_", " "))} (${int(n)})</option>`).join("");
+}
+
+function render(d) {
+  options(sel.pipeline, d.pipelines, d.filters.pipeline);
+  options(sel.status, d.statuses, d.filters.status);
+  const rows = d.runs.map((r) => {
+    const local = r.started_at ? new Date(r.started_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
+    // metadata "findings" is what the pipeline counted; stored rows are what the findings view can show
+    const f = r.findings_stored || r.findings
+      ? `${int(r.findings_stored)}${r.findings && r.findings !== r.findings_stored ? ` <span class="muted" title="counted by the pipeline">/ ${int(r.findings)}</span>` : ""}` : "0";
+    return `<tr>
+      <td title="${esc(r.started_at)}">${esc(local)} <span class="muted">· ${UI.ago(r.started_at)}</span></td>
+      <td>${esc(r.pipeline)}</td><td>${UI.runStatus(r.status)}</td>
+      <td class="num">${UI.duration(r.duration_ms)}</td><td class="num">${int(r.scanned_repos.length)}</td>
+      <td class="num">${f}</td><td class="num">${int(r.violations)}</td>
+      <td><a class="mono" href="/ui/runs/${encodeURIComponent(r.run_id)}">${esc(r.run_id)}</a></td></tr>`;
+  });
+  document.querySelector("#runs tbody").innerHTML = rows.join("") || `<tr><td colspan="8" class="empty">No runs match these filters.</td></tr>`;
+  const total = Object.values(d.statuses).reduce((a, b) => a + b, 0);
+  document.getElementById("sub").textContent = `Showing ${int(d.runs.length)} of ${UI.plural(total, "run")} · newest first`;
+}
+
+function load() {
+  const f = { pipeline: sel.pipeline.value, status: sel.status.value, limit: sel.limit.value };
+  UI.setParams({ ...f, limit: f.limit === "100" ? "" : f.limit });
+  UI.load(`/audit/runs.json?${new URLSearchParams(Object.entries(f).filter(([, v]) => v))}`, render, document.getElementById("sub"));
+}
+
+// Seed the selects from the URL before the first load so deep links work.
+for (const k of ["pipeline", "status"]) if (initial[k]) sel[k].innerHTML = `<option value="${esc(initial[k])}" selected>${esc(initial[k])}</option>`;
+if (initial.limit) sel.limit.value = initial.limit;
+Object.values(sel).forEach((el) => el.addEventListener("change", load));
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

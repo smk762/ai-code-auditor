@@ -1,48 +1,15 @@
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from auditor import ui
-from auditor.db import AuditRun, Base, FindingRecord
+from auditor.db import AuditRun, FindingRecord
 from auditor.spend_ledger import get_ledger
-
-
-@pytest.fixture
-def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    from auditor.audit_api import app
-
-    monkeypatch.setattr("auditor.audit_api._output_dir", lambda: str(tmp_path))
-    return TestClient(app)
-
-
-@pytest.fixture
-def memdb(monkeypatch: pytest.MonkeyPatch):
-    """Point the summary's DB reads at a throwaway in-memory SQLite."""
-    engine = create_engine("sqlite://", future=True, poolclass=StaticPool,
-                           connect_args={"check_same_thread": False})
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(bind=engine, future=True)
-
-    @contextmanager
-    def session():
-        s = factory()
-        try:
-            yield s
-            s.commit()
-        finally:
-            s.close()
-
-    monkeypatch.setattr(ui, "_db_session", session)
-    return session
 
 
 # ── nav + pages ──────────────────────────────────────────────────────────────
@@ -104,17 +71,21 @@ def test_summary_reads_runs_findings_packs_and_spend(tmp_path: Path, memdb, monk
     monkeypatch.setenv("AI_AUDIT_BUDGET_TOTAL_USD", "100")
     now = datetime.now(timezone.utc)
     with memdb() as s:
-        s.add(AuditRun(run_id="eco-old", pipeline="ecosystem-audit", status="success",
-                       started_at=now - timedelta(days=2), metadata_json={}))
+        # ecosystem runs store no findings rows; repo audits do
         s.add(AuditRun(run_id="eco-1", pipeline="ecosystem-audit", status="success",
+                       started_at=now - timedelta(hours=1), metadata_json={"scanned_repos": ["a", "b"]}))
+        s.add(AuditRun(run_id="repo-old", pipeline="repo-audit", status="success",
+                       started_at=now - timedelta(days=2), metadata_json={}))
+        s.add(AuditRun(run_id="repo-1", pipeline="repo-audit", status="completed",  # API-started run
                        started_at=now - timedelta(hours=3),
                        metadata_json={"findings": 3, "duration_ms": 5000, "scanned_repos": ["a", "b"]}))
-        s.add(AuditRun(run_id="repo-1", pipeline="repo-audit", status="running", started_at=now))
+        s.add(AuditRun(run_id="repo-live", pipeline="repo-audit", status="running", started_at=now))
         for sev in ("HIGH", "HIGH", "low"):
-            s.add(FindingRecord(run_id="eco-1", repo="a", file_path="x.py", line=1, finding_type="t",
+            s.add(FindingRecord(run_id="repo-1", repo="a", file_path="x.py", line=1, finding_type="t",
                                 severity=sev, title="t", source="bandit", created_at=now))
-        s.add(FindingRecord(run_id="eco-old", repo="a", file_path="x.py", line=1, finding_type="t",
-                            severity="CRITICAL", title="t", source="bandit", created_at=now))
+        for run_id in ("repo-old", "repo-live"):
+            s.add(FindingRecord(run_id=run_id, repo="a", file_path="x.py", line=1, finding_type="t",
+                                severity="CRITICAL", title="t", source="bandit", created_at=now))
     packs = tmp_path / "agent_packs"
     packs.mkdir()
     (packs / "INDEX.json").write_text(json.dumps(
@@ -123,9 +94,10 @@ def test_summary_reads_runs_findings_packs_and_spend(tmp_path: Path, memdb, monk
 
     d = ui.summary_data(tmp_path)
     assert d["errors"] == []
-    assert d["last_run"]["run_id"] == "repo-1"  # newest run of any pipeline
-    assert d["last_ecosystem_run"]["run_id"] == "eco-1"
-    assert d["last_ecosystem_run"]["repos"] == 2
+    assert d["last_run"]["run_id"] == "repo-live"  # newest run of any pipeline
+    # newest *finished* run with findings stored, counting the API's "completed" status
+    assert d["findings"]["run_id"] == "repo-1" and d["findings"]["pipeline"] == "repo-audit"
+    assert d["findings"]["repos"] == 2
     assert d["findings"]["total"] == 3
     assert d["findings"]["by_severity"] == {"CRITICAL": 0, "HIGH": 2, "MEDIUM": 0, "LOW": 1, "INFO": 0}
     assert d["packs"]["total"] == 4
@@ -142,7 +114,8 @@ def test_summary_degrades_per_section(tmp_path: Path, monkeypatch) -> None:
     assert d["last_run"] is None and d["findings"] is None
     assert d["packs"]["total"] == 0  # no pack index yet is not an error
     assert d["spend"] is not None
-    assert len(d["errors"]) == 1 and d["errors"][0].startswith("runs: RuntimeError")
+    assert [e.split(":")[0] for e in d["errors"]] == ["runs", "findings"]
+    assert d["errors"][0].startswith("runs: RuntimeError")
 
 
 def test_summary_endpoint(client: TestClient, memdb) -> None:

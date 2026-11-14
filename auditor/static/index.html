@@ -27,7 +27,7 @@
   <section class="grid">
     <div class="card span-6">
       <h2>Findings by severity</h2>
-      <p class="hint" id="sev-hint">Latest successful ecosystem run.</p>
+      <p class="hint" id="sev-hint">Newest finished audit that stored findings.</p>
       <div id="sev"></div>
     </div>
     <div class="card span-6">
@@ -38,10 +38,10 @@
   </section>
 
   <section class="grid links-grid" aria-label="Pages">
+    <a class="card span-3" href="/ui/runs"><h2>Runs</h2><p>Every audit run, with per-repo results and findings deltas.</p></a>
+    <a class="card span-3" href="/ui/findings"><h2>Findings</h2><p>Severity × repo matrix, filters, new and fixed since the last run.</p></a>
     <a class="card span-3" href="/audit/usage"><h2>Usage</h2><p>Claude API spend by lane, model, process and hour.</p></a>
     <a class="card span-3" href="/audit/topology"><h2>Service topology</h2><p>Generated cross-repo service graph.</p></a>
-    <a class="card span-3" href="/audit/packs"><h2>Packs (JSON)</h2><p>Discover agent coding packs.</p></a>
-    <a class="card span-3" href="/audit/runs"><h2>Runs (JSON)</h2><p>Recent ecosystem audit runs.</p></a>
   </section>
 </main>
 
@@ -55,10 +55,6 @@ function tile(label, value, note) {
   return `<div class="card kpi span-3"><div class="label">${label}</div><div class="value">${value}</div><div class="note">${note}</div></div>`;
 }
 
-function runStatus(st) {
-  const cls = { success: "ok", failed: "critical", partial_success: "warn", running: "warn", pending: "warn" }[st] || "";
-  return `<span class="status ${cls}">${esc(st)}</span>`;
-}
 
 // Stacked bar + legend for {key: count} in a fixed order.
 function stacked(order, counts, colorOf, labelOf) {
@@ -71,14 +67,14 @@ function stacked(order, counts, colorOf, labelOf) {
 }
 
 function render(d) {
-  const run = d.last_run, eco = d.last_ecosystem_run, f = d.findings, p = d.packs, s = d.spend;
+  const run = d.last_run, f = d.findings, p = d.packs, s = d.spend;
   const sc = (p && p.status_counts) || {};
   const active = (sc.claimed || 0) + (sc.in_progress || 0);
   const tiles = [
-    run ? tile("Last run", runStatus(run.status), `${esc(run.pipeline)} · ${UI.ago(run.started_at)} · ${UI.duration(run.duration_ms)}`)
+    run ? tile("Last run", `<a href="/ui/runs/${encodeURIComponent(run.run_id)}">${UI.runStatus(run.status)}</a>`, `${esc(run.pipeline)} · ${UI.ago(run.started_at)} · ${UI.duration(run.duration_ms)}`)
         : tile("Last run", "—", "no runs recorded"),
-    f ? tile("Findings (last ecosystem run)", int(f.total), `${int(f.by_severity.CRITICAL)} critical · ${int(f.by_severity.HIGH)} high · ${UI.plural(eco.repos, "repo")}`)
-      : tile("Findings (last ecosystem run)", "—", eco ? "no findings stored" : "no successful ecosystem run"),
+    f ? tile("Findings", `<a href="/ui/findings">${int(f.total)}</a>`, `${int(f.by_severity.CRITICAL)} critical · ${int(f.by_severity.HIGH)} high · ${esc(f.pipeline)} ${UI.ago(f.started_at)}`)
+      : tile("Findings", "—", "no run has findings stored yet"),
     p ? tile("Open packs", int(sc.open || 0), `${int(active)} claimed or in progress · ${int(p.total)} total`)
       : tile("Open packs", "—", "pack index unavailable"),
     s ? tile("Spend this month", money(s.spent), s.cap ? `${((s.spent / s.cap) * 100).toFixed(0)}% of ${money(s.cap)} cap · <a href="/audit/usage">usage</a>` : "no total cap")
@@ -89,7 +85,7 @@ function render(d) {
   document.getElementById("sev").innerHTML = f
     ? stacked(Object.keys(SEV_COLOR), f.by_severity, (k) => SEV_COLOR[k], (k) => k[0] + k.slice(1).toLowerCase())
     : `<div class="empty">No findings to show.</div>`;
-  if (eco) document.getElementById("sev-hint").textContent = `Run ${eco.run_id}, ${UI.ago(eco.started_at)}.`;
+  if (f) document.getElementById("sev-hint").textContent = `Newest audit with findings: ${f.run_id} (${UI.plural(f.repos, "repo")}), ${UI.ago(f.started_at)}.`;
 
   document.getElementById("packs").innerHTML = p
     ? stacked(PACK_STATUS, sc, (k) => PACK_COLOR[k], (k) => k.replace("_", " "))

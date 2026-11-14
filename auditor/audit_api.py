@@ -16,6 +16,12 @@ GET  /audit/topology.json             Return the latest service topology JSON si
 GET  /                               Web UI landing page (also /ui); shared nav + /audit/static assets
 GET  /audit/summary.json             Landing-page headline numbers (last run, findings, packs, spend)
 GET  /audit/usage                    Claude API usage dashboard (+ /audit/usage.json)
+GET  /ui/runs, /ui/runs/{run_id}      Runs list and run summary pages (live via the SSE stream)
+GET  /ui/findings                     Findings page: severity × repo matrix, filters, new/fixed
+GET  /ui/reports/{name}               A markdown report from output_dir, rendered server-side
+GET  /audit/runs.json                 All pipelines' runs + facets (pipeline, status filters)
+GET  /audit/runs/{run_id}/summary.json  Run summary with findings delta vs the previous run
+GET  /audit/findings.json             Filtered findings + severity × repo matrix for a run
 GET  /reports/mithrandir/LATEST.json  Atomic rest-session status for mithrandir (Jarrah)
 GET  /reports/mithrandir/LATEST.md    TTS-safe companion briefing for Holly
 POST /audit/ingest                    Trigger RAG briefing ingest to the audit_docs collection
@@ -56,8 +62,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from auditor.agent_pack import CHARS_PER_TOKEN, DEFAULT_BUNDLE_TOKEN_BUDGET, PACK_DISCOVERY
 from auditor.config import load_ecosystem_config
-from auditor.db import AuditRun, FindingRecord, PipelineCheckpoint, RepoRun, as_utc, db_session, utcnow
+from auditor.db import AuditRun, FindingRecord, PipelineCheckpoint, RepoRun, db_session, utcnow
 from auditor.gpu_scheduler import get_vram_info
+from auditor.run_views import SUCCESS_STATUSES, repo_run_to_dict
+from auditor.run_views import run_to_dict as _row_to_dict
 from auditor.ui import STATIC_DIR, STATIC_URL, render_page
 
 logger = logging.getLogger(__name__)
@@ -245,58 +253,12 @@ def _db_list_runs(limit: int) -> list[dict[str, Any]]:
         return [_row_to_dict(r) for r in rows]
 
 
-def _elapsed_ms(row: AuditRun) -> int | None:
-    started = as_utc(row.started_at)
-    if started is None:
-        return None
-    end = as_utc(row.finished_at) or utcnow()
-    return int((end - started).total_seconds() * 1000)
-
-
-def _row_to_dict(row: AuditRun) -> dict[str, Any]:
-    meta: dict = row.metadata_json or {}
-    duration_ms = meta.get("duration_ms")
-    if duration_ms is None:
-        duration_ms = _elapsed_ms(row)
-    repos_total = int(meta.get("repos_total", 0) or 0)
-    scanned = meta.get("scanned_repos") or []
-    scanned_n = len(scanned) if isinstance(scanned, list) else 0
-    return {
-        "run_id":        row.run_id,
-        "status":        row.status,
-        "started_at":    row.started_at.isoformat() if row.started_at else None,
-        "finished_at":   row.finished_at.isoformat() if row.finished_at else None,
-        "scanned_repos": scanned if isinstance(scanned, list) else [],
-        "scanned_files": int(meta.get("scanned_files", 0) or 0),
-        "code_units":    int(meta.get("code_units", 0) or 0),
-        "findings":      int(meta.get("findings", 0) or 0),
-        "violations":    int(meta.get("violations", 0) or 0),
-        "errors":        meta.get("errors", []),
-        "duration_ms":   duration_ms,
-        "current_stage": meta.get("current_stage") or "",
-        "repos_total":   repos_total,
-        "repos_completed": scanned_n,
-        "stage_timings_ms": meta.get("stage_timings_ms", {}),
-        "stage_status":     meta.get("stage_status", {}),
-        "extra":         meta.get("extra", {}),
-    }
-
-
 def _db_list_repo_runs(run_id: str) -> list[dict[str, Any]]:
     with db_session() as session:
         rows = session.execute(
             select(RepoRun).where(RepoRun.run_id == run_id).order_by(RepoRun.updated_at.asc())
         ).scalars().all()
-        return [
-            {
-                "repo_name":     r.repo_name,
-                "status":        r.status,
-                "attempts":      r.attempts,
-                "error_message": r.error_message or "",
-                "updated_at":    r.updated_at.isoformat() if r.updated_at else None,
-            }
-            for r in rows
-        ]
+        return [repo_run_to_dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -582,7 +544,7 @@ def get_report(run_id: str) -> str:
                 "for this outcome."
             ),
         )
-    if st not in ("completed", "partial_success"):
+    if st not in SUCCESS_STATUSES:
         raise HTTPException(
             status_code=409,
             detail=f"Run status is {st!r}; report is not available from this endpoint.",
@@ -643,6 +605,79 @@ def get_summary_json() -> JSONResponse:
     from auditor.ui import summary_data
 
     return JSONResponse(summary_data(_output_dir()))
+
+
+@app.get("/ui/runs", response_class=HTMLResponse)
+def get_runs_page() -> HTMLResponse:
+    """Runs list: every pipeline, filterable by pipeline and status."""
+    return HTMLResponse(render_page("runs.html", "/ui/runs"))
+
+
+@app.get("/ui/runs/{run_id}", response_class=HTMLResponse)
+def get_run_page(run_id: str) -> HTMLResponse:
+    """Run summary: stages, per-repo results, findings delta, reports; live while running."""
+    return HTMLResponse(render_page("run.html", "/ui/runs"))
+
+
+@app.get("/ui/findings", response_class=HTMLResponse)
+def get_findings_page() -> HTMLResponse:
+    """Findings: severity × repo matrix and a filterable table, with new/fixed since last run."""
+    return HTMLResponse(render_page("findings.html", "/ui/findings"))
+
+
+@app.get("/ui/reports/{name}", response_class=HTMLResponse)
+def get_report_page(name: str) -> HTMLResponse:
+    """One markdown report from the output dir, rendered server-side."""
+    from auditor.ui import render_report_page
+
+    page = render_report_page(name, _output_dir())
+    if page is None:
+        raise HTTPException(status_code=404, detail=f"No report named {name!r}.")
+    return HTMLResponse(page)
+
+
+@app.get("/audit/runs.json")
+def get_runs_json(
+    pipeline: str = Query(default="", description="ecosystem-audit | repo-audit | …"),
+    status: str = Query(default="", description="comma-separated statuses"),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> JSONResponse:
+    """Runs of every pipeline (``GET /audit/runs`` lists ecosystem runs only), plus facet counts."""
+    from auditor.ui_runs import runs_data
+
+    return JSONResponse(runs_data(pipeline=pipeline, status=status, limit=limit))
+
+
+@app.get("/audit/runs/{run_id}/summary.json")
+def get_run_summary_json(run_id: str) -> JSONResponse:
+    """Run + per-repo rows + findings by severity and delta vs the previous comparable run."""
+    from auditor.ui_runs import run_summary
+
+    out = run_summary(run_id, _output_dir())
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found.")
+    return JSONResponse(out)
+
+
+@app.get("/audit/findings.json")
+def get_findings_json(
+    run_id: str = Query(default="", description="default: newest finished run with findings stored"),
+    repo: str = Query(default=""),
+    severity: str = Query(default="", description="comma-separated, e.g. CRITICAL,HIGH"),
+    source: str = Query(default=""),
+    type: str = Query(default=""),  # noqa: A002
+    q: str = Query(default="", description="substring of title or file path"),
+    change: Literal["all", "new", "fixed"] = Query(default="all"),
+    limit: int = Query(default=500, ge=1, le=5000),
+) -> JSONResponse:
+    """Findings for one run, filtered, with the severity × repo matrix and facets for the run."""
+    from auditor.ui_runs import findings_data
+
+    out = findings_data(run_id, repo=repo, severity=severity, source=source, type=type, q=q,
+                        change=change, limit=limit)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found.")
+    return JSONResponse(out)
 
 
 @app.get("/audit/usage.json")

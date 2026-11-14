@@ -40,3 +40,47 @@ def _isolate_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AI_AUDIT_REST_TZ", raising=False)
     # nor the host's rag-chat API key (cli repair sends it as a Bearer token)
     monkeypatch.delenv("RAG_CHAT_API_KEY", raising=False)
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """API test client with output_dir pointed at tmp_path."""
+    from fastapi.testclient import TestClient
+
+    from auditor.audit_api import app
+
+    monkeypatch.setattr("auditor.audit_api._output_dir", lambda: str(tmp_path))
+    return TestClient(app)
+
+
+@pytest.fixture
+def memdb(monkeypatch: pytest.MonkeyPatch):
+    """Point the web UI's DB reads (auditor.ui._db_session) at a throwaway in-memory SQLite.
+
+    StaticPool shares one connection, so TestClient's worker thread sees the same database.
+    """
+    from contextlib import contextmanager
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from auditor import ui
+    from auditor.db import Base
+
+    engine = create_engine("sqlite://", future=True, poolclass=StaticPool,
+                           connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, future=True)
+
+    @contextmanager
+    def session():
+        s = factory()
+        try:
+            yield s
+            s.commit()
+        finally:
+            s.close()
+
+    monkeypatch.setattr(ui, "_db_session", session)
+    return session
