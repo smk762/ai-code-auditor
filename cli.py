@@ -292,6 +292,15 @@ def _build_parser() -> argparse.ArgumentParser:
     wkp.add_argument("--push", action="store_true", help="Push the commit (without it: commit locally only)")
     wkp.add_argument("--denylist", default="", help="Private deny-list file (as for export)")
     wkp.add_argument("--json", action="store_true", help="Print the result as JSON")
+    wkr = wk_sub.add_parser("refresh", help="Rebuild stale pages (weekly at most per repo), then export + publish")
+    wkr.add_argument("--repos", default="", help="Comma-separated repo names (default: every enabled repo)")
+    wkr.add_argument("--force", action="store_true", help="Rebuild every page now, ignoring staleness and the weekly limit")
+    wkr.add_argument("--dry-run", action="store_true", help="Show the plan and its price; no API calls, nothing written")
+    wkr.add_argument("--no-publish", action="store_true", help="Skip export + publish to the docs repo")
+    wkr.add_argument("--no-push", action="store_true", help="Commit to the docs checkout but don't push")
+    wkr.add_argument("--all-public", action="store_true",
+                     help="Also build a public variant for public repos whose internal pages already pass the gate")
+    wkr.add_argument("--json", action="store_true", help="Print the run record as JSON")
     wks = wk_sub.add_parser("status", help="Show built repos, their source SHAs and the wiki lane budget")
     wks.add_argument("--json", action="store_true", help="Print as JSON")
 
@@ -305,6 +314,29 @@ def _run_wiki(args) -> None:
     from auditor.spend_ledger import get_ledger
 
     out = load_ecosystem_config().output_dir
+    if args.wiki_command == "refresh":
+        from wiki.refresh import refresh
+
+        names = [n.strip() for n in args.repos.split(",") if n.strip()] or None
+        rec = refresh(out, names, force=args.force, dry_run=args.dry_run,
+                      publish=not args.no_publish, push=not args.no_push, all_public=args.all_public)
+        if args.json:
+            print(_json.dumps(rec, indent=2))
+            return
+        for item in rec["plan"]:
+            print(f"  rebuild   {item['repo'] + '/' + item['variant']:32} {', '.join(item['pages'])}")
+        for key, why in sorted(rec["skipped"].items()):
+            print(f"  skip      {key:32} {why}")
+        money = rec["estimate_usd"] if args.dry_run else rec["cost_usd"]
+        print(f"{'estimated' if args.dry_run else 'cost'} ${money:.2f}")
+        for variant, b in rec["builds"].items():
+            if b["stopped"]:
+                print(f"{variant} build stopped: {b['stopped']}")
+        if pub := rec.get("publish"):
+            print("publish: " + (pub["error"] if "error" in pub else
+                  f"{'new commit ' + str(pub['pin']['commit'])[:10] if pub['changed'] else 'unchanged'}"
+                  + (" (pushed)" if pub.get("pushed") else "")))
+        return
     if args.wiki_command == "publish":
         from pathlib import Path as _P
 

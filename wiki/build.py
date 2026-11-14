@@ -110,10 +110,14 @@ def _write_top_index(output_dir: str | Path) -> None:
 
 def build(repo_names: list[str] | None, output_dir: str | Path, *, mode: str = "batch",
           dry_run: bool = False, runner: Runner | None = None, public: bool = False,
-          denylist_path: str | Path | None = None, visibility=None) -> BuildReport:
+          denylist_path: str | Path | None = None, visibility=None,
+          pages: dict[str, set[str]] | None = None) -> BuildReport:
     """Build the internal wiki, or with ``public=True`` the public variant of each public argus
     repo: same notes, but every model input scrubbed (wiki/public.py), publication rules added
-    to the prompts, output under reports/wiki/_public/ and no findings page."""
+    to the prompts, output under reports/wiki/_public/ and no findings page.
+
+    ``pages`` limits the build to some pages per repo (incremental rebuilds, wiki/refresh.py);
+    pages not listed keep their current version and index entry."""
     from auditor.config import load_ecosystem_config
 
     out = Path(output_dir)
@@ -152,7 +156,7 @@ def build(repo_names: list[str] | None, output_dir: str | Path, *, mode: str = "
     by_cid = {j.custom_id: j for jobs in jobs_by_repo.values() for j in jobs}
 
     if dry_run:
-        report.estimate_usd = sum(r.est_usd for r in note_reqs) + _estimate_pages(repos, report, out, jobs_by_repo, batch)
+        report.estimate_usd = sum(r.est_usd for r in note_reqs) + _estimate_pages(repos, report, out, jobs_by_repo, batch, pages)
         report.stages["notes"] = {"requested": len(note_reqs), "est_usd": round(sum(r.est_usd for r in note_reqs), 4)}
         return report
 
@@ -185,8 +189,10 @@ def build(repo_names: list[str] | None, output_dir: str | Path, *, mode: str = "
             continue
         structure = scrub(structure_block(repo))
         context = scrub(pages_mod.repo_context(repo, repo_notes, structure, ecosystem_text=eco_text))
-        ctx[repo.name] = {"repo": repo, "structure": structure, "root": resolve_scan_root(repo), "drafts": {}}
-        for page in pages_mod.PAGES:
+        wanted = [p for p in pages_mod.PAGES if pages is None or p in pages.get(repo.name, set())]
+        ctx[repo.name] = {"repo": repo, "structure": structure, "root": resolve_scan_root(repo), "drafts": {},
+                          "requested": set(wanted)}
+        for page in wanted:
             params = pages_mod.draft_params(page, context, public=public)
             cid = request_id(f"{'pd' if public else 'd'}-{repo.name}-{page}", params)
             ctx[repo.name]["drafts"][page] = cid
@@ -229,7 +235,8 @@ def build(repo_names: list[str] | None, output_dir: str | Path, *, mode: str = "
     return report
 
 
-def _estimate_pages(repos, report: BuildReport, out: Path, jobs_by_repo, batch: bool) -> float:
+def _estimate_pages(repos, report: BuildReport, out: Path, jobs_by_repo, batch: bool,
+                    pages: dict[str, set[str]] | None = None) -> float:
     """Dry-run price of drafts + check-and-fix, from the context each repo would send."""
     total = 0.0
     for repo in repos:
@@ -239,6 +246,8 @@ def _estimate_pages(repos, report: BuildReport, out: Path, jobs_by_repo, batch: 
         structure = structure_block(repo)
         context = pages_mod.repo_context(repo, repo_notes, structure) + "x" * (EST_NOTE_CHARS * len(jobs_by_repo.get(repo.name, [])))
         for page in pages_mod.PAGES:
+            if pages is not None and page not in pages.get(repo.name, set()):
+                continue
             total += estimate_usd(pages_mod.draft_params(page, context), EST_OUTPUT["draft"], batch=batch)
             # check-and-fix sends structure + cited code (~1/3 of the context) + the draft
             fake = pages_mod.verify_params(page, "x" * 24_000, structure, "x" * (len(context) // 3))
@@ -261,6 +270,10 @@ def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport
     entries: dict[str, dict[str, Any]] = {}
 
     for page, (title, _brief) in pages_mod.PAGES.items():
+        if page not in c.get("requested", set(pages_mod.PAGES)):
+            if page in previous and (d / previous[page]["file"]).is_file():
+                entries[page] = previous[page]  # not part of this (incremental) build: unchanged
+            continue
         cid = c["verify"].get(page)
         r = checked.get(cid) if cid else None
         if r is None or not r.ok:

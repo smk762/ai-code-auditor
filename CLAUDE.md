@@ -152,6 +152,13 @@ Publish (`wiki/publish.py`, `ai-audit wiki publish [--push]`) commits the bundle
 - **Output:** it prints the `docs.lock.json` values (repo, commit, bundle_sha256).
 - **Going live:** dragonhound-site deploys by direct upload (not git-connected Pages) and pins docs in `docs.lock.json`. A pin bump on its `dev` is the review gate. Never add deploy hooks or commit docs into dragonhound-site.
 
+Refresh (`wiki/refresh.py`, `ai-audit wiki refresh [--dry-run] [--force]`; weekly timer `ai-audit-wiki-refresh`, Sundays 04:30) rebuilds only stale pages, then exports and publishes.
+- **What counts as stale:** a page is stale when a file it cites changed or was removed (`cited_files` hashes in INDEX). Stale pages are rebuilt only when the mirror moved past the built SHA, and at most every `AI_AUDIT_WIKI_MIN_INTERVAL_DAYS` (default 7).
+- **No waiting:** failed or missing pages are retried on the next run.
+- **Public variant:** kept only where needed, meaning repos that already have one or that the last export refused. `--all-public` builds it for every public repo.
+- **Concurrency:** one run at a time (lock file). The last run is recorded in `reports/wiki/_refresh.json`.
+- **API:** `POST /audit/wiki/{repo}/regenerate[?force=1]` (auth; the button on wiki pages) and `GET /audit/wiki/refresh`.
+
 ## RAG ingest integration
 
 `config/ecosystem.yaml` → `rag_ingest_url` points to the rag-ingest service in agent-composer. On this host that is `http://127.0.0.1:9050/ingest` (or the LAN IP if running from Docker). The `audit_docs` Qdrant collection is separate from the chat `project_docs` collection. Ingest is triggered via `POST /audit/ingest` on the audit API or `scripts/ingest_ecosystem_to_rag.py` directly.
