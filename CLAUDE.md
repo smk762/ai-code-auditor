@@ -126,6 +126,12 @@ Viewer (`auditor/ui_wiki.py`): `/ui/wiki` lists the built repos, and `/ui/wiki/{
 
 Batch `custom_id`s hash the exact request params, and results are stored as they are harvested, so reruns and crashes never pay twice. Each stage is priced first and checked against the `wiki` lane (default $30/month, `AI_AUDIT_BUDGET_WIKI_USD`). Only Python/JS/TS sources are read, so repos made of YAML, Terraform or Jinja get no pages yet.
 
+Public export (`wiki/public.py`, `ai-audit wiki export`) writes the gated bundle for dragonhound.dev to `reports/wiki_public/`: `manifest.json` (dev SHA and sha256 per page), plus `<repo>/<page>.md` and `.html` (shared renderer, citations linked to GitHub at the SHA). dragonhound.dev is the only public copy, and there are no GitHub wikis.
+- **Scope:** read from GitHub at export time: `argus-*` and public. A failed lookup counts as private.
+- **Pages:** overview, architecture, interfaces and integration only. Never "Notable findings" or the internal INDEX data. Mermaid is omitted for now.
+- **Opsec gate:** refuses a page outright, never redacts it, and fails closed. It refuses private or link-local IPs, home or mount paths, emails, LAN hostnames, names of private non-argus repos (from GitHub), and terms from the private deny-list at `~/.config/ai-code-auditor/opsec-denylist.txt` or `AI_AUDIT_OPSEC_DENYLIST`. That file is never committed, and the export won't run without it.
+- **Refusals:** a repo with a refused page is left out whole. The refusal report, which quotes the leak, goes to `reports/wiki_public_report.json`, outside the bundle.
+
 ## RAG ingest integration
 
 `config/ecosystem.yaml` → `rag_ingest_url` points to the rag-ingest service in agent-composer. On this host that is `http://127.0.0.1:9050/ingest` (or the LAN IP if running from Docker). The `audit_docs` Qdrant collection is separate from the chat `project_docs` collection. Ingest is triggered via `POST /audit/ingest` on the audit API or `scripts/ingest_ecosystem_to_rag.py` directly.

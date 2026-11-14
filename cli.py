@@ -277,6 +277,11 @@ def _build_parser() -> argparse.ArgumentParser:
     wkb.add_argument("--dry-run", action="store_true", help="Price the build without calling the API")
     wkb.add_argument("--sync", action="store_true", help="Streaming Messages API instead of Batch (2x price, no wait)")
     wkb.add_argument("--json", action="store_true", help="Print the build report as JSON")
+    wke = wk_sub.add_parser("export", help="Gated public bundle for dragonhound.dev (public argus repos only; no API spend)")
+    wke.add_argument("--out", default="", help="Bundle directory (default: <output_dir>/wiki_public)")
+    wke.add_argument("--denylist", default="", help="Private deny-list file (default: $AI_AUDIT_OPSEC_DENYLIST or "
+                     "~/.config/ai-code-auditor/opsec-denylist.txt); the export won't run without one")
+    wke.add_argument("--json", action="store_true", help="Print the export report as JSON")
     wks = wk_sub.add_parser("status", help="Show built repos, their source SHAs and the wiki lane budget")
     wks.add_argument("--json", action="store_true", help="Print as JSON")
 
@@ -290,6 +295,22 @@ def _run_wiki(args) -> None:
     from auditor.spend_ledger import get_ledger
 
     out = load_ecosystem_config().output_dir
+    if args.wiki_command == "export":
+        from wiki.public import export
+
+        rep = export(out, args.out or None, denylist_path=args.denylist or None).to_dict()
+        if args.json:
+            print(_json.dumps(rep, indent=2))
+            return
+        print(f"bundle: {rep['out_dir']}")
+        for name, pages in rep["exported"].items():
+            print(f"  exported  {name:22} {', '.join(pages)}")
+        for name, why in rep["skipped"].items():
+            print(f"  skipped   {name:22} {why}")
+        if rep["refused"]:
+            print(f"{len(rep['refused'])} page(s) refused by the opsec gate; details (with the matched text) in "
+                  f"{out}/wiki_public_report.json, which stays outside the bundle")
+        return
     if args.wiki_command == "status":
         from wiki.build import wiki_dir
 
