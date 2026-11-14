@@ -101,6 +101,11 @@ def test_page_render(wiki: Path) -> None:
     assert "2 commits behind dev" in page and ">GitHub</a>" in page
     assert '<code class="language-mermaid">' in page and "[app.py:L1]" in page  # fenced: unlinked
     assert "1 claim dropped by the citation check" in page and "ghost" in page
+    # "Ask this repo" lives in a modal opened from the sidebar, not in the page body
+    aside = page[page.index('<aside'):page.index('</aside>')]
+    assert 'id="ask-open"' in aside and 'aria-haspopup="dialog"' in aside
+    assert '<dialog class="ask" id="ask-dlg"' in page and "<h2 id=\"ask-h\">Ask svc</h2>" in page
+    assert page.index('id="ask-form"') > page.index('<dialog class="ask"') and "<!--#repo-->" not in page
     data = ui_wiki.render_wiki_page(wiki, "svc", "findings")
     assert "Built from the audit data" in data
     assert ui_wiki.render_wiki_page(wiki, "svc", "nope") is None
