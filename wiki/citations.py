@@ -146,6 +146,38 @@ def cited_files(md: str, root: Path) -> dict[str, str]:
     return out
 
 
+def _ranges(md: str) -> dict[str, list[list[int]]]:
+    out: dict[str, set[tuple[int, int]]] = {}
+    for m in CITE.finditer(md):
+        a = int(m.group(2))
+        out.setdefault(m.group(1), set()).add((a, int(m.group(3) or a)))
+    return {path: [list(r) for r in sorted(rs)] for path, rs in sorted(out.items())}
+
+
+def range_hash(lines: list[str], ranges: list[list[int]]) -> str | None:
+    """Hash of exactly the cited lines; None if a range no longer exists in the file."""
+    if any(not (1 <= a <= b <= len(lines)) for a, b in ranges):
+        return None
+    return content_hash("\x00".join("\n".join(lines[a - 1:b]) for a, b in ranges))
+
+
+def cited_ranges(md: str, root: Path) -> dict[str, dict[str, object]]:
+    """Path → {ranges, hash of the text at those ranges} for every cited file that exists.
+
+    A page only needs rebuilding when the code it actually cites changed. Lines shifting
+    under a citation also changes the text at those ranges, so it counts as a change: the
+    page's line numbers would be wrong otherwise.
+    """
+    out: dict[str, dict[str, object]] = {}
+    for path, ranges in _ranges(md).items():
+        f = root / path
+        if f.is_file() and (text := read_text(f)) is not None:
+            h = range_hash(text.splitlines(), ranges)
+            if h is not None:
+                out[path] = {"ranges": ranges, "hash": h}
+    return out
+
+
 def cited_code(md: str, root: Path, pad: int = 3, cap_chars: int = 120_000) -> str:
     """The exact code every citation points at (line-numbered, padded, merged), for check-and-fix."""
     ranges: dict[str, list[tuple[int, int]]] = {}

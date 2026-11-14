@@ -295,6 +295,7 @@ def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport
         entries[page] = {"slug": page, "title": title, "file": f"{page}.md", "generated_at": _now(),
                          "source_sha": sha, "words": len(md.split()), "citations": rep.to_dict(),
                          "dropped_claims": dropped[:30], "cited_files": citations.cited_files(md, root),
+                         "cited_ranges": citations.cited_ranges(md, root),
                          "generator": "llm", "model": pages_mod.PAGE_MODEL}
 
     if not public:  # findings are internal only
