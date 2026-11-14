@@ -42,11 +42,6 @@ _DEFAULT_INGEST_URL = "http://127.0.0.1:9050/ingest"
 _DEFAULT_COLLECTION = "project_docs"
 
 
-def _sign_payload(secret: str, payload: bytes, timestamp: int) -> str:
-    msg = f"{timestamp}:".encode() + payload
-    return hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
-
-
 def _ingest_document(
     url: str,
     secret: str,
@@ -56,36 +51,19 @@ def _ingest_document(
     metadata: dict,
     dry_run: bool,
 ) -> bool:
-    body = {
-        "collection": collection,
-        "documents": [
-            {
-                "id": doc_id,
-                "text": text,
-                "metadata": metadata,
-            }
-        ],
-    }
-    payload = json.dumps(body).encode()
-    ts = int(time.time())
-    sig = _sign_payload(secret, payload, ts)
+    """One document through the shared client (current rag-ingest protocol: docs + nonce + signature)."""
+    from auditor.rag_client import post_documents
 
     if dry_run:
         print(f"  [dry-run] Would POST {len(text)} chars → {doc_id}")
         return True
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-Timestamp": str(ts),
-        "X-Signature": sig,
-    }
-    try:
-        resp = requests.post(url, data=payload, headers=headers, timeout=30)
-        resp.raise_for_status()
-        return True
-    except requests.RequestException as exc:
-        print(f"  ERROR ingesting {doc_id}: {exc}")
+    kind = metadata.get("kind") or metadata.get("type") or "ecosystem"
+    tags = [f"kind:{kind}"] + ([f"repo:{metadata['repo']}"] if metadata.get("repo") else [])
+    r = post_documents([{"id": doc_id, "title": metadata.get("title") or doc_id, "text": text}], tags=tags, url=url)
+    if not r.get("ingested"):
+        print(f"  ERROR ingesting {doc_id}: {r.get('status_code', '')} {r.get('error', '')}")
         return False
+    return True
 
 
 def main() -> None:

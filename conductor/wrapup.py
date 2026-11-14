@@ -121,16 +121,10 @@ def ingest_latest_to_rag(status: dict[str, Any], body_md: str) -> dict[str, Any]
 
     Embeddings should use Jarrah Ollama (http://192.168.1.109:11434) via rag-ingest config.
     """
-    import hashlib
-    import hmac
     import json
-    import time
 
-    import requests
+    from auditor.rag_client import post_documents
 
-    url = os.getenv("AI_AUDIT_RAG_INGEST_URL") or os.getenv("RAG_INGEST_URL") or "http://127.0.0.1:9050/ingest"
-    secret = os.getenv("INGEST_SHARED_SECRET", "")
-    collection = os.getenv("AI_AUDIT_RAG_COLLECTION", "audit_docs")
     short = {
         "event_id": status.get("event_id"),
         "run_id": status.get("run_id"),
@@ -145,36 +139,10 @@ def ingest_latest_to_rag(status: dict[str, Any], body_md: str) -> dict[str, Any]
         ],
     }
     text = body_md.strip() + "\n\n---\n" + json.dumps(short, indent=2)
-    body = {
-        "collection": collection,
-        "documents": [
-            {
-                "id": f"auditor-rest-{status.get('run_id', 'unknown')}",
-                "text": text,
-                "metadata": {
-                    "source": "ai-code-auditor",
-                    "event_id": status.get("event_id"),
-                    "kind": "mithrandir_latest",
-                },
-            }
-        ],
-    }
-    payload = json.dumps(body).encode()
-    ts = int(time.time())
-    headers = {"Content-Type": "application/json", "X-Timestamp": str(ts)}
-    if secret:
-        headers["X-Signature"] = hmac.new(
-            secret.encode(), f"{ts}:".encode() + payload, hashlib.sha256
-        ).hexdigest()
-    try:
-        resp = requests.post(url, data=payload, headers=headers, timeout=30)
-        ok = 200 <= resp.status_code < 300
-        if not ok:
-            logger.warning("RAG ingest HTTP %s: %s", resp.status_code, (resp.text or "")[:300])
-        return {"ingested": ok, "skipped": False, "status_code": resp.status_code}
-    except requests.RequestException as exc:
-        logger.warning("RAG ingest failed: %s", exc)
-        return {"ingested": False, "skipped": False, "error": str(exc)}
+    doc = {"id": f"auditor-rest-{status.get('run_id', 'unknown')}",
+           "title": f"Night conductor: {status.get('summary_one_liner') or status.get('run_id', '')}", "text": text}
+    r = post_documents([doc], tags=["kind:mithrandir_latest"])
+    return {k: v for k, v in r.items() if k in ("ingested", "skipped", "status_code", "error")}
 
 
 def top_findings_from_worker_results(results: list[dict[str, Any]], limit: int = 3) -> list[TopFinding]:

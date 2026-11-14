@@ -162,3 +162,16 @@ def test_public_variant_only_where_needed(eco, monkeypatch, tmp_path) -> None:
     assert [i.variant for i in rf.plan(out).items] == ["internal", "public"]  # refused last time: build it
     (out / "wiki_public_report.json").unlink()
     assert [i.variant for i in rf.plan(out, all_public=True).items] == ["internal", "public"]
+
+
+def test_refresh_ingests_rebuilt_internal_pages(eco, monkeypatch) -> None:
+    out, repo = eco
+    sent = []
+    monkeypatch.setattr("wiki.rag.ingest", lambda o, repos: sent.append(repos) or {"ingested": True, "count": 1})
+    rf.refresh(out, runner=Runner(out, client=FakeClient(reply=reply), poll_s=0), publish=False)
+    assert sent == [{"svc": {"overview", "architecture", "interfaces", "integration"}}]
+    (repo / "other.py").write_text(OTHER.replace("return 2", "return 20"))
+    _commit(repo, "edit")
+    _age_index(out, 8)
+    rec = rf.refresh(out, runner=Runner(out, client=FakeClient(reply=reply), poll_s=0), publish=False)
+    assert sent[-1] == {"svc": {"interfaces"}} and rec["rag"]["ingested"] is True

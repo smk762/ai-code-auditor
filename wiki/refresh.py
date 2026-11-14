@@ -221,6 +221,17 @@ def refresh(output_dir: str | Path, repo_names: list[str] | None = None, *, forc
                                                    for k, v in d["repos"].items()}}
             record["cost_usd"] += d["cost_usd"]
             record["estimate_usd"] += d["estimate_usd"]
+        # rebuilt internal pages go to the audit RAG collection (AI_AUDIT_WIKI_RAG_INGEST=0 to skip)
+        written = {repo: set(r.get("pages_written") or [])
+                   for repo, r in (record["builds"].get("internal") or {}).get("repos", {}).items()}
+        written = {repo: pages for repo, pages in written.items() if pages}
+        if written and not dry_run:
+            from wiki.rag import ingest as rag_ingest
+
+            try:
+                record["rag"] = rag_ingest(out, written)
+            except Exception as exc:  # noqa: BLE001 — retrieval is a bonus; pages are built
+                record["rag"] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
         if publish and not dry_run:
             from wiki.public import export
             from wiki.publish import publish as do_publish

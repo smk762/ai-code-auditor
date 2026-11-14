@@ -25,6 +25,7 @@ GET  /ui/repos                        Repo summary cards (data: /audit/repos/sum
 GET  /ui/packs, /ui/packs/{id}        Packs board and pack page (data: /audit/packs/board.json)
 GET  /ui/wiki, /ui/wiki/{repo}/{page}  Generated wiki (data: /audit/wiki[/{repo}[/{page}]])
 POST /audit/wiki/{repo}/regenerate   Rebuild stale (or all, force=1) pages + publish (auth); GET /audit/wiki/refresh
+POST /audit/wiki/{repo}/ask           Answer a question from the repo's wiki + notes, cited (auth; ask lane)
 GET  /ui/night                        Night summary (data: /audit/night.json?run=)
 GET  /ui/architecture                 Architecture & patterns (data: /audit/architecture.json)
 POST /audit/extraction/{id}/approve   Approve an extraction candidate (adds a rule; auth)
@@ -760,6 +761,42 @@ def post_wiki_regenerate(repo: str, force: bool = False) -> JSONResponse:
 
     threading.Thread(target=run, name=f"wiki-regenerate-{repo}", daemon=True).start()
     return JSONResponse({"repo": repo, "force": force, "status": "started"}, status_code=202)
+
+
+class _AskRequest(BaseModel):
+    question: str
+
+
+@app.post("/audit/wiki/{repo}/ask", dependencies=[Depends(_require_mutating_auth)])
+def post_wiki_ask(repo: str, request: _AskRequest) -> JSONResponse:
+    """Answer a question about one repo from its wiki, notes and structure facts, with checked citations.
+
+    Spends a little (the auditor's configured model, ``ask`` lane), hence the auth.
+    """
+    from auditor.config import load_ecosystem_config
+    from auditor.spend_ledger import BudgetExceeded
+    from auditor.ui import render_markdown
+    from auditor.ui_wiki import _poll, link_citations
+    from wiki.ask import ask
+
+    try:
+        res = ask(_output_dir(), repo, request.question)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except BudgetExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    from wiki.refresh import _head
+
+    cfg = next((r for r in load_ecosystem_config().repos if r.name == repo), None)
+    slug = (_poll(_output_dir()).get(repo) or {}).get("slug")
+    # line numbers come from the notes, i.e. the mirror's code: link at the mirror's HEAD
+    sha = _head(cfg.path) if cfg else None
+    res["source_sha"] = sha
+    res["answer_html"] = render_markdown(link_citations(res.get("answer_md", ""), slug, sha,
+                                                        getattr(cfg, "subpath", "") or ""))
+    return JSONResponse(res)
 
 
 @app.get("/audit/wiki/refresh")

@@ -26,6 +26,11 @@
   .wiki footer ul.dropped { margin: 6px 0 0; padding-left: 18px; }
   .wiki footer ul.dropped li { margin-bottom: 4px; }
   .ok-badge { color: var(--ok); } .warn-badge { color: var(--warn); }
+  .ask { margin-top: 14px; }
+  .ask textarea { width: 100%; resize: vertical; font: inherit; font-size: 14px; }
+  .ask .row { display: flex; gap: 10px; align-items: center; margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
+  .ask #ask-answer { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+  .ask #ask-answer a code { background: none; padding: 0; font-size: 11px; color: var(--link); }
   .regen { margin-left: 10px; display: inline-flex; gap: 8px; align-items: center; }
   .regen button { font-size: 12px; padding: 2px 10px; }
   @media (max-width: 800px) { .wiki { grid-template-columns: 1fr; } .wiki aside { position: static; } }
@@ -47,6 +52,15 @@
           <span id="regen-status" role="status"></span></span></div>
       <article class="card prose"><!--#content--></article>
       <footer><!--#foot--></footer>
+      <section class="card ask" aria-labelledby="ask-h">
+        <h2 id="ask-h">Ask this repo</h2>
+        <p class="hint">Answered from this repo's wiki, file notes and structure facts by the auditor's model. Claims whose citations don't check out are removed. Costs a fraction of a cent.</p>
+        <form id="ask-form">
+          <textarea id="ask-q" rows="2" maxlength="2000" placeholder="e.g. Where are uploads validated, and what limits apply?" aria-label="Question"></textarea>
+          <div class="row"><button class="primary" type="submit">Ask</button><span id="ask-status" role="status"></span></div>
+        </form>
+        <div id="ask-answer" class="prose" hidden></div>
+      </section>
     </div>
   </div>
 </main>
@@ -86,6 +100,38 @@
     }
   });
   show();
+})();
+(() => {
+  const form = document.getElementById("ask-form"), q = document.getElementById("ask-q");
+  const status = document.getElementById("ask-status"), answer = document.getElementById("ask-answer");
+  const repo = document.getElementById("regen").dataset.repo;
+  q.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) form.requestSubmit(); });
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const question = q.value.trim();
+    if (!question) return;
+    const btn = form.querySelector("button");
+    btn.disabled = true;
+    status.textContent = "Thinking…";
+    try {
+      const r = await UI.send("POST", `/audit/wiki/${encodeURIComponent(repo)}/ask`, { question });
+      if (r.error) {
+        status.innerHTML = `<span class="err">${UI.esc(r.error)}</span>`;
+      } else {
+        // answer_html is rendered server-side by the shared markdown renderer (raw HTML escaped)
+        answer.innerHTML = r.answer_html;
+        answer.hidden = false;
+        const dropped = (r.dropped_claims || []).length;
+        status.textContent = `${r.model} · ${UI.money(r.cost_usd)}`
+          + (dropped ? ` · ${dropped} claim${dropped === 1 ? "" : "s"} removed by the citation check` : "")
+          + (r.truncated ? " · answer cut short" : "");
+      }
+    } catch (err) {
+      status.innerHTML = `<span class="err">${UI.esc(err.message)}</span>`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
 })();
 </script>
 </body>

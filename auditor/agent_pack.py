@@ -39,7 +39,6 @@ CHARS_PER_TOKEN = 4
 DEFAULT_BUNDLE_TOKEN_BUDGET = 2500
 WORLD_ECOSYSTEM_ID = "pack-world-ecosystem"
 WORLD_MEMORY_ID = "pack-world-architecture-memory"
-_RAG_BATCH_SIZE = 80
 _TRUNCATION_MARK = "\n…[truncated]"
 
 PACK_DISCOVERY: dict[str, str] = {
@@ -1347,51 +1346,29 @@ def emit_packs_from_extraction_candidates(
 
 
 def ingest_packs_to_rag(packs: list[AgentCodingPack]) -> dict[str, Any]:
-    """Upsert slim pack summaries into audit_docs for agent retrieval."""
-    import requests
+    """Upsert slim pack summaries into the audit RAG collection for agent retrieval.
 
-    url = os.getenv("AI_AUDIT_RAG_INGEST_URL") or os.getenv("RAG_INGEST_URL") or "http://127.0.0.1:9050/ingest"
-    secret = os.getenv("INGEST_SHARED_SECRET", "")
-    collection = os.getenv("AI_AUDIT_RAG_COLLECTION", "audit_docs")
-    documents = []
+    Posted per repo, so each request carries ``repo:<name>`` in its tags (rag-ingest keeps
+    tags, title and url per chunk, but drops other metadata)."""
+    from auditor.rag_client import post_documents
+
+    by_repo: dict[str, list[dict[str, Any]]] = {}
     for pack in packs:
-        documents.append(
-            {
-                "id": f"agent-pack::{pack.work_item_id}",
-                "text": pack.to_rag_text(),
-                "metadata": {
-                    "source": "ai-code-auditor",
-                    "kind": "agent_coding_pack",
-                    "pack_kind": pack.kind,
-                    "layer": pack.layer(),
-                    "pack_id": pack.work_item_id,
-                    "repo": (pack.repo or {}).get("name", ""),
-                    "severity": (pack.priority or {}).get("severity", ""),
-                    "status": pack.status or DEFAULT_PACK_STATUS,
-                },
-            }
-        )
-    if not documents:
+        repo = (pack.repo or {}).get("name", "") or "ecosystem"
+        sev = (pack.priority or {}).get("severity", "")
+        title = (pack.narrative or {}).get("title", pack.work_item_id)
+        by_repo.setdefault(repo, []).append({
+            "id": f"agent-pack::{pack.work_item_id}",
+            "title": f"{repo} · {title} [{sev} · {pack.status or DEFAULT_PACK_STATUS} · {pack.layer()}]",
+            "url": (pack.repair or {}).get("pack_url") or "",
+            "text": pack.to_rag_text(),
+        })
+    if not by_repo:
         return {"ingested": False, "skipped": True, "count": 0}
-
     result: dict[str, Any] = {"ingested": True, "skipped": False, "count": 0}
-    for start in range(0, len(documents), _RAG_BATCH_SIZE):
-        batch = documents[start : start + _RAG_BATCH_SIZE]
-        payload = json.dumps({"collection": collection, "documents": batch}).encode()
-        ts = int(time.time())
-        headers = {"Content-Type": "application/json", "X-Timestamp": str(ts)}
-        if secret:
-            headers["X-Signature"] = hmac.new(
-                secret.encode(), f"{ts}:".encode() + payload, hashlib.sha256
-            ).hexdigest()
-        try:
-            resp = requests.post(url, data=payload, headers=headers, timeout=30)
-        except requests.RequestException as exc:
-            logger.warning("pack RAG ingest failed: %s", exc)
-            return {**result, "ingested": False, "error": str(exc)}
-        if not 200 <= resp.status_code < 300:
-            logger.warning("pack RAG ingest HTTP %s: %s", resp.status_code, (resp.text or "")[:300])
-            return {**result, "ingested": False, "status_code": resp.status_code}
-        result["count"] += len(batch)
-        result["status_code"] = resp.status_code
+    for repo, docs in sorted(by_repo.items()):
+        r = post_documents(docs, tags=["kind:agent_coding_pack", f"repo:{repo}"])
+        result["count"] += r.get("count", 0)
+        if not r.get("ingested"):
+            return {**result, **{k: v for k, v in r.items() if k != "count"}, "ingested": False}
     return result
