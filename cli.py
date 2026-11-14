@@ -284,6 +284,14 @@ def _build_parser() -> argparse.ArgumentParser:
     wke.add_argument("--denylist", default="", help="Private deny-list file (default: $AI_AUDIT_OPSEC_DENYLIST or "
                      "~/.config/ai-code-auditor/opsec-denylist.txt); the export won't run without one")
     wke.add_argument("--json", action="store_true", help="Print the export report as JSON")
+    wkp = wk_sub.add_parser("publish", help="Commit the exported bundle to the private docs repo (bot identity)")
+    wkp.add_argument("--bundle", default="", help="Bundle directory (default: <output_dir>/wiki_public)")
+    wkp.add_argument("--repo", default="smk762/argus-docs", help="Docs repo (owner/name or a git URL)")
+    wkp.add_argument("--checkout", default="", help="Local checkout (default: $AI_AUDIT_DOCS_CHECKOUT or "
+                     "~/.cache/ai-code-auditor/argus-docs); machine-managed, local edits are discarded")
+    wkp.add_argument("--push", action="store_true", help="Push the commit (without it: commit locally only)")
+    wkp.add_argument("--denylist", default="", help="Private deny-list file (as for export)")
+    wkp.add_argument("--json", action="store_true", help="Print the result as JSON")
     wks = wk_sub.add_parser("status", help="Show built repos, their source SHAs and the wiki lane budget")
     wks.add_argument("--json", action="store_true", help="Print as JSON")
 
@@ -297,6 +305,24 @@ def _run_wiki(args) -> None:
     from auditor.spend_ledger import get_ledger
 
     out = load_ecosystem_config().output_dir
+    if args.wiki_command == "publish":
+        from pathlib import Path as _P
+
+        from wiki.publish import publish
+
+        res = publish(args.bundle or _P(out) / "wiki_public", repo=args.repo, checkout=args.checkout or None,
+                      push=args.push, denylist_path=args.denylist or None)
+        if args.json:
+            print(_json.dumps(res, indent=2))
+            return
+        if not res["changed"]:
+            print(f"unchanged: {res['repo']} already has bundle {res['bundle_sha256'][:12]} (commit {str(res['commit'])[:10]})")
+            return
+        print(f"committed {str(res['commit'])[:10]} to {res['checkout']} ({len(res['repos'])} repos)"
+              + (" and pushed" if res["pushed"] else "; not pushed (add --push)"))
+        print("docs.lock.json for dragonhound-site:")
+        print(_json.dumps(res["pin"], indent=2))
+        return
     if args.wiki_command == "export":
         from wiki.public import export
 
