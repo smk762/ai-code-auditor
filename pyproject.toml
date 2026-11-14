@@ -47,7 +47,7 @@ pythonpath = ["."]
 py-modules = ["cli"]
 
 [tool.setuptools.packages.find]
-include = ["auditor*", "conductor*", "ecosystem*", "patterns*", "semantic*", "copilot*", "pipelines*", "qa*"]
+include = ["auditor*", "conductor*", "ecosystem*", "patterns*", "semantic*", "copilot*", "pipelines*", "qa*", "wiki*"]
 
 [tool.setuptools.package-data]
 # Web UI pages and shared assets served by audit-api (auditor/ui.py).

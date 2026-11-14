@@ -10,7 +10,8 @@ credit renews. Caps (USD, per budget month):
   AI_AUDIT_BUDGET_TOTAL_USD        overall, default 190
   AI_AUDIT_BUDGET_<LANE>_USD       per lane: AUDIT (merge/sync audits, default 15),
                                    AUDIT_BATCH (nightly Opus batch, default 100),
-                                   CONDUCTOR (default 80); unset/empty = no lane cap
+                                   CONDUCTOR (default 80), WIKI (generated wiki, default 30);
+                                   unset/empty = no lane cap
 Storage: AI_AUDIT_SPEND_DB (default index/llm_spend.db — shared with the audit-api container).
 """
 from __future__ import annotations
@@ -32,7 +33,8 @@ PRICES: dict[str, tuple[float, float]] = {
     "claude-opus-4-5": (5.00, 25.00),
     "claude-fable-5-2": (8.00, 40.00),
 }
-DEFAULT_LANE_CAPS = {"audit": 15.0, "audit_batch": 100.0, "conductor": 80.0}
+# wiki: generated repo wiki (ai-code-auditor#8), ~$20-30/mo with incremental rebuilds
+DEFAULT_LANE_CAPS = {"audit": 15.0, "audit_batch": 100.0, "conductor": 80.0, "wiki": 30.0}
 DEFAULT_PATH = "index/llm_spend.db"
 
 

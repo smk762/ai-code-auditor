@@ -32,6 +32,9 @@ ai-audit repair --pack-id pack-… --mode review   # agent-composer repair loop 
 ai-audit repair --pack-id pack-… --audit-api-base "$AI_AUDIT_PUBLIC_BASE_URL"   # real URL in local .env (see .env.example)
 ai-audit pack-savings                        # estimated token savings from packs vs crawling (--history, --cached, --json)
 ai-audit qa-benchmark --json
+ai-audit wiki build --repos argus-cortex --dry-run   # price a wiki build (no API calls)
+ai-audit wiki build [--repos a,b] [--sync]          # generate wiki pages via the Batch API
+ai-audit wiki status                                # built repos + wiki lane budget
 ai-audit approve-extraction --candidate-id ext-retry-core-001
 bash scripts/install_overnight_timers.sh         # rest 00:30 + ecosystem 02:00 user timers
 
@@ -108,6 +111,18 @@ Query routing (`copilot/query_router.py`) classifies queries → appropriate ret
 ### LLM client (`auditor/llm_client.py`)
 
 Supports `ollama` (POST `/api/generate`) and `openai-compatible` (POST `/v1/chat/completions`). Provider selected by `AI_AUDIT_LLM_PROVIDER` env var or `config/generator.yaml`. The healthcheck hits `/api/tags` for Ollama (fast probe, no model load) rather than generate.
+
+## Generated wiki (`wiki/`)
+
+The pipeline is notes → drafts → check-and-fix → citation pass, all through the Message Batches API (`wiki/batch.py`):
+- **Notes:** per-file Haiku notes (`wiki/notes.py`), cached by path+content hash under `reports/wiki/_notes/`. The 2026-11-13 eval's cache in `reports/wiki_eval/notes/` is read as a fallback.
+- **Drafts and check-and-fix:** Opus at medium effort drafts four pages per repo (`wiki/pages.py`) from the notes, README, `ecosystem/ecosystem.md` and AST structure facts. A second Opus pass checks each page against the exact cited code.
+- **Citation pass** (`wiki/citations.py`): drops any claim whose `[path:Lx-Ly]` citation is missing, out of range, or names no identifier that occurs in the cited lines.
+- **Findings page:** "Notable findings" is built from data (`wiki/findings.py`), not by a model.
+
+Output is `reports/wiki/<repo>/*.md` plus `INDEX.json` (source SHA, page tree, per-page citation stats, dropped claims, and content hashes of the cited files), and `reports/wiki/INDEX.json` for all repos. `_raw/` keeps the text from before the citation pass.
+
+Batch `custom_id`s hash the exact request params, and results are stored as they are harvested, so reruns and crashes never pay twice. Each stage is priced first and checked against the `wiki` lane (default $30/month, `AI_AUDIT_BUDGET_WIKI_USD`). Only Python/JS/TS sources are read, so repos made of YAML, Terraform or Jinja get no pages yet.
 
 ## RAG ingest integration
 
