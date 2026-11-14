@@ -65,7 +65,7 @@
     </section>
     <aside class="card" id="panel" aria-live="polite">
       <h2>How to read this</h2>
-      <p class="kv">Circles are repos, coloured by group; their size grows with connections. Boxes are external services: AI and moderation on the left, data stores and chain on the right, ML and geo tooling along the top.</p>
+      <p class="kv">Repos show their Argus package mark, or a ring, with one eye coloured by pipeline stage; size grows with connections. Boxes are external services: AI and moderation on the left, data stores and chain on the right, ML and geo tooling along the top.</p>
       <p class="kv">Hover to see a node's neighbours. Click one for its details and the code that links it. Drag to rearrange, scroll to zoom.</p>
       <p class="kv">Edges come from the code (imports, service mentions in at least <span id="minf">2</span> files), the documented flow in <span class="mono">ecosystem.md</span>, and architecture-policy violations.</p>
     </aside>
@@ -81,7 +81,12 @@
 
 <script>
 const { esc, int, css } = UI;
-const GROUP_VAR = { pipeline: "--series-1", verticals: "--series-2", shared: "--series-3", platform: "--series-7", other: "--neutral" };
+// Repo nodes follow the Argus brand (argus-cortex brand/): a package's mark, or a ring, holds one
+// eye coloured by pipeline stage. Those colours are accents, not a categorical palette, so the
+// stage is never shown by colour alone: every node is labelled and the panel names the stage.
+const isDark = () => { const t = document.documentElement.dataset.theme;
+  return t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches; };
+const stageColour = (g) => (data.stage_colours[g] || {})[isDark() ? "dark" : "light"];
 const COL = 0.47;  // service columns sit this fraction of the width from the centre
 
 // Where each node belongs. Pipeline repos (and anything in the documented flow) are placed in
@@ -113,10 +118,11 @@ function targets(nodes, W, H) {
   const cortex = rest.find((n) => n.id === "argus-cortex");
   if (cortex) T[cortex.id] = { x: 0, y: 0.24 * H };
   const row = (ids, y) => ids.forEach((id, i) => { T[id] = { x: (i - (ids.length - 1) / 2) * Math.min(0.12 * W, 0.66 * W / Math.max(1, ids.length - 1)), y }; });
-  const order = ["verticals", "shared", "pipeline", "other", "platform"];
-  const lower = rest.filter((n) => n !== cortex && n.group !== "platform").sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group) || a.id.localeCompare(b.id));
+  // a row of the remaining argus repos (apps first) and dependencies; tooling repos at the bottom
+  const order = ["apps", "data", "training", "external", "foundation"];
+  const lower = rest.filter((n) => n !== cortex && n.group !== "foundation").sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group) || a.id.localeCompare(b.id));
   row(lower.map((n) => n.id), 0.4 * H);
-  row(rest.filter((n) => n !== cortex && n.group === "platform").map((n) => n.id), 0.54 * H);
+  row(rest.filter((n) => n !== cortex && n.group === "foundation").map((n) => n.id), 0.54 * H);
   const svc = (side) => nodes.filter((n) => n.kind === "service" && n.side === side).sort((a, b) => a.category.localeCompare(b.category) || a.label.localeCompare(b.label));
   [["left", -1], ["right", 1]].forEach(([side, sgn]) => {
     const list = svc(side);
@@ -139,8 +145,11 @@ const ghLink = (repoId, ev) => {
 };
 
 function legend() {
-  const used = [...new Set(data.nodes.filter((n) => n.kind === "repo").map((n) => n.group))];
-  document.getElementById("legend").innerHTML = used.map((g) => `<span><i style="background:var(${GROUP_VAR[g]})"></i>${esc(data.groups[g])}</span>`).join("")
+  const order = ["data", "training", "apps", "foundation", "external"];
+  const used = order.filter((g) => data.nodes.some((n) => n.kind === "repo" && n.group === g));
+  const ring = (g) => `<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5.5" fill="none" stroke="${css(g === "external" ? "--text-muted" : "--text-primary")}" stroke-width="1.5"/>`
+    + (g === "external" ? "" : `<circle cx="7" cy="7" r="2.2" fill="${stageColour(g)}"/>`) + `</svg>`;
+  document.getElementById("legend").innerHTML = used.map((g) => `<span>${ring(g)}${esc(data.groups[g])}</span>`).join("")
     + `<span><i class="svc"></i>external service</span>`;
 }
 
@@ -152,11 +161,12 @@ function degree() {
 
 function render() {
   if (!data) return;
+  legend();  // eye colours follow the theme
   svg.selectAll("*").remove();
   const box = svg.node().getBoundingClientRect();
   const W = box.width, H = box.height;
   const deg = degree();
-  const nodes = data.nodes.map((n) => ({ ...n, ...(pos[n.id] || {}), r: n.kind === "repo" ? 7 + Math.min(10, Math.sqrt(deg[n.id] || 0) * 2.4) : 0 }));
+  const nodes = data.nodes.map((n) => ({ ...n, ...(pos[n.id] || {}), r: n.kind === "repo" ? 11 + Math.min(8, Math.sqrt(deg[n.id] || 0) * 2) : 0 }));
   const settled = nodes.every((n) => pos[n.id]);
   const ids = new Set(nodes.map((n) => n.id));
   const edges = data.edges.filter((e) => shown[e.kind] && ids.has(e.source.id || e.source) && ids.has(e.target.id || e.target))
@@ -187,8 +197,23 @@ function render() {
 
   const node = root.append("g").selectAll("g").data(nodes).join("g").attr("class", (n) => `node ${n.kind === "service" ? "svc" : ""}`)
     .attr("tabindex", 0).attr("role", "button").attr("aria-label", (n) => n.label);
-  node.filter((n) => n.kind === "repo").append("circle").attr("r", (n) => n.r)
-    .attr("fill", (n) => css(GROUP_VAR[n.group] || "--neutral")).attr("stroke", css("--surface-1")).attr("stroke-width", 2);
+  const repos = node.filter((n) => n.kind === "repo");
+  repos.append("circle").attr("class", "backing").attr("r", (n) => n.r).attr("fill", css("--surface-1"));  // lines stop at the node
+  const ringNode = (sel) => {
+    sel.append("circle").attr("r", (n) => n.r * 0.72).attr("fill", "none")
+      .attr("stroke", (n) => css(n.group === "external" ? "--text-muted" : "--text-primary")).attr("stroke-width", 2);
+    sel.filter((n) => n.group !== "external").append("circle").attr("r", (n) => n.r * 0.26).attr("fill", (n) => stageColour(n.group));
+  };
+  ringNode(repos.filter((n) => !n.mark));
+  const variant = isDark() ? "dark" : "light";
+  repos.filter((n) => n.mark).append("image")
+    .attr("href", (n) => `/audit/brand/packages/${encodeURIComponent(n.label)}.svg?variant=${variant}`)
+    .attr("x", (n) => -n.r).attr("y", (n) => -n.r).attr("width", (n) => 2 * n.r).attr("height", (n) => 2 * n.r)
+    .on("error", function () {  // mark unavailable: fall back to the ring with its stage eye
+      const g = d3.select(this.parentNode);
+      d3.select(this).remove();
+      ringNode(g);
+    });
   node.filter((n) => n.kind === "repo" && n.violations > 0).append("circle").attr("r", (n) => n.r + 4)
     .attr("fill", "none").attr("stroke", css("--critical")).attr("stroke-width", 1.5).attr("stroke-dasharray", "2 2");
   node.filter((n) => n.kind === "repo").append("text").attr("x", (n) => n.r + 4).attr("y", 4).text((n) => n.label);
@@ -278,7 +303,7 @@ function panel(n) {
   let html;
   if (n.kind === "repo") {
     const one = data.mentions.filter((m) => m.source === n.id);
-    html = `<h2>${esc(n.id)}</h2><p class="kv">${esc(n.area)}${n.service_role ? ` · ${esc(n.service_role)}` : ""} · ${int(n.files)} source files scanned</p>
+    html = `<h2>${esc(n.id)}</h2><p class="kv">${esc(data.groups[n.group] || "")}${n.group === "external" ? "" : " stage"} · ${esc(n.area)}${n.service_role ? ` · ${esc(n.service_role)}` : ""} · ${int(n.files)} source files scanned</p>
       <p>${esc(n.role)}</p>
       <p class="kv">${n.wiki ? `<a href="/ui/wiki/${encodeURIComponent(n.id)}">Wiki</a> · ` : ""}<a href="/ui/repos?q=${encodeURIComponent(n.id)}">Repo card</a>${n.github ? ` · <a href="${esc(n.github)}">GitHub</a>` : ""}${n.violations ? ` · <span class="status critical">${int(n.violations)} violation${n.violations === 1 ? "" : "s"}</span>` : ""}</p>
       ${out.length ? `<h3>Depends on</h3><ul>${out.map((e) => row(e, e.target.id || e.target, n.id)).join("")}</ul>` : ""}
@@ -319,7 +344,7 @@ UI.load("/audit/topology/map.json", (d) => {
   document.getElementById("sub").innerHTML = `${int(d.nodes.filter((n) => n.kind === "repo").length)} repos · ${int(d.nodes.filter((n) => n.kind === "service").length)} external services · `
     + `${int(c.flow || 0)} documented flows · ${int(c.imports || 0)} code imports · ${int(c.uses || 0)} service links · ${int(c.violation || 0)} violations`
     + ` · <a href="/audit/topology/map.json">JSON</a> · <a href="/ui/architecture">architecture rules</a>`;
-  legend(); table(); render();
+  table(); render();
 }, document.getElementById("sub"));
 </script>
 </body>

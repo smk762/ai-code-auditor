@@ -110,6 +110,8 @@ Ecosystem map (`auditor/ui_topology.py`): `/ui/topology` (`/audit/topology/map.j
 
 The scan is cached until a mirror HEAD, the doc or the sidecar changes. In the page (d3 v7 from cdnjs), each node is pulled to a computed target: pipeline columns by flow depth, cortex beneath them, the other repos in rows, services in side columns and a top row. The force layout only resolves overlaps.
 
+Repo nodes use the Argus package marks from argus-cortex `brand/` (`auditor/brand.py`, served at `/audit/brand/packages/{pkg}.svg?variant=light|dark|mono`). The marks are read from the cortex mirror, or fetched once from GitHub `dev` into `reports/_brand/`; SVGs with scripts or event handlers are refused. Repos without a mark get a ring with one eye. The eye colour is the brand stage (data / training / apps / foundation). It is an accent only, because those colours fail as a categorical palette, so every node is labelled and the panel names the stage.
+
 Night and architecture pages: `/ui/night` (`auditor/ui_night.py`, `/audit/night.json?run=`) reads each rest session from `reports/conductor/<run_id>/*.json` and the matching mithrandir record. Mission outcomes come from the mission files, because the mithrandir worker stats don't count `PARTIAL`. Spend comes from the ledger's `conductor` lane, because `cost_usd_est` is not filled in. `/ui/architecture` (`auditor/ui_arch.py`) shows violations, pattern proposals and extraction candidates. Approve (`POST /audit/extraction/{id}/approve`, auth) appends the `use_<lib>` rule to `AI_AUDIT_ARCH_RULES_PATH` (default `config/architecture_rules.yaml`). `append_architecture_rule_for_extraction` now inserts the rule as text so the file's comments survive.
 
 ### Copilot (`copilot/copilot_engine.py`)

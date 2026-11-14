@@ -100,8 +100,11 @@ def test_topology_edges_from_doc_code_and_policy(eco: Path) -> None:
 
     nodes = {n["id"]: n for n in d["nodes"]}
     assert nodes["svc:nudenet"]["side"] == "left" and "svc:comfyui" not in nodes and "svc:qdrant" not in nodes
-    assert nodes["argus-quarry"]["group"] == "pipeline" and nodes["argus-cortex"]["group"] == "platform"
-    assert nodes["voluptas"]["group"] == "shared" and nodes["argus-forge"]["violations"] == 1
+    assert nodes["argus-quarry"]["group"] == "data" and nodes["argus-cortex"]["group"] == "foundation"
+    assert nodes["argus-forge"]["group"] == "training" and nodes["argus-forge"]["mark"] is True
+    assert nodes["voluptas"]["group"] == "external" and nodes["voluptas"]["mark"] is False
+    assert nodes["argus-forge"]["violations"] == 1
+    assert d["stage_colours"]["training"] == {"light": "#b33a2a", "dark": "#e57a64"}
     assert nodes["argus-curator"]["files"] == 4  # tests/ not counted
     assert d["counts"] == {"flow": 4, "imports": 2, "uses": 2, "violation": 1}
 
@@ -129,3 +132,69 @@ def test_routes(client: TestClient, eco: Path) -> None:
     assert client.get("/audit/topology/legacy").status_code == 404
     (eco / "service_topology.html").write_text("<html>old</html>")
     assert client.get("/audit/topology/legacy").text == "<html>old</html>"
+
+
+# ── brand marks ──────────────────────────────────────────────────────────────
+
+SVG = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2" fill="#b33a2a"/></svg>'
+
+
+def test_brand_stages() -> None:
+    from auditor import brand
+
+    assert brand.stage_of("argus-forge") == "training" and brand.has_mark("argus-forge")
+    assert brand.stage_of("argus-cull") == "data" and not brand.has_mark("argus-cull")  # demo follows its package
+    assert brand.stage_of("voluptas") is None and brand.stage_of("argus-unknown") is None
+
+
+def test_mark_from_mirror_then_cache_then_github(eco: Path, monkeypatch) -> None:
+    from auditor import brand
+
+    cortex = Path(next(r.path for r in __import__("auditor.config", fromlist=["x"]).load_ecosystem_config().repos
+                       if r.name == "argus-cortex"))
+    calls = []
+
+    class _Resp:
+        def __init__(self, body): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n): return self.body
+
+    def fake_urlopen(req, timeout):
+        calls.append(req.full_url)
+        return _Resp(SVG)
+
+    monkeypatch.setattr(brand.urllib.request, "urlopen", fake_urlopen)
+    assert brand.mark_svg(eco, "forge", "dark") == SVG  # fetched from GitHub, cached
+    assert calls == ["https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/forge/argus-forge-dark.svg"]
+    assert brand.mark_svg(eco, "forge", "dark") == SVG and len(calls) == 1  # from the cache
+    local = cortex / "brand" / "packages" / "forge"
+    local.mkdir(parents=True)
+    (local / "argus-forge-light.svg").write_bytes(SVG.replace(b"#b33a2a", b"#000000"))
+    assert b"#000000" in brand.mark_svg(eco, "forge", "light") and len(calls) == 1  # the mirror wins
+    assert brand.mark_svg(eco, "cull", "light") is None  # no mark for this package
+    assert brand.mark_svg(eco, "forge", "neon") is None
+
+
+def test_mark_rejects_active_content(eco: Path, monkeypatch) -> None:
+    from auditor import brand
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n): return b'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>'
+
+    monkeypatch.setattr(brand.urllib.request, "urlopen", lambda req, timeout: _Resp())
+    assert brand.mark_svg(eco, "lens", "light") is None
+    assert not (eco / "_brand" / "argus-lens-light.svg").exists()
+
+
+def test_mark_route(client: TestClient, eco: Path, monkeypatch) -> None:
+    from auditor import brand
+
+    monkeypatch.setattr(brand, "mark_svg", lambda out, pkg, variant: SVG if pkg == "forge" else None)
+    r = client.get("/audit/brand/packages/forge.svg?variant=dark")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/svg+xml"
+    assert r.headers["content-security-policy"].startswith("default-src 'none'")
+    assert client.get("/audit/brand/packages/nope.svg").status_code == 404
+    assert client.get("/audit/brand/packages/forge.svg?variant=neon").status_code == 422

@@ -606,6 +606,23 @@ def get_topology_page() -> HTMLResponse:
     return HTMLResponse(render_page("topology.html", "/ui/topology"))
 
 
+@app.get("/audit/brand/packages/{package}.svg")
+def get_brand_mark(package: str, variant: Literal["light", "dark", "mono"] = "light"):
+    """An Argus package mark (argus-cortex brand/), served from this origin for the UI."""
+    from fastapi.responses import Response
+
+    from auditor.brand import mark_svg
+
+    svg = mark_svg(_output_dir(), package, variant)
+    if svg is None:
+        raise HTTPException(status_code=404, detail=f"No mark for {package!r}.")
+    return Response(svg, media_type="image/svg+xml", headers={
+        "Cache-Control": "public, max-age=86400",
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
 @app.get("/audit/topology/map.json")
 def get_topology_map_json() -> JSONResponse:
     """Nodes and edges for the ecosystem map (documented flow, code imports, service use, violations)."""

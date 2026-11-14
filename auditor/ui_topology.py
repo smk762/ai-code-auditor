@@ -23,18 +23,11 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from auditor.brand import STAGES, has_mark, stage_of
+
 ECOSYSTEM_DOC = Path(__file__).resolve().parents[1] / "ecosystem" / "ecosystem.md"
 MIN_FILES = 2  # a service mentioned in a single file is shown in details, not drawn
 MAX_EVIDENCE = 3
-
-# Areas in the ecosystem doc → colour group on the map.
-GROUPS = {
-    "pipeline": ("Image pipeline", {"acquisition", "curation", "curation demo", "captioning", "gallery", "studio ui",
-                                    "guarded gen", "gen demo", "training bridge", "eval"}),
-    "verticals": ("Verticals", {"maps", "survey", "survey ui", "provenance", "review ui", "face / tts face"}),
-    "platform": ("Platform", {"taxonomy / ai contract", "infra", "ci", "package template"}),
-    "shared": ("Shared services", {"chat / rag", "comfyui"}),
-}
 
 # id → (label, category, side, regex, provider repo or None)
 SERVICES: dict[str, tuple[str, str, str, str, str | None]] = {
@@ -167,11 +160,6 @@ def _head(path: str) -> str:
 
 # ── assembly ─────────────────────────────────────────────────────────────────
 
-def _group(area: str) -> str:
-    a = area.strip().lower()
-    return next((g for g, (_, areas) in GROUPS.items() if a in areas), "other")
-
-
 def topology_data(output_dir: str | Path) -> dict[str, Any]:
     from auditor.config import load_ecosystem_config
 
@@ -210,7 +198,9 @@ def _build(out: Path, repos: list[Any], side: Path) -> dict[str, Any]:
         slug = (poll.get(r.name) or {}).get("slug")
         nodes.append({
             "id": r.name, "label": r.name.removeprefix("argus-"), "kind": "repo",
-            "group": _group(m.get("area", "")), "area": m.get("area", ""), "role": m.get("role", ""),
+            # brand stage (argus-cortex brand/): the colour of the package mark's single eye
+            "group": stage_of(r.name) or "external", "mark": has_mark(r.name),
+            "area": m.get("area", ""), "role": m.get("role", ""),
             "service_role": (node_info.get(r.name) or {}).get("role"),
             "violations": int((node_info.get(r.name) or {}).get("violation_count") or 0),
             "files": files.get(r.name, 0),
@@ -255,9 +245,10 @@ def _build(out: Path, repos: list[Any], side: Path) -> dict[str, Any]:
             edges.append({"source": e["from"], "target": e["to"], "kind": "violation", "weight": 1,
                           "label": str(e.get("kind")).replace("_", " ")})
 
-    groups = {g: label for g, (label, _) in GROUPS.items()} | {"other": "Other"}
+    groups = {s: label for s, (label, _l, _d) in STAGES.items()} | {"external": "Ecosystem dependency"}
+    stage_colours = {s: {"light": light, "dark": dark} for s, (_label, light, dark) in STAGES.items()}
     return {
-        "nodes": nodes, "edges": edges, "mentions": mentions, "groups": groups,
+        "nodes": nodes, "edges": edges, "mentions": mentions, "groups": groups, "stage_colours": stage_colours,
         "counts": dict(Counter(e["kind"] for e in edges)),
         "topology_generated_at": topo.get("generated_at"),
         "min_files": MIN_FILES,
