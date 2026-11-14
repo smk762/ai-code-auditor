@@ -649,22 +649,38 @@ def test_pack_rag_ingest_enabled_and_metadata(monkeypatch):
     assert agent_pack.pack_rag_ingest_enabled(True) is False  # kill switch wins
 
     posted: list[dict] = []
+    sent_headers: list[dict] = []
 
     class _Resp:
         status_code = 200
         text = ""
 
+    import hashlib
+    import hmac
     import json as _json
     import requests
 
-    monkeypatch.setattr(
-        requests, "post", lambda url, data, headers, timeout: posted.append(_json.loads(data)) or _Resp()
-    )
+    def fake_post(url, data, headers, timeout):
+        posted.append(_json.loads(data))
+        sent_headers.append(headers | {"_body": data})
+        return _Resp()
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setenv("INGEST_SHARED_SECRET", "s3cret")
     pack = _mk_pack("pack-rag", status="claimed")
     result = agent_pack.ingest_packs_to_rag([pack])
     assert result["ingested"] is True
-    meta = posted[0]["documents"][0]["metadata"]
-    assert meta["layer"] == "specialist"
-    assert meta["pack_kind"] == "security"
-    assert meta["status"] == "claimed"
-    assert "status=claimed" in posted[0]["documents"][0]["text"]
+    doc = posted[0]["docs"][0]  # rag-ingest's IngestDoc shape
+    assert doc["id"] == "agent-pack::pack-rag" and "status=claimed" in doc["text"]
+    assert "claimed" in doc["title"] and "specialist" in doc["title"]
+    assert posted[0]["tags"] == ["kind:agent_coding_pack", f"repo:{pack.repo['name']}"]
+    h = sent_headers[0]
+    # verifies exactly as rag-ingest's verify_signature does: key = sha256(secret), msg = ts.nonce.sha256(body)
+    key = hashlib.sha256(b"s3cret").digest()
+    msg = h["X-Timestamp"].encode() + b"." + h["X-Nonce"].encode() + b"." + hashlib.sha256(h["_body"]).hexdigest().encode()
+    assert hmac.compare_digest(h["X-Signature"], hmac.new(key, msg, hashlib.sha256).hexdigest())
+
+    monkeypatch.delenv("INGEST_SHARED_SECRET")
+    unsigned = agent_pack.ingest_packs_to_rag([pack])
+    assert unsigned["ingested"] is False and "INGEST_SHARED_SECRET" in unsigned["error"]
+    assert len(posted) == 1  # nothing sent unsigned

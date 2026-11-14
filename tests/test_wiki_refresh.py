@@ -239,3 +239,16 @@ def test_refresh_defers_instead_of_failing_when_over_budget(eco, monkeypatch) ->
     assert [d["repo"] for d in rec["deferred"]] == ["svc"] and rec["builds"] == {}
     assert not fake.batches_created
     assert json.loads((out / "wiki" / "_refresh.json").read_text())["deferred"][0]["estimate_usd"] > 0
+
+
+def test_refresh_ingests_rebuilt_internal_pages(eco, monkeypatch) -> None:
+    out, repo = eco
+    sent = []
+    monkeypatch.setattr("wiki.rag.ingest", lambda o, repos: sent.append(repos) or {"ingested": True, "count": 1})
+    rf.refresh(out, runner=Runner(out, client=FakeClient(reply=reply), poll_s=0), publish=False)
+    assert sent == [{"svc": {"overview", "architecture", "interfaces", "integration"}}]
+    (repo / "other.py").write_text(OTHER.replace("return 2", "return 20"))
+    _commit(repo, "edit")
+    _age_index(out, 8)
+    rec = rf.refresh(out, runner=Runner(out, client=FakeClient(reply=reply), poll_s=0), publish=False)
+    assert sent[-1] == {"svc": {"interfaces"}} and rec["rag"]["ingested"] is True

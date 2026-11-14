@@ -301,6 +301,9 @@ def _build_parser() -> argparse.ArgumentParser:
     wkr.add_argument("--all-public", action="store_true",
                      help="Also build a public variant for public repos whose internal pages already pass the gate")
     wkr.add_argument("--json", action="store_true", help="Print the run record as JSON")
+    wki = wk_sub.add_parser("ingest", help="Send wiki sections to the audit RAG collection (rag-ingest)")
+    wki.add_argument("--repos", default="", help="Comma-separated repo names (default: every built repo)")
+    wki.add_argument("--json", action="store_true", help="Print the result as JSON")
     wks = wk_sub.add_parser("status", help="Show built repos, their source SHAs and the wiki lane budget")
     wks.add_argument("--json", action="store_true", help="Print as JSON")
 
@@ -314,6 +317,24 @@ def _run_wiki(args) -> None:
     from auditor.spend_ledger import get_ledger
 
     out = load_ecosystem_config().output_dir
+    if args.wiki_command == "ingest":
+        from wiki.rag import ingest
+
+        names = [n.strip() for n in args.repos.split(",") if n.strip()]
+        res = ingest(out, {n: None for n in names} if names else None)
+        if args.json:
+            print(_json.dumps(res, indent=2))
+            return
+        if "skipped" in res:
+            print(f"skipped: {res['skipped']}")
+            return
+        for repo, r in res["repos"].items():
+            print(f"  {repo:22} {'ok' if r.get('ingested') else 'FAILED'} {r.get('count', 0)} sections"
+                  + (f" ({r.get('status_code', '')} {r.get('error', '')})" if not r.get("ingested") else ""))
+        if res.get("error"):
+            print(res["error"])
+        print(f"{res['count']} sections ingested")
+        return
     if args.wiki_command == "refresh":
         from wiki.refresh import refresh
 

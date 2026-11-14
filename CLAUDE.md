@@ -162,7 +162,16 @@ Refresh (`wiki/refresh.py`, `ai-audit wiki refresh [--dry-run] [--force]`; weekl
 
 ## RAG ingest integration
 
-`config/ecosystem.yaml` → `rag_ingest_url` points to the rag-ingest service in agent-composer. On this host that is `http://127.0.0.1:9050/ingest` (or the LAN IP if running from Docker). The `audit_docs` Qdrant collection is separate from the chat `project_docs` collection. Ingest is triggered via `POST /audit/ingest` on the audit API or `scripts/ingest_ecosystem_to_rag.py` directly.
+`config/ecosystem.yaml` → `rag_ingest_url` points to the rag-ingest service in agent-composer. On this host that is `http://127.0.0.1:9050/ingest` (or the LAN IP if running from Docker). Ingest is triggered via `POST /audit/ingest` on the audit API or `scripts/ingest_ecosystem_to_rag.py` directly.
+
+Every sender goes through `auditor/rag_client.py` (`post_documents`), which speaks rag-ingest's current protocol.
+- **Body:** `{"docs", "source", "tags"}`.
+- **Headers:** `X-Timestamp`, a single-use `X-Nonce`, and `X-Signature` (HMAC-SHA256 keyed by sha256(`INGEST_SHARED_SECRET`) over `ts.nonce.sha256(body)`). `INGEST_SHARED_SECRET` in `.env` must match agent-composer's.
+- **Metadata:** rag-ingest keeps only id, title, url, path and source per doc, so repo and kind go in `tags` (`kind:wiki`, `repo:<name>`).
+- **Collection:** chosen by the service's `QDRANT_COLLECTION` (today `project_docs`), not by the request. A `collection` field is sent but ignored, so "a separate `audit_docs` collection" only exists if the URL points at an instance configured for it.
+- **Duplicates:** point ids hash the chunk text and there is no delete, so a changed document adds chunks next to the old ones.
+
+Wiki ingest (`wiki/rag.py`, `ai-audit wiki ingest`) sends one doc per `##` section of the four content pages (internal variant). Each has id `wiki::<repo>::<page>::<section>` and a link to the section. The refresh ingests the pages it rebuilt; `AI_AUDIT_WIKI_RAG_INGEST=0` turns it off. "Ask this repo" (`wiki/ask.py`, `POST /audit/wiki/{repo}/ask`, auth, `ask` spend lane) answers from the repo's wiki pages, notes and structure facts with the configured LLM. The context is prompt cached, so follow-ups cost ~10%. Answers go through the citation pass and link at the mirror HEAD.
 
 ## Generated artifacts
 
