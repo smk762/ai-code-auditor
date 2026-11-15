@@ -224,3 +224,24 @@ def test_endpoint_validates_the_committed_tree_not_the_live_checkout(tmp_path: P
     assert body["passed"] and body["tool"] == "pytest", body
     assert host_python == [host_python[0]] and host_python[0].name == "svc"
     assert "wip" in (repo / "svc/app/calc.py").read_text()  # live checkout untouched
+
+
+def test_hatch_vcs_version_file_is_stubbed(tmp_path: Path, host_python) -> None:
+    """A gitignored, build-generated _version.py must not push validation to lint-only."""
+    _write(tmp_path, {
+        "pyproject.toml": '[project]\nname = "pkg"\n\n[tool.hatch.build.hooks.vcs]\n'
+                          'version-file = "src/pkg/_version.py"\n',
+        "src/pkg/__init__.py": "from pkg._version import __version__\n",
+        "src/pkg/core.py": "def one():\n    return 1\n",
+        "tests/test_core.py": "import pkg\nfrom pkg.core import one\n\n"
+                              "def test_one():\n    assert one() == 1 and pkg.__version__\n",
+    })
+    res = validate_patch_tree(_Repo(), tmp_path, ["src/pkg/core.py"], timeout_s=60)
+    assert res.passed and res.tool == "pytest", res.raw_output
+    assert "stub" in res.raw_output and (tmp_path / "src/pkg/_version.py").exists()
+
+
+def test_version_stub_never_escapes_the_project(tmp_path: Path) -> None:
+    _write(tmp_path, {"proj/pyproject.toml": '[tool.setuptools_scm]\nwrite_to = "../outside.py"\n'})
+    assert validator.stub_version_files(tmp_path / "proj") == []
+    assert not (tmp_path / "outside.py").exists()

@@ -60,7 +60,7 @@ def _contained_upstream(repo: Path, local: str, remote: str) -> bool:
 
 
 def _update_local_branch(repo: Path, local: str, remote: str) -> str:
-    """Bring checked-out *local* up to *remote*. Returns ``ff`` / ``reset`` / ``diverged`` /
+    """Bring checked-out *local* up to *remote*. Returns ``ff`` / ``ff-stashed`` / ``reset`` / ``diverged`` /
     ``checkout-failed``.
 
     A fast-forward is tried first. If the branches diverged and every local commit already exists
@@ -74,6 +74,17 @@ def _update_local_branch(repo: Path, local: str, remote: str) -> str:
     ff = _git(["merge", "--ff-only", remote], repo)
     if ff.returncode == 0:
         return "ff"
+    if _git(["merge-base", "--is-ancestor", local, remote], repo).returncode == 0:
+        # A plain fast-forward that local changes blocked (files it would overwrite), not a
+        # rewrite: stash them and fast-forward. No backup branch needed; nothing leaves the branch.
+        st = _git(["stash", "push", "--include-untracked", "-m", f"mirror sync: before fast-forward of {local}"], repo)
+        if st.returncode != 0 or _git(["merge", "--ff-only", remote], repo).returncode != 0:
+            logger.warning("%s: fast-forward of %s blocked by local changes that could not be stashed; "
+                           "leaving it as-is: %s", repo.name, local, (st.stderr or ff.stderr).strip()[:200])
+            return "diverged"
+        logger.warning("%s: local changes blocked the fast-forward of %s; stashed them and fast-forwarded",
+                       repo.name, local)
+        return "ff-stashed"
     try:
         unique = _local_only_commits(repo, local, remote)
     except RuntimeError as exc:

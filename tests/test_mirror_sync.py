@@ -104,3 +104,21 @@ def test_rebased_upstream_is_matched_commit_by_commit(tmp_path: Path) -> None:
     res = _sync_mirror_item({"name": "m", "path": str(mirror)}, preferred="dev")
     assert res.action == "fetch+reset"
     assert _git(mirror, "rev-parse", "HEAD") == _git(mirror, "rev-parse", "origin/dev")
+
+
+def test_fast_forward_blocked_by_local_changes_is_not_a_rewrite(tmp_path: Path) -> None:
+    """Upstream only moved ahead, but a local edit to a file it changes blocks `merge --ff-only`.
+
+    That is a fast-forward (stash, then fast-forward), not an upstream rewrite: no backup branch,
+    no reset, no "rewritten" log."""
+    mirror, other = _setup(tmp_path)
+    _commit(other, "base.txt", "upstream edit\n", "edit base")
+    _git(other, "push", "-q", "origin", "dev")
+    (mirror / "base.txt").write_text("local edit\n")  # like install_agent_pack_awareness.sh's AGENTS.md
+
+    res = _sync_mirror_item({"name": "m", "path": str(mirror)}, preferred="dev")
+    assert res.ok and res.action == "fetch+ff-stashed" and res.error == ""
+    assert _git(mirror, "rev-parse", "HEAD") == _git(mirror, "rev-parse", "origin/dev")
+    assert (mirror / "base.txt").read_text() == "upstream edit\n"
+    assert "backup/" not in _git(mirror, "branch", "--list")
+    assert "before fast-forward of dev" in _git(mirror, "stash", "list")

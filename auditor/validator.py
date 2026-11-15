@@ -525,6 +525,45 @@ def _run_project_tests(root: Path, python: Path, timeout_s: int) -> tuple[str, V
     return "ran", res
 
 
+_VERSION_STUB = (
+    "# Stub written by ai-code-auditor validate_patch: the real file is generated at build time.\n"
+    "__version__ = version = \"0.0.0+validate\"\n"
+    "__version_tuple__ = version_tuple = (0, 0, 0, \"validate\")\n"
+)
+
+
+def stub_version_files(root: Path) -> list[str]:
+    """Write a stub for each build-generated version module *root*'s pyproject declares but lacks.
+
+    hatch-vcs (``[tool.hatch.build.hooks.vcs] version-file``) and setuptools-scm (``version_file`` /
+    ``write_to``) write that module at build time and it is gitignored, so a clean tree lacks it
+    and any ``from pkg._version import ...`` fails, pushing validation to lint-only. Paths outside
+    *root* are ignored. Returns the paths written, relative to *root*."""
+    import tomllib
+
+    try:
+        data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    tool = data.get("tool") or {}
+    hooks = ((tool.get("hatch") or {}).get("build") or {}).get("hooks") or {}
+    scm = tool.get("setuptools_scm") or {}
+    wanted = [(hooks.get("vcs") or {}).get("version-file"), scm.get("version_file"), scm.get("write_to")]
+    written: list[str] = []
+    resolved_root = root.resolve()
+    for rel in dict.fromkeys(w for w in wanted if isinstance(w, str) and w.endswith(".py")):
+        target = (root / rel).resolve()
+        if not target.is_relative_to(resolved_root) or target.exists():
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(_VERSION_STUB, encoding="utf-8")
+        except OSError:
+            continue
+        written.append(rel)
+    return written
+
+
 def _failed_ids(output: str) -> set[str]:
     return set(_FAILED_ID_RE.findall(output))
 
@@ -566,6 +605,9 @@ def validate_patch_tree(
         if python is None:
             notes.append(f"{label}: test env did not build, lint only: {err[:300]}")
             continue
+        stubbed = stub_version_files(root)
+        if stubbed:
+            notes.append(f"{label}: wrote a stub for the build-generated {', '.join(stubbed)}")
         outcome, res = _run_project_tests(root, python, timeout_s)
         if outcome == "no_tests":
             notes.append(f"{label}: no tests collected, lint only")
@@ -608,6 +650,7 @@ def _against_base(
     base_root = base / root.relative_to(tree.resolve())
     if not base_root.is_dir():
         return res
+    stub_version_files(base_root)
     outcome, base_res = _run_project_tests(base_root, python, timeout_s)
     if outcome != "ran":
         return res
