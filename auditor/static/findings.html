@@ -31,6 +31,9 @@
   .trend-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
   .trend-head .big { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-secondary); margin: 6px 0 4px; }
+  .legend i.hatch { background: repeating-linear-gradient(45deg, var(--neutral) 0 2px, var(--surface-1) 2px 4px); }
+  #matrix .res { display: block; font-size: 11px; font-weight: 400; color: var(--text-muted); }
+  #trend-work { font-size: 13px; color: var(--text-secondary); }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
   #trend { position: relative; }
   #trend svg { display: block; width: 100%; overflow: visible; }
@@ -68,7 +71,8 @@
         <span class="big" id="trend-total"></span>
         <span id="trend-change"></span>
       </div>
-      <p class="hint" id="trend-hint">After each run, every repo counts with its latest audit, so a run that scanned one repo only moves that repo. Hover a column for the breakdown, and click it to open that run.</p>
+      <div id="trend-work"></div>
+      <p class="hint" id="trend-hint">After each run, every repo counts with its latest audit, so a run that scanned one repo only moves that repo. Hatching marks findings whose pack an agent has already resolved: they leave the count once the next scan of <span class="mono">dev</span> no longer reports them. Hover a column for the breakdown, and click it to open that run.</p>
       <div class="legend" id="trend-legend"></div>
       <div id="trend"><div id="tip" hidden></div></div>
       <details class="tbl"><summary>Show as table</summary><div class="table-wrap"><table id="trend-table"></table></div></details>
@@ -151,6 +155,16 @@ function historySeries(d, repo) {
   });
 }
 
+// Pack work on the viewed run's findings for one repo or all: {by_status, resolved_by_severity}.
+function packWork(d, repo) {
+  const out = { by_status: {}, resolved_by_severity: {} };
+  for (const [r, c] of Object.entries(d.pack_matrix || {})) if (!repo || r === repo)
+    for (const k of ["by_status", "resolved_by_severity"])
+      for (const [s, n] of Object.entries(c[k])) out[k][s] = (out[k][s] || 0) + n;
+  return out;
+}
+const resolvedNote = (n) => n ? `<span class="res" title="${int(n)} of these have a pack an agent resolved; they drop out when the next scan no longer finds them">${int(n)} resolved</span>` : "";
+
 function sparkline(values) {
   if (values.length < 2) return "";
   // Span at least 20% of the max so a 2% wobble does not fill the whole height.
@@ -179,13 +193,13 @@ function matrix(d) {
     }).join("");
     const rowChange = prev ? rowSum - sum(prev[r]) : null;
     const trend = spark ? `<td class="spark">${sparkline(historySeries(d, r).map((p) => p.total))}</td>` : "";
-    return `<tr class="${state.repo === r ? "on" : ""}"><th data-repo="${esc(r)}">${esc(r)}</th>${cells}<td class="num"><b>${int(rowSum)}</b>${dl(rowChange, true)}</td>${trend}</tr>`;
+    return `<tr class="${state.repo === r ? "on" : ""}"><th data-repo="${esc(r)}">${esc(r)}</th>${cells}<td class="num"><b>${int(rowSum)}</b>${dl(rowChange, true)}${resolvedNote(packWork(d, r).by_status.resolved)}</td>${trend}</tr>`;
   }).join("");
   const prevSev = (s) => prev ? Object.values(prev).reduce((a, c) => a + (c[s] || 0), 0) : 0;
   const prevAll = prev ? Object.values(prev).reduce((a, c) => a + sum(c), 0) : 0;
   const gone = prev ? Object.keys(prev).filter((r) => !d.matrix[r]) : [];
   const goneRows = gone.map((r) => `<tr><th class="muted">${esc(r)}</th>${sevs.map((s) => `<td class="num zero">·${dl(prev[r][s] ? -prev[r][s] : 0, true)}</td>`).join("")}<td class="num"><b>0</b>${dl(-sum(prev[r]), true)}</td>${spark ? `<td class="spark">${sparkline(historySeries(d, r).map((p) => p.total))}</td>` : ""}</tr>`).join("");
-  const foot = `<tr><th>All repos</th>${sevs.map((s) => `<td class="num"><b>${int(totals[s])}</b>${prev ? dl(totals[s] - prevSev(s), true) : ""}</td>`).join("")}<td class="num"><b>${int(d.total)}</b>${prev ? dl(d.total - prevAll) : ""}</td>${spark ? `<td class="spark">${sparkline(historySeries(d, "").map((p) => p.total))}</td>` : ""}</tr>`;
+  const foot = `<tr><th>All repos</th>${sevs.map((s) => `<td class="num"><b>${int(totals[s])}</b>${prev ? dl(totals[s] - prevSev(s), true) : ""}</td>`).join("")}<td class="num"><b>${int(d.total)}</b>${prev ? dl(d.total - prevAll) : ""}${resolvedNote(packWork(d, "").by_status.resolved)}</td>${spark ? `<td class="spark">${sparkline(historySeries(d, "").map((p) => p.total))}</td>` : ""}</tr>`;
   return head + `<tbody>${body}${goneRows}${foot}</tbody>`;
 }
 
@@ -217,6 +231,15 @@ function trend(d) {
   document.getElementById("trend-total").textContent = last ? int(last.total) : "";
   document.getElementById("trend-change").innerHTML = last && before
     ? `${dl(last.total - before.total)} <span class="hint" style="margin:0">since the previous run (${fmtWhen(before.started_at)})</span>` : "";
+  const work = packWork(d, state.repo), ws = work.by_status;
+  const active = (ws.open || 0) + (ws.claimed || 0) + (ws.in_progress || 0);
+  const inHand = (ws.claimed || 0) + (ws.in_progress || 0);
+  document.getElementById("trend-work").innerHTML = d.pack_matrix
+    ? [ws.resolved ? `<b>${int(ws.resolved)}</b> resolved by agents, waiting for a rescan` : "",
+       active ? `<b>${int(active)}</b> open or being worked on${inHand ? ` (${int(inHand)} claimed or in progress)` : ""}` : "",
+       ws.wontfix ? `${int(ws.wontfix)} wontfix` : ""].filter(Boolean).join(" · ")
+    : "";
+  document.getElementById("trend-legend").innerHTML += ws.resolved ? `<span><i class="hatch"></i>resolved, waiting for rescan</span>` : "";
   box.querySelectorAll("svg, p.empty").forEach((s) => s.remove());
   if (!pts.length) { box.insertAdjacentHTML("afterbegin", `<p class="empty">No history yet.</p>`); return; }
 
@@ -226,7 +249,8 @@ function trend(d) {
   const y = (v) => m.t + ph - v / ymax * ph;
   const slot = pw / pts.length, bw = Math.max(4, Math.min(44, slot * 0.6));
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * ymax);
-  let svg = ticks.map((v) => `<line class="${v ? "grid" : "base"}" x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}"/>` +
+  let svg = `<defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="5" height="5" patternTransform="rotate(45)">` +
+    `<rect width="2.5" height="5" style="fill:var(--surface-1)"/></pattern></defs>` + ticks.map((v) => `<line class="${v ? "grid" : "base"}" x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}"/>` +
     `<text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${int(Math.round(v))}</text>`).join("");
   const every = Math.ceil(pts.length / Math.max(1, Math.floor(pw / 90)));
   const showLabels = slot >= 34;
@@ -240,6 +264,13 @@ function trend(d) {
       const y0 = y(acc), y1 = y(acc + n), h = Math.max(0, y0 - y1 - (acc ? 2 : 0));  // 2px gap between segments
       segs += s === top ? `<path d="${roundedTop(x, y1, bw, h, 4)}" style="fill:${sevVar(s)}"/>`
                         : `<rect x="${x}" y="${y1}" width="${bw}" height="${h}" style="fill:${sevVar(s)}"/>`;
+      // Resolved share of this severity, hatched at the top of its segment (viewed run only).
+      const rn = i === cur ? Math.min(n, work.resolved_by_severity[s] || 0) : 0;
+      if (rn) {
+        const rh = Math.min(h, (y0 - y(acc + rn)));
+        segs += s === top ? `<path d="${roundedTop(x, y1, bw, rh, 4)}" fill="url(#hatch)"/>`
+                          : `<rect x="${x}" y="${y1}" width="${bw}" height="${rh}" fill="url(#hatch)"/>`;
+      }
       acc += n;
     }
     const prevPt = pts[i - 1];
@@ -262,6 +293,7 @@ function trend(d) {
     tip.innerHTML = `<b>${esc(fmtWhen(p.started_at))}</b> <span class="muted mono">${esc(p.run_id)}</span>` +
       `<table>${SEV_STACK.map((s) => `<tr><td><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${sevVar(s)}"></i> ${s.toLowerCase()}</td><td class="n">${int(p.sev[s] || 0)}</td><td>${q ? dl((p.sev[s] || 0) - (q.sev[s] || 0), true) : ""}</td></tr>`).join("")}` +
       `<tr><td><b>total</b></td><td class="n"><b>${int(p.total)}</b></td><td>${q ? dl(p.total - q.total) : ""}</td></tr></table>` +
+      (i === cur && ws.resolved ? `<span class="muted">${int(ws.resolved)} resolved by agents, waiting for rescan</span><br>` : "") +
       `<span class="muted">${UI.plural(p.scanned_repos.length, "repo")} scanned in this run</span>`;
     tip.hidden = false;
     const r = box.getBoundingClientRect();

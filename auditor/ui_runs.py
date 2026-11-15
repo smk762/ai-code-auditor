@@ -361,7 +361,7 @@ def findings_data(
         if row is None:
             return None if run_id else {"run": None, "previous": None, "matrix": {}, "facets": {},
                                         "findings": [], "total": 0, "filtered_total": 0, "delta": None,
-                                        "matrix_prev": None, "history": []}
+                                        "matrix_prev": None, "pack_matrix": None, "history": []}
         run = run_to_dict(row)
         current = _findings(s, row.run_id)
         base = _baseline(s, row)
@@ -401,6 +401,19 @@ def findings_data(
     if output_dir:
         for f in (*current, *(d["fixed"] if d else ())):
             f["pack"] = packs.get((f["repo"], f["file_path"], f["title"]))
+    # Pack work on this run's findings, whole run like the matrix: the scan counts above only
+    # change on the next scan, so this is where a fix an agent already validated shows up.
+    pack_matrix: dict[str, dict[str, Any]] | None = None
+    if output_dir:
+        pack_matrix = {}
+        for f in current:
+            st = (f.get("pack") or {}).get("status") or "none"
+            cell = pack_matrix.setdefault(f["repo"], {"by_status": {}, "resolved_by_severity": {}})
+            cell["by_status"][st] = cell["by_status"].get(st, 0) + 1
+            if st == "resolved":
+                rs = cell["resolved_by_severity"]
+                rs[f["severity"]] = rs.get(f["severity"], 0) + 1
+        pack_matrix = dict(sorted(pack_matrix.items()))
     ps_set = {x.strip().lower() for x in pack_status.split(",") if x.strip()}
     sev_set = {x.strip().upper() for x in severity.split(",") if x.strip()}
     ql = q.strip().lower()
@@ -433,6 +446,7 @@ def findings_data(
         "previous": previous,
         "matrix": {r: matrix[r] for r in facets["repos"]},
         "matrix_prev": matrix_prev,
+        "pack_matrix": pack_matrix,
         "history": history,
         "facets": facets,
         "delta": {"new": len(d["new"]), "fixed": len(d["fixed"]), "reworded": d["reworded"]} if d else None,
