@@ -140,7 +140,7 @@ class ImpactResult:
 class ValidationResult:
     """Outcome of running the validation suite (tests/lint) for a repository."""
     passed: bool
-    tool: str            # "pytest" | "npm_test" | "go_test" | "cargo_test" | "lint_only" | "skipped"
+    tool: str            # "pytest" | "npm_checks" | "node_check" | "npm_test" | "go_test" | "cargo_test" | "lint_only" | "skipped"; "+"-joined for a mixed patch ("pytest+npm_checks")
     duration_ms: int
     errors: list[str]
     raw_output: str      # truncated stdout + stderr

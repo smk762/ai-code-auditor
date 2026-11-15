@@ -197,8 +197,17 @@ def suggest_test_commands(repo_path: Path, file_path: str = "") -> tuple[str, li
 
     Does not execute tests — only suggests commands based on project type.
     """
-    lang = _detect_language(repo_path)
     rel = (file_path or "").lstrip("./")
+    from auditor import validate_node
+
+    if rel.endswith(validate_node.CODE_EXTS):
+        root = validate_node.node_root(repo_path, rel)
+        checks = validate_node.project_checks(root) if root is not None else []
+        if checks:
+            sub = root.relative_to(repo_path.resolve()).as_posix()
+            prefix = f"cd {sub} && " if sub != "." else ""
+            return validate_node.TOOL, [prefix + "npm ci", *(prefix + "npm " + " ".join(a) for _, a in checks)]
+    lang = _detect_language(repo_path)
     if lang == "python":
         cmds = ["pytest -x --tb=short -q"]
         if rel.endswith(".py"):
@@ -281,7 +290,12 @@ def extract_failure_summary(raw_output: str, tool: str) -> list[str]:
 
     lines = raw_output.splitlines()
 
-    if tool in ("pytest", "lint_only"):
+    if "+" in tool or tool in ("npm_checks", "node_check"):
+        result = []
+        for part in tool.split("+"):
+            result += _pytest_summary(lines) if part in ("pytest", "lint_only") else _node_checks_summary(lines)
+        result = list(dict.fromkeys(result))
+    elif tool in ("pytest", "lint_only"):
         result = _pytest_summary(lines)
     elif tool == "go_test":
         result = _go_summary(lines)
@@ -351,6 +365,16 @@ def _cargo_summary(lines: list[str]) -> list[str]:
     for l in lines:
         if re.search(r"^FAILED|^error\[|panicked at|thread '.*' panicked", l):
             out.append(l)
+    return out
+
+
+def _node_checks_summary(lines: list[str]) -> list[str]:
+    """tsc diagnostics, eslint errors, vitest failures and the ``-- <project> npm run <script>`` headers."""
+    out: list[str] = []
+    for l in lines:
+        if re.search(r"(^-- \S+ npm run |^new \S+ errors from this patch|\): error TS\d+|^\s+\d+:\d+\s+error\s|"
+                     r"^\s*FAIL\s|AssertionError|SyntaxError)", l):
+            out.append(l.rstrip())
     return out
 
 
@@ -574,26 +598,88 @@ def _has_project(root: Path) -> bool:
 
 def validate_patch_tree(
     repo: RepoConfig, tree: Path, changed: list[str], *, timeout_s: int = 120, cache_dir: Path | None = None,
-    base_tree: "Callable[[], Path | None] | None" = None,
+    base_tree: "Callable[[], Path | None] | None" = None, node_cache_dir: Path | None = None,
 ) -> ValidationResult:
-    """Validate a patched clean *tree*: lint the changed .py files, then test each touched project.
+    """Validate a patched clean *tree*: Python projects and npm projects the patch touches.
 
-    Passes when lint passes and every project whose tests ran passed (tool ``pytest``); when no
-    tests could run (none exist, the env failed to build, or a module was missing), the lint
-    result stands (tool ``lint_only``) with a note saying why. Patches without Python changes
-    go to :func:`validate_repo` for the repo's own language.
+    Python: lint the changed .py files, then test each touched project. Passes when lint passes
+    and every project whose tests ran passed; when no tests could run (none exist, the env failed
+    to build, or a module was missing), the lint result stands (``lint_only``) with a note saying why.
 
-    *base_tree* returns the same tree without the patch (built on demand). When a project's tests
-    fail, they run there too, and only failures the patch introduced count: a test already
-    failing on the base branch is named in a note but doesn't fail the patch."""
+    TypeScript/JavaScript (:mod:`auditor.validate_node`): each touched npm project runs its
+    typecheck, lint, ``*:check`` and test scripts. A changed TS/JS file that got no check at all
+    (npm missing, install failed, no package.json) makes the result *skipped*, never passed, so a
+    pack isn't resolved on the strength of checks that never looked at it.
+
+    ``tool`` names what ran, joined with ``+`` for a mixed patch (``pytest+npm_checks``).
+    Patches with neither go to :func:`validate_repo` for the repo's own language.
+
+    *base_tree* returns the same tree without the patch (built on demand). When a test or check
+    fails, it runs there too, and only failures the patch introduced count."""
+    from auditor import validate_node
+
     py = sorted({f for f in changed if f.endswith(".py") and (tree / f).is_file()})
-    if not py:
+    js = validate_node.node_files(tree, changed)
+    if not py and not js:
         return validate_repo(repo, path_override=tree, timeout_s=timeout_s)
-    lint = _lint_files(tree, py, timeout_s)
-    if not lint.passed:
-        return lint
     cache = cache_dir or Path(".validate_venvs")
     notes: list[str] = []
+    ran: list[tuple[str, ValidationResult]] = []
+    tools: list[str] = []
+    duration = 0
+    if py:
+        lint = _lint_files(tree, py, timeout_s)
+        if not lint.passed:
+            return lint
+        duration += lint.duration_ms
+        py_ran = _test_python_projects(tree, py, cache, base_tree, timeout_s, notes)
+        ran += py_ran
+        tools.append("pytest" if py_ran else "lint_only")
+    unvalidated: list[str] = []
+    if js:
+        node = validate_node.validate_node_projects(
+            tree, js, timeout_s=timeout_s, cache_dir=node_cache_dir or cache.parent / "_validate_node",
+            base_tree=base_tree)
+        ran += node.ran
+        notes += node.notes
+        unvalidated = node.unvalidated
+        if node.ran:
+            tools.append(validate_node.SYNTAX_TOOL if node.syntax_only else validate_node.TOOL)
+    tool = "+".join(dict.fromkeys(tools)) or "skipped"
+    duration += sum(r.duration_ms for _, r in ran)
+    note = "\n".join(notes)
+    failed = [(lbl, r) for lbl, r in ran if not r.passed]
+    if failed:
+        return ValidationResult(
+            passed=False, tool=tool, duration_ms=duration,
+            errors=[e for _, r in failed for e in r.errors],
+            raw_output="\n".join(f"== {lbl}\n{r.raw_output}" for lbl, r in failed)[-_OUTPUT_LIMIT:],
+        )
+    parts = []
+    if py_labels := [lbl for lbl, r in ran if r.tool == "pytest"]:
+        parts.append("tests passed: " + ", ".join(py_labels))
+    if js_ran := [f"{lbl} ({r.raw_output})" if r.tool == validate_node.TOOL else lbl
+                  for lbl, r in ran if r.tool != "pytest"]:
+        parts.append("npm checks passed: " + ", ".join(js_ran))
+    head = "; ".join(parts) or "lint passed; no tests ran"
+    if notes and ran:
+        head += " (see notes)"
+    if unvalidated:
+        reason = "TypeScript/JavaScript not validated: " + "; ".join(unvalidated)
+        return ValidationResult(passed=False, tool="skipped", duration_ms=duration, errors=[],
+                                raw_output="\n".join(x for x in (reason, head, note) if x)[-_OUTPUT_LIMIT:],
+                                skipped_reason=reason[:1000])
+    return ValidationResult(
+        passed=True, tool=tool, duration_ms=duration, errors=[],
+        raw_output="\n".join(x for x in (head, note) if x)[-_OUTPUT_LIMIT:],
+    )
+
+
+def _test_python_projects(
+    tree: Path, py: list[str], cache: Path, base_tree: "Callable[[], Path | None] | None", timeout_s: int,
+    notes: list[str],
+) -> list[tuple[str, ValidationResult]]:
+    """Run the tests of each Python project *py* touches; returns (label, result) for those that ran."""
     ran: list[tuple[str, ValidationResult]] = []
     for root in sorted({project_root(tree, f) for f in py}):
         label = str(root.relative_to(tree.resolve())) if root != tree.resolve() else "."
@@ -620,22 +706,7 @@ def validate_patch_tree(
             ran.append((label, res))
         else:
             ran.append((label, res))
-    note = "\n".join(notes)
-    failed = [(lbl, r) for lbl, r in ran if not r.passed]
-    if failed:
-        return ValidationResult(
-            passed=False, tool="pytest", duration_ms=lint.duration_ms + sum(r.duration_ms for _, r in ran),
-            errors=[e for _, r in failed for e in r.errors],
-            raw_output="\n".join(f"== {lbl}\n{r.raw_output}" for lbl, r in failed)[-_OUTPUT_LIMIT:],
-        )
-    head = "tests passed: " + ", ".join(lbl for lbl, _ in ran) if ran else "lint passed; no tests ran"
-    if notes and ran:
-        head += " (see notes)"
-    return ValidationResult(
-        passed=True, tool="pytest" if ran else "lint_only",
-        duration_ms=lint.duration_ms + sum(r.duration_ms for _, r in ran), errors=[],
-        raw_output="\n".join(x for x in (head, note) if x)[-_OUTPUT_LIMIT:],
-    )
+    return ran
 
 
 def _against_base(
