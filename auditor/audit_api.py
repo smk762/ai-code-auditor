@@ -1497,6 +1497,7 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
             repo_cfg, repo_copy, changed, timeout_s=timeout_s,
             cache_dir=Path(os.getenv("AI_AUDIT_VALIDATE_VENV_DIR") or Path(cfg.output_dir) / "_validate_venvs"),
             base_tree=_base_tree,
+            node_cache_dir=Path(os.getenv("AI_AUDIT_VALIDATE_NODE_DIR") or Path(cfg.output_dir) / "_validate_node"),
         )
 
         summary = extract_failure_summary(val_result.raw_output, val_result.tool)
