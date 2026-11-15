@@ -18,7 +18,7 @@ GET  /                               Web UI landing page (also /ui); shared nav 
 GET  /audit/summary.json             Landing-page headline numbers (last run, findings, packs, spend)
 GET  /audit/usage                    Claude API usage dashboard (+ /audit/usage.json)
 GET  /ui/runs, /ui/runs/{run_id}      Runs list and run summary pages (live via the SSE stream)
-GET  /ui/findings                     Findings page: severity × repo matrix, filters, new/fixed
+GET  /ui/findings                     Findings page: trend, severity × repo matrix with +/-, filters, new/fixed
 GET  /ui/reports/{name}               A markdown report from output_dir, rendered server-side
 GET  /ui/pack-savings                 Pack token-savings page (data: /audit/pack-savings.json)
 GET  /ui/repos                        Repo summary cards (data: /audit/repos/summary.json)

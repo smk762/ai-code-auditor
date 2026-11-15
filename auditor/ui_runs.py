@@ -30,6 +30,7 @@ SEVERITIES = ui.SEVERITIES
 BASELINE_LOOKBACK = 50
 DELTA_LIST_LIMIT = 200
 FINDINGS_LIMIT = 500
+HISTORY_RUNS = 30  # runs plotted in the findings trend
 PROMPT_PACK_LIMIT = 200  # open packs listed for the "copy agent prompt" handoff
 # When one finding has several packs, active work is shown first: a closed twin is either a
 # duplicate (wontfix "duplicate of …") or a fix the finding came back after (resolved).
@@ -160,6 +161,52 @@ def _resolve_run(session, run_id: str | None) -> AuditRun | None:
         .order_by(AuditRun.started_at.desc())
         .limit(1)
     ).scalar_one_or_none()
+
+
+def _history(session, upto: AuditRun) -> list[dict[str, Any]]:
+    """Findings over the last ``HISTORY_RUNS`` finished runs that stored findings, up to ``upto``.
+
+    Each point is the state after that run: every repo counts with its latest audit so far, so a
+    single-repo nightly run moves only its own repo's counts and the others carry forward. A repo
+    the run scanned with no findings drops to zero. Repos last audited before the window's first
+    run are not counted until they are audited again inside it.
+    """
+    if upto.started_at is None:
+        return []
+    runs = session.execute(
+        select(AuditRun)
+        .where(
+            AuditRun.status.in_(SUCCESS_STATUSES),
+            AuditRun.started_at <= upto.started_at,
+            AuditRun.run_id.in_(select(FindingRecord.run_id).distinct()),
+        )
+        .order_by(AuditRun.started_at.desc())
+        .limit(HISTORY_RUNS)
+    ).scalars().all()[::-1]
+    if not runs:
+        return []
+    counts: dict[str, dict[str, Counter]] = defaultdict(lambda: defaultdict(Counter))
+    for run_id, repo, sev, n in session.execute(
+        select(FindingRecord.run_id, FindingRecord.repo, FindingRecord.severity, func.count())
+        .where(FindingRecord.run_id.in_([r.run_id for r in runs]))
+        .group_by(FindingRecord.run_id, FindingRecord.repo, FindingRecord.severity)
+    ).all():
+        counts[run_id][repo][str(sev or "INFO").upper()] += int(n)
+    state: dict[str, dict[str, int]] = {}
+    points = []
+    for r in runs:
+        mine = counts.get(r.run_id, {})
+        scanned = set((r.metadata_json or {}).get("scanned_repos") or []) | set(mine)
+        for repo in scanned:
+            state[repo] = dict(mine.get(repo, {}))
+        points.append({
+            "run_id": r.run_id,
+            "pipeline": r.pipeline,
+            "started_at": r.started_at.isoformat() if r.started_at else None,
+            "scanned_repos": sorted(scanned),
+            "by_repo": {repo: dict(c) for repo, c in sorted(state.items()) if c},
+        })
+    return points
 
 
 # ── runs list ────────────────────────────────────────────────────────────────
@@ -313,14 +360,24 @@ def findings_data(
         row = _resolve_run(s, run_id or None)
         if row is None:
             return None if run_id else {"run": None, "previous": None, "matrix": {}, "facets": {},
-                                        "findings": [], "total": 0, "filtered_total": 0, "delta": None}
+                                        "findings": [], "total": 0, "filtered_total": 0, "delta": None,
+                                        "matrix_prev": None, "pack_matrix": None, "history": []}
         run = run_to_dict(row)
         current = _findings(s, row.run_id)
         base = _baseline(s, row)
         previous = run_to_dict(base) if base else None
         prev_findings = _findings(s, base.run_id) if base else []
+        history = _history(s, row)
 
     d = _delta(current, prev_findings, set(run["scanned_repos"])) if base else None
+    # Baseline counts per repo and severity, over the repos this run scanned, for the matrix's +/-.
+    matrix_prev: dict[str, dict[str, int]] | None = None
+    if base:
+        matrix_prev = defaultdict(dict)
+        for f in prev_findings:
+            if not run["scanned_repos"] or f["repo"] in run["scanned_repos"]:
+                matrix_prev[f["repo"]][f["severity"]] = matrix_prev[f["repo"]].get(f["severity"], 0) + 1
+        matrix_prev = dict(sorted(matrix_prev.items()))
     new_keys = {_key(f) for f in d["new"]} if d else set()
     for f in current:
         f["is_new"] = bool(d) and _key(f) in new_keys
@@ -344,6 +401,19 @@ def findings_data(
     if output_dir:
         for f in (*current, *(d["fixed"] if d else ())):
             f["pack"] = packs.get((f["repo"], f["file_path"], f["title"]))
+    # Pack work on this run's findings, whole run like the matrix: the scan counts above only
+    # change on the next scan, so this is where a fix an agent already validated shows up.
+    pack_matrix: dict[str, dict[str, Any]] | None = None
+    if output_dir:
+        pack_matrix = {}
+        for f in current:
+            st = (f.get("pack") or {}).get("status") or "none"
+            cell = pack_matrix.setdefault(f["repo"], {"by_status": {}, "resolved_by_severity": {}})
+            cell["by_status"][st] = cell["by_status"].get(st, 0) + 1
+            if st == "resolved":
+                rs = cell["resolved_by_severity"]
+                rs[f["severity"]] = rs.get(f["severity"], 0) + 1
+        pack_matrix = dict(sorted(pack_matrix.items()))
     ps_set = {x.strip().lower() for x in pack_status.split(",") if x.strip()}
     sev_set = {x.strip().upper() for x in severity.split(",") if x.strip()}
     ql = q.strip().lower()
@@ -375,6 +445,9 @@ def findings_data(
         "run": run,
         "previous": previous,
         "matrix": {r: matrix[r] for r in facets["repos"]},
+        "matrix_prev": matrix_prev,
+        "pack_matrix": pack_matrix,
+        "history": history,
         "facets": facets,
         "delta": {"new": len(d["new"]), "fixed": len(d["fixed"]), "reworded": d["reworded"]} if d else None,
         "total": len(current),

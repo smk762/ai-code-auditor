@@ -129,6 +129,34 @@ def test_findings_filters_and_change(history) -> None:
     assert d["filtered_total"] == 3 and len(d["findings"]) == 1
 
 
+
+def test_findings_matrix_prev_counts_baseline_for_scanned_repos(history) -> None:
+    d = ui_runs.findings_data("x-2")
+    assert d["matrix_prev"] == {"x": {"HIGH": 1, "CRITICAL": 1}}  # y-1's finding is not in scope
+    assert ui_runs.findings_data("x-1")["matrix_prev"] is None  # no baseline
+
+
+def test_findings_history_carries_each_repo_forward(history) -> None:
+    h = ui_runs.findings_data("x-2")["history"]
+    assert [p["run_id"] for p in h] == ["x-1", "y-1", "x-2"]  # failed and finding-less runs skipped
+    assert h[0]["by_repo"] == {"x": {"HIGH": 1, "CRITICAL": 1}}
+    assert h[1]["by_repo"] == {"x": {"HIGH": 1, "CRITICAL": 1}, "y": {"HIGH": 1}}  # x carried
+    assert h[2]["by_repo"] == {"x": {"HIGH": 2, "LOW": 1}, "y": {"HIGH": 1}}
+    assert h[2]["scanned_repos"] == ["x"]
+    # history stops at the run being viewed
+    assert [p["run_id"] for p in ui_runs.findings_data("y-1")["history"]] == ["x-1", "y-1"]
+
+
+def test_findings_history_drops_a_scanned_repo_with_no_findings(memdb) -> None:
+    with memdb() as s:
+        _run(s, "r-1", hours_ago=10, repos=("x", "y"))
+        _finding(s, "r-1", "a")
+        _finding(s, "r-1", "b", repo="y")
+        _run(s, "r-2", hours_ago=1, repos=("x", "y"))
+        _finding(s, "r-2", "a")
+    h = ui_runs.findings_data("r-2")["history"]
+    assert h[-1]["by_repo"] == {"x": {"HIGH": 1}}
+
 def test_findings_unknown_run_and_empty_db(history, memdb) -> None:
     assert ui_runs.findings_data("nope") is None
     assert ui_runs.findings_data("y-1", change="new")["findings"] == []  # no baseline → nothing "new"
@@ -172,6 +200,14 @@ def test_findings_link_packs_and_hand_off_open_ones(history, tmp_path) -> None:
     assert "pack" not in ui_runs.findings_data("x-2")["findings"][0]  # no output_dir: no lookup
 
 
+
+def test_findings_pack_matrix_counts_pack_work_over_the_whole_run(history, tmp_path) -> None:
+    out = _pack_index(tmp_path, [_pk("pack-kept", "kept", status="resolved"), _pk("pack-fresh", "fresh")])
+    d = ui_runs.findings_data("x-2", output_dir=out, severity="low")  # filters don't narrow it
+    assert d["pack_matrix"] == {"x": {"by_status": {"resolved": 1, "open": 1, "none": 1},
+                                      "resolved_by_severity": {"HIGH": 1}}}
+    assert ui_runs.findings_data("x-2")["pack_matrix"] is None
+
 def test_findings_show_a_closed_duplicate_as_its_keeper(history, tmp_path) -> None:
     dup = {**_pk("pack-dup", "fresh", status="wontfix"), "duplicate_of": "pack-keeper"}
     out = _pack_index(tmp_path, [dup, _pk("pack-keeper", "fresh, reworded", status="claimed")])
@@ -187,7 +223,7 @@ def test_findings_without_pack_index(history, tmp_path) -> None:
 
 def test_findings_empty_db(memdb) -> None:
     d = ui_runs.findings_data()
-    assert d["run"] is None and d["findings"] == []
+    assert d["run"] is None and d["findings"] == [] and d["history"] == []
 
 
 def _f(title, line=1, file="/srv/mirrors/x/app.py", ftype="bug", repo="x"):

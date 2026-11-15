@@ -22,6 +22,33 @@
   #prompt-box[hidden] { display: none; }
   #prompt-box textarea { width: 100%; min-height: 220px; font: 12px/1.45 var(--font-mono, ui-monospace, monospace);
     background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--grid); border-radius: 6px; padding: 8px; box-sizing: border-box; }
+  #matrix .dl { font-size: 11px; margin-left: 4px; font-weight: 600; }
+  .dl.up { color: var(--critical); }
+  .dl.down { color: var(--ok); }
+  .dl.flat { color: var(--text-muted); font-weight: 400; }
+  #matrix td.spark { padding-block: 2px; width: 90px; }
+  #matrix td.spark svg { display: block; }
+  .trend-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
+  .trend-head .big { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-secondary); margin: 6px 0 4px; }
+  .legend i.hatch { background: repeating-linear-gradient(45deg, var(--neutral) 0 2px, var(--surface-1) 2px 4px); }
+  #matrix .res { display: block; font-size: 11px; font-weight: 400; color: var(--text-muted); }
+  #trend-work { font-size: 13px; color: var(--text-secondary); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  #trend { position: relative; }
+  #trend svg { display: block; width: 100%; overflow: visible; }
+  #trend .col { cursor: pointer; }
+  #trend .hit { fill: transparent; }
+  #trend .col:hover .hit, #trend .col.cur .hit { fill: var(--surface-2); }
+  #trend text { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #trend text.lbl { fill: var(--text-secondary); font-weight: 600; }
+  #trend tspan.up { fill: var(--critical); } #trend tspan.down { fill: var(--ok); }
+  #trend line.grid { stroke: var(--grid); }
+  #trend line.base { stroke: var(--text-muted); }
+  #tip { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.12); white-space: nowrap; z-index: 2; }
+  #tip table { border-collapse: collapse; } #tip td { padding: 1px 4px; border: 0; } #tip td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  details.tbl summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -39,8 +66,23 @@
 
   <section class="grid">
     <div class="card span-12">
+      <div class="trend-head">
+        <h2 id="trend-title" style="margin:0">Findings over time</h2>
+        <span class="big" id="trend-total"></span>
+        <span id="trend-change"></span>
+      </div>
+      <div id="trend-work"></div>
+      <p class="hint" id="trend-hint">After each run, every repo counts with its latest audit, so a run that scanned one repo only moves that repo. Hatching marks findings whose pack an agent has already resolved: they leave the count once the next scan of <span class="mono">dev</span> no longer reports them. Hover a column for the breakdown, and click it to open that run.</p>
+      <div class="legend" id="trend-legend"></div>
+      <div id="trend"><div id="tip" hidden></div></div>
+      <details class="tbl"><summary>Show as table</summary><div class="table-wrap"><table id="trend-table"></table></div></details>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card span-12">
       <h2>Severity × repo</h2>
-      <p class="hint">Whole run. Click a cell to filter the table to that repo and severity; click it again to clear.</p>
+      <p class="hint" id="matrix-hint">Whole run. Click a cell to filter the table to that repo and severity; click it again to clear.</p>
       <div class="table-wrap"><table id="matrix"></table></div>
     </div>
   </section>
@@ -93,23 +135,183 @@ function fill(el, values, current, label = (v) => v) {
     `<option value="${esc(v)}"${v === current ? " selected" : ""}>${esc(label(v))}</option>`).join("");
 }
 
+// "+3" / "−2" against the baseline run; "" when there is no baseline.
+function dl(n, quiet = false) {
+  if (n == null) return "";
+  if (!n) return quiet ? "" : `<span class="dl flat" title="No change since the previous run">±0</span>`;
+  return n > 0 ? `<span class="dl up" title="${int(n)} more than the previous run">+${int(n)}</span>`
+               : `<span class="dl down" title="${int(-n)} fewer than the previous run">−${int(-n)}</span>`;
+}
+
+function sum(o) { return Object.values(o || {}).reduce((a, b) => a + b, 0); }
+
+// Totals per history point, for one repo or (repo = "") all of them, by severity.
+function historySeries(d, repo) {
+  return (d.history || []).map((pt) => {
+    const sev = Object.fromEntries(UI.SEVERITIES.map((s) => [s, 0]));
+    for (const [r, c] of Object.entries(pt.by_repo)) if (!repo || r === repo)
+      for (const [s, n] of Object.entries(c)) sev[s] = (sev[s] || 0) + n;
+    return { ...pt, sev, total: sum(sev) };
+  });
+}
+
+// Pack work on the viewed run's findings for one repo or all: {by_status, resolved_by_severity}.
+function packWork(d, repo) {
+  const out = { by_status: {}, resolved_by_severity: {} };
+  for (const [r, c] of Object.entries(d.pack_matrix || {})) if (!repo || r === repo)
+    for (const k of ["by_status", "resolved_by_severity"])
+      for (const [s, n] of Object.entries(c[k])) out[k][s] = (out[k][s] || 0) + n;
+  return out;
+}
+const resolvedNote = (n) => n ? `<span class="res" title="${int(n)} of these have a pack an agent resolved; they drop out when the next scan no longer finds them">${int(n)} resolved</span>` : "";
+
+function sparkline(values) {
+  if (values.length < 2) return "";
+  // Span at least 20% of the max so a 2% wobble does not fill the whole height.
+  const w = 80, h = 20, max = Math.max(...values), min = Math.min(...values), span = Math.max(max - min, max * 0.2, 1);
+  const xy = values.map((v, i) => [i * w / (values.length - 1), h - 3 - (v - min) / span * (h - 6)]);
+  const [lx, ly] = xy[xy.length - 1];
+  return `<svg width="${w}" height="${h}" viewBox="-2 0 ${w + 4} ${h}" role="img" aria-label="Trend: ${values.map(int).join(", ")}">` +
+    `<polyline points="${xy.map((p) => p.join(",")).join(" ")}" fill="none" stroke="var(--text-secondary)" stroke-width="1.5" stroke-linejoin="round"/>` +
+    `<circle cx="${lx}" cy="${ly}" r="2.5" fill="var(--text-primary)"/></svg>`;
+}
+
 function matrix(d) {
-  const sevs = UI.SEVERITIES, repos = d.facets.repos;
+  const sevs = UI.SEVERITIES, repos = d.facets.repos, prev = d.matrix_prev;
   if (!repos.length) return `<tbody><tr><td class="empty">No findings stored for this run.</td></tr></tbody>`;
-  const head = `<thead><tr><th>Repo</th>${sevs.map((s) => `<th class="num">${UI.sevBadge(s)}</th>`).join("")}<th class="num">Total</th></tr></thead>`;
+  const spark = (d.history || []).length > 1;
+  const head = `<thead><tr><th>Repo</th>${sevs.map((s) => `<th class="num">${UI.sevBadge(s)}</th>`).join("")}<th class="num">Total</th>${spark ? "<th>Trend</th>" : ""}</tr></thead>`;
   const totals = Object.fromEntries(sevs.map((s) => [s, 0]));
+  const change = (r, s) => prev ? (d.matrix[r]?.[s] || 0) - (prev[r]?.[s] || 0) : null;
   const body = repos.map((r) => {
     const row = d.matrix[r];
-    let sum = 0;
+    let rowSum = 0;
     const cells = sevs.map((s) => {
-      const n = row[s] || 0; sum += n; totals[s] += n;
+      const n = row[s] || 0; rowSum += n; totals[s] += n;
       const on = state.repo === r && state.severity === s;
-      return `<td class="cell${n ? "" : " zero"}${on ? " on" : ""}" data-repo="${esc(r)}" data-sev="${s}">${n ? int(n) : "·"}</td>`;
+      return `<td class="cell${n ? "" : " zero"}${on ? " on" : ""}" data-repo="${esc(r)}" data-sev="${s}">${n ? int(n) : "·"}${dl(change(r, s), true)}</td>`;
     }).join("");
-    return `<tr class="${state.repo === r ? "on" : ""}"><th data-repo="${esc(r)}">${esc(r)}</th>${cells}<td class="num"><b>${int(sum)}</b></td></tr>`;
+    const rowChange = prev ? rowSum - sum(prev[r]) : null;
+    const trend = spark ? `<td class="spark">${sparkline(historySeries(d, r).map((p) => p.total))}</td>` : "";
+    return `<tr class="${state.repo === r ? "on" : ""}"><th data-repo="${esc(r)}">${esc(r)}</th>${cells}<td class="num"><b>${int(rowSum)}</b>${dl(rowChange, true)}${resolvedNote(packWork(d, r).by_status.resolved)}</td>${trend}</tr>`;
   }).join("");
-  const foot = `<tr><th>All repos</th>${sevs.map((s) => `<td class="num"><b>${int(totals[s])}</b></td>`).join("")}<td class="num"><b>${int(d.total)}</b></td></tr>`;
-  return head + `<tbody>${body}${foot}</tbody>`;
+  const prevSev = (s) => prev ? Object.values(prev).reduce((a, c) => a + (c[s] || 0), 0) : 0;
+  const prevAll = prev ? Object.values(prev).reduce((a, c) => a + sum(c), 0) : 0;
+  const gone = prev ? Object.keys(prev).filter((r) => !d.matrix[r]) : [];
+  const goneRows = gone.map((r) => `<tr><th class="muted">${esc(r)}</th>${sevs.map((s) => `<td class="num zero">·${dl(prev[r][s] ? -prev[r][s] : 0, true)}</td>`).join("")}<td class="num"><b>0</b>${dl(-sum(prev[r]), true)}</td>${spark ? `<td class="spark">${sparkline(historySeries(d, r).map((p) => p.total))}</td>` : ""}</tr>`).join("");
+  const foot = `<tr><th>All repos</th>${sevs.map((s) => `<td class="num"><b>${int(totals[s])}</b>${prev ? dl(totals[s] - prevSev(s), true) : ""}</td>`).join("")}<td class="num"><b>${int(d.total)}</b>${prev ? dl(d.total - prevAll) : ""}${resolvedNote(packWork(d, "").by_status.resolved)}</td>${spark ? `<td class="spark">${sparkline(historySeries(d, "").map((p) => p.total))}</td>` : ""}</tr>`;
+  return head + `<tbody>${body}${goneRows}${foot}</tbody>`;
+}
+
+// ── trend chart: stacked columns by severity, one per run ──────────────────
+const SEV_STACK = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];  // bottom → top
+const sevVar = (s) => `var(--sev-${s.toLowerCase()})`;
+const fmtWhen = (iso) => new Date(iso).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+let lastData = null;
+
+function niceMax(v) {
+  if (v <= 0) return 4;
+  const mag = 10 ** Math.floor(Math.log10(v)), f = v / mag;
+  return [1, 1.2, 1.6, 2, 2.4, 3, 4, 5, 6, 8, 10].find((s) => f <= s) * mag;  // quarters stay round
+}
+
+function roundedTop(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h);
+  return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+}
+
+function trend(d) {
+  const box = document.getElementById("trend"), tip = document.getElementById("tip");
+  const pts = historySeries(d, state.repo);
+  const scope = state.repo ? state.repo : "all repos";
+  document.getElementById("trend-title").textContent = `Findings over time · ${scope}`;
+  document.getElementById("trend-legend").innerHTML = SEV_STACK.map((s) => `<span><i style="background:${sevVar(s)}"></i>${s.toLowerCase()}</span>`).join("");
+  const cur = pts.findIndex((p) => p.run_id === d.run.run_id);
+  const last = pts[cur >= 0 ? cur : pts.length - 1], before = pts[(cur >= 0 ? cur : pts.length - 1) - 1];
+  document.getElementById("trend-total").textContent = last ? int(last.total) : "";
+  document.getElementById("trend-change").innerHTML = last && before
+    ? `${dl(last.total - before.total)} <span class="hint" style="margin:0">since the previous run (${fmtWhen(before.started_at)})</span>` : "";
+  const work = packWork(d, state.repo), ws = work.by_status;
+  const active = (ws.open || 0) + (ws.claimed || 0) + (ws.in_progress || 0);
+  const inHand = (ws.claimed || 0) + (ws.in_progress || 0);
+  document.getElementById("trend-work").innerHTML = d.pack_matrix
+    ? [ws.resolved ? `<b>${int(ws.resolved)}</b> resolved by agents, waiting for a rescan` : "",
+       active ? `<b>${int(active)}</b> open or being worked on${inHand ? ` (${int(inHand)} claimed or in progress)` : ""}` : "",
+       ws.wontfix ? `${int(ws.wontfix)} wontfix` : ""].filter(Boolean).join(" · ")
+    : "";
+  document.getElementById("trend-legend").innerHTML += ws.resolved ? `<span><i class="hatch"></i>resolved, waiting for rescan</span>` : "";
+  box.querySelectorAll("svg, p.empty").forEach((s) => s.remove());
+  if (!pts.length) { box.insertAdjacentHTML("afterbegin", `<p class="empty">No history yet.</p>`); return; }
+
+  const W = Math.max(box.clientWidth, 280), H = 200, m = { t: 18, r: 8, b: 22, l: 40 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const ymax = niceMax(Math.max(...pts.map((p) => p.total)));
+  const y = (v) => m.t + ph - v / ymax * ph;
+  const slot = pw / pts.length, bw = Math.max(4, Math.min(44, slot * 0.6));
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * ymax);
+  let svg = `<defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="5" height="5" patternTransform="rotate(45)">` +
+    `<rect width="2.5" height="5" style="fill:var(--surface-1)"/></pattern></defs>` + ticks.map((v) => `<line class="${v ? "grid" : "base"}" x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}"/>` +
+    `<text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${int(Math.round(v))}</text>`).join("");
+  const every = Math.ceil(pts.length / Math.max(1, Math.floor(pw / 90)));
+  const showLabels = slot >= 34;
+  pts.forEach((p, i) => {
+    const cx = m.l + slot * (i + 0.5), x = cx - bw / 2;
+    let acc = 0, segs = "";
+    const top = SEV_STACK.filter((s) => p.sev[s]).pop();
+    for (const s of SEV_STACK) {
+      const n = p.sev[s] || 0;
+      if (!n) continue;
+      const y0 = y(acc), y1 = y(acc + n), h = Math.max(0, y0 - y1 - (acc ? 2 : 0));  // 2px gap between segments
+      segs += s === top ? `<path d="${roundedTop(x, y1, bw, h, 4)}" style="fill:${sevVar(s)}"/>`
+                        : `<rect x="${x}" y="${y1}" width="${bw}" height="${h}" style="fill:${sevVar(s)}"/>`;
+      // Resolved share of this severity, hatched at the top of its segment (viewed run only).
+      const rn = i === cur ? Math.min(n, work.resolved_by_severity[s] || 0) : 0;
+      if (rn) {
+        const rh = Math.min(h, (y0 - y(acc + rn)));
+        segs += s === top ? `<path d="${roundedTop(x, y1, bw, rh, 4)}" fill="url(#hatch)"/>`
+                          : `<rect x="${x}" y="${y1}" width="${bw}" height="${rh}" fill="url(#hatch)"/>`;
+      }
+      acc += n;
+    }
+    const prevPt = pts[i - 1];
+    // Total above each column, and the change from the column before when there is room for it.
+    const ch = prevPt ? p.total - prevPt.total : 0;
+    const chTxt = prevPt && slot >= 80 ? ` <tspan class="${ch > 0 ? "up" : ch < 0 ? "down" : ""}">${ch > 0 ? "+" : ch < 0 ? "−" : "±"}${int(Math.abs(ch))}</tspan>` : "";
+    const lbl = (showLabels || i === pts.length - 1) && p.total
+      ? `<text class="lbl" x="${cx}" y="${y(p.total) - 5}" text-anchor="middle">${int(p.total)}${chTxt}</text>` : "";
+    const xl = (i % every === 0 || i === pts.length - 1)
+      ? `<text x="${cx}" y="${H - 6}" text-anchor="middle">${esc(new Date(p.started_at).toLocaleDateString(undefined, { day: "numeric", month: "short" }))}</text>` : "";
+    svg += `<g class="col${i === cur ? " cur" : ""}" data-i="${i}"><rect class="hit" x="${m.l + slot * i}" y="${m.t}" width="${slot}" height="${ph}" rx="4"/>${segs}${lbl}${xl}</g>`;
+  });
+  box.insertAdjacentHTML("afterbegin", `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Findings per run for ${esc(scope)}, by severity">${svg}</svg>`);
+
+  const el = box.querySelector("svg");
+  el.addEventListener("mousemove", (e) => {
+    const g = e.target.closest("g.col");
+    if (!g) { tip.hidden = true; return; }
+    const i = +g.dataset.i, p = pts[i], q = pts[i - 1];
+    tip.innerHTML = `<b>${esc(fmtWhen(p.started_at))}</b> <span class="muted mono">${esc(p.run_id)}</span>` +
+      `<table>${SEV_STACK.map((s) => `<tr><td><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${sevVar(s)}"></i> ${s.toLowerCase()}</td><td class="n">${int(p.sev[s] || 0)}</td><td>${q ? dl((p.sev[s] || 0) - (q.sev[s] || 0), true) : ""}</td></tr>`).join("")}` +
+      `<tr><td><b>total</b></td><td class="n"><b>${int(p.total)}</b></td><td>${q ? dl(p.total - q.total) : ""}</td></tr></table>` +
+      (i === cur && ws.resolved ? `<span class="muted">${int(ws.resolved)} resolved by agents, waiting for rescan</span><br>` : "") +
+      `<span class="muted">${UI.plural(p.scanned_repos.length, "repo")} scanned in this run</span>`;
+    tip.hidden = false;
+    const r = box.getBoundingClientRect();
+    let left = e.clientX - r.left + 12;
+    if (left + tip.offsetWidth > r.width) left = e.clientX - r.left - tip.offsetWidth - 12;
+    tip.style.left = `${Math.max(0, left)}px`;
+    tip.style.top = `${Math.max(0, e.clientY - r.top - tip.offsetHeight - 8)}px`;
+  });
+  el.addEventListener("mouseleave", () => { tip.hidden = true; });
+  el.addEventListener("click", (e) => {
+    const g = e.target.closest("g.col");
+    if (g && pts[+g.dataset.i].run_id !== d.run.run_id) { state.run_id = pts[+g.dataset.i].run_id; load(); }
+  });
+
+  document.getElementById("trend-table").innerHTML =
+    `<thead><tr><th>Run</th><th>When</th>${SEV_STACK.map((s) => `<th class="num">${s.toLowerCase()}</th>`).join("")}<th class="num">Total</th><th class="num">Change</th></tr></thead><tbody>` +
+    pts.slice().reverse().map((p, j, arr) => { const q = arr[j + 1];
+      return `<tr><td class="mono"><a href="?run_id=${encodeURIComponent(p.run_id)}">${esc(p.run_id)}</a></td><td>${esc(fmtWhen(p.started_at))}</td>${SEV_STACK.map((s) => `<td class="num">${int(p.sev[s] || 0)}</td>`).join("")}<td class="num"><b>${int(p.total)}</b></td><td class="num">${q ? dl(p.total - q.total) : "—"}</td></tr>`; }).join("") + `</tbody>`;
 }
 
 function packCell(f) {
@@ -193,7 +395,12 @@ function render(d) {
     b.setAttribute("aria-pressed", String(b.dataset.change === state.change));
     b.disabled = b.dataset.change !== "all" && !d.delta;
   });
+  lastData = d;
+  trend(d);
   document.getElementById("matrix").innerHTML = matrix(d);
+  document.getElementById("matrix-hint").textContent = "Whole run. " +
+    (d.matrix_prev ? "The small +/− next to each count is the change since the previous run (raw counts, so reworded findings net out). " : "") +
+    "Click a cell to filter the table to that repo and severity; click it again to clear.";
   fill(els.repo, d.facets.repos, state.repo);
   fill(els.severity, UI.SEVERITIES, state.severity.toUpperCase(), (s) => s.toLowerCase());
   fill(els.source, d.facets.sources, state.source);
@@ -251,6 +458,8 @@ document.getElementById("matrix").addEventListener("click", (e) => {
   state.severity = same ? "" : sev;
   load();
 });
+let resizing = null;
+window.addEventListener("resize", () => { clearTimeout(resizing); resizing = setTimeout(() => { if (lastData?.run) trend(lastData); }, 150); });
 load();
 </script>
 </body>
