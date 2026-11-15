@@ -1305,34 +1305,34 @@ def audit_diff(request: _DiffAuditRequest) -> JSONResponse:
     })
 
 
-def _export_clean_tree(repo_path: Path, dest: Path) -> str:
-    """Write the committed tree of ``origin/dev`` (else ``HEAD``) of *repo_path* to *dest*.
+def _export_clean_tree(repo_path: Path, dest: Path, base: Any = None) -> str:
+    """Write the committed tree of *repo_path*'s ``dev`` tip to *dest*; returns the ref used.
 
-    Packs are cut against ``dev``, so that is the base a patch should apply to. Works on the
-    read-only mirror mounts (``git archive`` only reads). A path that isn't a git checkout is
-    copied as-is. Returns the ref used (``"copy"`` for a plain copy)."""
-    import shutil
-    import tarfile
+    *base* (a :class:`auditor.validate_base.BaseRef`) pins the commit; without it ``origin/dev``
+    (else ``HEAD``) of the mirror is used as-is, with no fetch. Only reads the mirror. A path that
+    isn't a git checkout is copied (``"copy"``)."""
+    from auditor.validate_base import export_tree, resolve_base
 
-    def _git(*args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", "-C", str(repo_path), *args], capture_output=True, text=True)
+    base = base or resolve_base(repo_path, fetch=False)
+    export_tree(base, repo_path, dest)
+    return base.ref
 
-    if _git("rev-parse", "--is-inside-work-tree").returncode != 0:
-        # Do not preserve symlinks: a crafted patch must not write through a
-        # repo symlink into the host filesystem outside this temp tree.
-        shutil.copytree(str(repo_path), str(dest), symlinks=False)
-        return "copy"
-    ref = next((r for r in ("origin/dev", "HEAD") if _git("rev-parse", "-q", "--verify", f"{r}^{{commit}}").returncode == 0),
-               "HEAD")
-    dest.mkdir(parents=True)
-    # archive the repo_path subtree (repo_path may be a subdirectory of the checkout)
-    proc = subprocess.Popen(["git", "-C", str(repo_path), "archive", "--format=tar", ref, "."],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    with tarfile.open(fileobj=proc.stdout, mode="r|") as tar:
-        tar.extractall(dest, filter="data")  # "data" refuses absolute paths, .. and links out of dest
-    if proc.wait() != 0:
-        raise RuntimeError(f"git archive {ref} failed: {proc.stderr.read().decode(errors='replace')[:300]}")
-    return ref
+
+def _base_fields(base: Any, repo: str, output_dir: str | Path) -> dict[str, Any]:
+    """Response fields naming the commit a patch was validated on and whether it is current."""
+    from auditor.merge_poll import merge_poll_state_path
+    from auditor.validate_base import staleness
+
+    out: dict[str, Any] = {
+        "base_ref": base.ref, "base_sha": base.sha, "base_source": base.source, "base_fresh": base.fresh,
+    }
+    if base.fetch_error:
+        out["base_fetch_error"] = base.fetch_error
+    try:
+        out.update(staleness(base, repo, state_path=merge_poll_state_path(output_dir)))
+    except Exception as exc:  # noqa: BLE001 — staleness is informational
+        logger.warning("validate_patch: staleness check failed for %s: %s", repo, exc)
+    return out
 
 
 def _patch_paths(patch_file: Path, cwd: Path) -> list[str]:
@@ -1402,6 +1402,12 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
     Returns:
         patch_applied:   bool — whether ``git apply`` succeeded.
         patch_error:     str  — git apply stderr when patch_applied is False.
+        base_ref / base_sha: the commit the patch was applied to (the repo's ``dev`` tip).
+        base_source:     ``fetched`` / ``cached`` (fetched ≤ TTL ago) / ``mirror`` (fetch failed or
+                         disabled: the mirror's own ``origin/dev``; see ``base_fetch_error``) / ``copy``.
+        base_fresh:      bool — True for ``fetched`` / ``cached``.
+        base_stale:      bool | None — the dev tip merge-poll last saw on GitHub isn't in the base
+                         (``dev_tip``, ``behind_by``); None when merge-poll hasn't seen the repo.
         passed:          bool — True only when patch applied AND suite passed.
         tool:            str  — runner used (pytest / go_test / cargo_test / …).
         duration_ms:     int
@@ -1438,7 +1444,12 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
         repo_copy = tmp_root / "repo"
         # A clean committed tree, never the live checkout: whatever is uncommitted there (an
         # agent's work in progress) must neither leak into the result nor make the patch clash.
-        base_ref = _export_clean_tree(Path(repo_path), repo_copy)
+        # The dev tip is fetched first (bounded, TTL-cached), since mirrors only sync nightly.
+        from auditor.validate_base import resolve_base
+
+        base = resolve_base(Path(repo_path), output_dir=cfg.output_dir)
+        base_info = _base_fields(base, request.repo, cfg.output_dir)
+        _export_clean_tree(Path(repo_path), repo_copy, base)
 
         patch_file = tmp_root / "changes.patch"
         patch_file.write_text(request.patch, encoding="utf-8")
@@ -1457,6 +1468,7 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
                 "repo":            request.repo,
                 "patch_applied":   False,
                 "patch_error":     apply_result.stderr.strip()[:600],
+                **base_info,
                 "passed":          False,
                 "skipped":         True,
                 "tool":            "skipped",
@@ -1475,7 +1487,7 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
             """The same tree without the patch, exported once when a test failure needs comparing."""
             if not base_dir.exists():
                 try:
-                    _export_clean_tree(Path(repo_path), base_dir)
+                    _export_clean_tree(Path(repo_path), base_dir, base)
                 except Exception as exc:  # noqa: BLE001 — without a base, failures simply count
                     logger.warning("validate_patch: no base tree for %s: %s", request.repo, exc)
                     return None
@@ -1507,7 +1519,7 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
             "repo":            request.repo,
             "patch_applied":   patch_applied,
             "patch_error":     patch_error,
-            "base_ref":        base_ref,
+            **base_info,
             "passed":          passed,
             "skipped":         skipped,
             "tool":            val_result.tool,
