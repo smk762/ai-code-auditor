@@ -275,6 +275,7 @@ def false_resolve_metric(events: list[dict[str, Any]]) -> dict[str, Any]:
         "methods": dict(Counter(e["method"] for e in events)),
         # resolutions under the evidence bar (#58), by evidence kind; a rising waiver share is a smell
         "by_evidence": dict(Counter(e["evidence"] for e in events if e["evidence"])),
+        "lint_only_since_bar": sum(1 for e in events if e["evidence"] and e["method"] == "validator:lint_only"),
         "waiver_rate": _rate(sum(e["evidence"] == "waiver" for e in events),
                              sum(1 for e in events if e["evidence"])),
         "rate": _rate(len(lint), len(validator)),

@@ -17,6 +17,11 @@
   .tag { font-size: 11px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--text-secondary); white-space: nowrap; }
   .tag.regressed { border-color: var(--warn); color: var(--warn); }
   td.title { max-width: 420px; }
+  .gate { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 8px; border: 1px solid var(--border); white-space: nowrap; }
+  .gate.pass { color: var(--ok); border-color: var(--ok); }
+  .gate.fail { color: var(--critical); border-color: var(--critical); }
+  .gate.insufficient, .gate.pending { color: var(--text-muted); }
+  .exit { display: flex; flex-wrap: wrap; gap: 16px; margin: 4px 0 10px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -28,6 +33,15 @@
   </header>
 
   <section class="grid" id="kpis" aria-label="Headline numbers"></section>
+
+  <section class="grid" id="gates-card" hidden>
+    <div class="card span-12">
+      <h2>Reliability gates</h2>
+      <p class="hint">What "provably reliable" means for epic #64, as code (<span class="mono">ai-audit eval trust</span>). A gate below its minimum sample needs data rather than passing. A component not built yet is listed but never counts. The epic is done when every gate has passed two weeks running and the metrics above haven't got worse over four weekly snapshots.</p>
+      <div class="exit" id="exit"></div>
+      <div class="table-wrap"><table id="gates"><thead><tr><th>Gate</th><th>Status</th><th class="num">Value</th><th class="num">Needs</th><th class="num">Sample</th><th>Component</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
 
   <section class="grid">
     <div class="card span-12">
@@ -195,8 +209,28 @@ function renderTrend() {
   });
 }
 
+function renderGates(ev) {
+  document.getElementById("gates-card").hidden = false;
+  const label = { pass: "pass", fail: "fail", insufficient: "needs data", pending: "not built" };
+  const yes = (b) => b ? `<span class="status ok">yes</span>` : `<span class="muted">not yet</span>`;
+  const g2 = ev.exit.gates_two_weeks, m4 = ev.exit.metrics_four_weeks, s = ev.summary;
+  document.getElementById("exit").innerHTML =
+    `<span>${int(s.pass)} pass · ${int(s.fail)} fail · ${int(s.insufficient)} need data · ${int(s.pending)} not built</span>` +
+    `<span>Gates green two weeks running: ${yes(g2.met)}</span>` +
+    `<span>Metrics not worse over 4 weeks: ${yes(m4.met)}${m4.note ? ` <span class="muted">(${esc(m4.note)})</span>` : ""}</span>` +
+    `<span>Epic done: ${yes(ev.exit.met)}</span> <span class="muted">evaluated ${UI.ago(ev.at)}</span>`;
+  const fmt = (g) => g.value == null ? "—" : g.threshold <= 1 ? pct(g.value) : String(g.value);
+  document.querySelector("#gates tbody").innerHTML = ev.gates.map((g) => `<tr>
+    <td>${esc(g.description)}<div class="muted mono">${esc(g.id)}</div>${g.note ? `<div class="muted">${esc(g.note)}</div>` : ""}</td>
+    <td><span class="gate ${esc(g.status)}">${esc(label[g.status] || g.status)}</span></td>
+    <td class="num">${fmt(g)}</td><td class="num">${esc(g.op)} ${g.threshold <= 1 ? pct(g.threshold) : esc(g.threshold)}</td>
+    <td class="num">${int(g.n)}${g.status === "insufficient" ? ` <span class="muted">/ ${int(g.min_n)}</span>` : ""}</td>
+    <td><a href="https://github.com/smk762/ai-code-auditor/issues/${int(g.issue)}">${esc(g.component)} #${int(g.issue)}</a></td></tr>`).join("");
+}
+
 async function load() {
   const sub = document.getElementById("sub");
+  fetch("/audit/trust/eval.json").then((r) => r.ok ? r.json() : null).then((ev) => { if (ev) renderGates(ev); }).catch(() => {});
   try {
     const [r, h] = await Promise.all([fetch("/audit/trust.json"), UI.getJSON("/audit/trust.json?history=1")]);
     history = h.history || [];

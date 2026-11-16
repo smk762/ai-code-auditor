@@ -34,6 +34,7 @@ GET  /audit/runs.json                 All pipelines' runs + facets (pipeline, st
 GET  /audit/runs/{run_id}/summary.json  Run summary with findings delta vs the previous run
 GET  /audit/findings.json             Filtered findings + severity × repo matrix for a run
 POST /audit/packs/gc                 Close stale finding packs as obsolete (auth; dry run unless ?dry_run=0)
+GET  /audit/trust/eval.json           Reliability gates and the epic's exit criteria (#63)
 GET  /audit/trust.json                Trust metrics (?history=1 for the trend); POST /audit/trust/refresh (auth)
 GET  /reports/mithrandir/LATEST.json  Atomic rest-session status for mithrandir (Jarrah)
 GET  /reports/mithrandir/LATEST.md    TTS-safe companion briefing for Holly
@@ -1094,6 +1095,17 @@ def get_trust_json(history: bool = False) -> JSONResponse:
         raise HTTPException(status_code=404,
                             detail="No trust metrics yet: run `ai-audit trust` or POST /audit/trust/refresh.")
     return JSONResponse(report)
+
+
+@app.get("/audit/trust/eval.json")
+def get_trust_eval_json() -> JSONResponse:
+    """Reliability gates (#63): pass / fail / insufficient data / not built, plus the epic's exit criteria."""
+    from auditor.trust_eval import REPORT_NAME
+
+    path = Path(_output_dir()) / REPORT_NAME
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No trust eval yet: run `ai-audit eval trust`.")
+    return JSONResponse(json.loads(path.read_text()))
 
 
 @app.post("/audit/trust/refresh", dependencies=[Depends(_require_mutating_auth)])
