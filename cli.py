@@ -283,6 +283,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pri.add_argument("--json", action="store_true", help="Print the full report as JSON")
     pri.add_argument("--cached", action="store_true", help="Show the last report instead of querying GitHub")
+    pri.add_argument(
+        "--label-p0",
+        action="store_true",
+        help="Put the P0 label on linchpins (and take it off ones it labelled that no longer are)",
+    )
+    pri.add_argument("--dry-run", action="store_true", help="With --label-p0: show label changes, write nothing")
 
     sav = sub.add_parser(
         "pack-savings",
@@ -638,16 +644,18 @@ def _run_pack_savings(*, as_json: bool, cached: bool, history: bool) -> None:
     print(f"({report['method']} estimate, {report['generated_at'][:16]}Z)")
 
 
-def _run_pr_intel(*, as_json: bool, cached: bool) -> None:
+def _run_pr_intel(*, as_json: bool, cached: bool, label_p0: bool = False, dry_run: bool = False) -> None:
     from auditor.pr_intel import load_report, refresh
 
     if cached:
+        if label_p0:
+            raise SystemExit("--label-p0 needs a fresh scan; drop --cached.")
         report = load_report()
         if report is None:
             raise SystemExit("No cached PR intel; run `ai-audit pr-intel` first.")
     else:
         try:
-            report = refresh()
+            report = refresh(label=True if label_p0 else None, label_dry_run=dry_run)
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from exc
     if as_json:
@@ -658,6 +666,24 @@ def _run_pr_intel(*, as_json: bool, cached: bool) -> None:
         f"{c['open']} open · {c['blocked']} blocked · {c['waiting']} waiting · "
         f"{c['ready']} ready · {c['draft']} draft   ({report['generated_at'][:16]}Z)"
     )
+    for cy in report.get("cycles") or []:
+        print(f"  CYCLE  {' → '.join(cy['loop'])}")
+        print(f"         cut: {cy['cut']['suggestion']}")
+    for lp in report.get("linchpins") or []:
+        if "cycle" in lp["reasons"] and "cross_repo" not in lp["reasons"]:
+            continue
+        print(f"  P0     {lp['ref']:26s} ({lp['kind']}) holds {', '.join(lp['repos_held'])} → {lp['next_action']}")
+        for chain in lp["chains"]:
+            print(f"         {' → '.join(chain)}")
+    lab = report.get("labels")
+    if lab:
+        verb = "would " if lab["dry_run"] else ""
+        print(
+            f"  label {lab['label']}: {verb}add {', '.join(lab['added']) or 'none'}; "
+            f"{verb}remove {', '.join(lab['removed']) or 'none'}"
+        )
+        for e in lab["errors"]:
+            print(f"  ! label {e['ref']}: {e['error']}")
     for p in report["prs"]:
         if p["state"] in ("blocked", "waiting", "pending"):
             kinds = ", ".join(b["kind"] for b in p["blockers"] if b["kind"] != "review_required")
@@ -665,7 +691,7 @@ def _run_pr_intel(*, as_json: bool, cached: bool) -> None:
     print("\nResolution path:")
     merges: list[str] = []
     for s in report["plan"]:
-        plain = s["action"] == "Merge" and not (s["release"] or s["unblocks"] or s["after"])
+        plain = s["action"] == "Merge" and not (s["release"] or s["unblocks"] or s["after"] or s.get("p0"))
         if plain:
             merges.append(s["ref"])
             continue
@@ -675,6 +701,8 @@ def _run_pr_intel(*, as_json: bool, cached: bool) -> None:
         note = f"  (unblocks {', '.join(s['unblocks'])})" if s["unblocks"] else ""
         if s["release"]:
             note = "  (release)" + note
+        if s.get("p0"):
+            note = "  [P0]" + note
         print(f"  {s['step']:>2}. {s['ref']}: {s['action']}{note}")
     if merges:
         print(f"  · merge {len(merges)} ready: {', '.join(merges)}")
@@ -1372,7 +1400,7 @@ def main() -> None:
             out["pr_intel"] = _refresh_pr_intel_quietly()
         print(json.dumps(out, indent=2))
     elif args.command == "pr-intel":
-        _run_pr_intel(as_json=args.json, cached=args.cached)
+        _run_pr_intel(as_json=args.json, cached=args.cached, label_p0=args.label_p0, dry_run=args.dry_run)
     elif args.command == "eval":
         _run_eval_trust(args)
     elif args.command == "trust":
