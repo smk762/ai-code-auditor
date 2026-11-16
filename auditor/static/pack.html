@@ -43,6 +43,10 @@
         <h2>Evidence</h2>
         <div id="evidence"></div>
       </div>
+      <div class="card" style="margin-top:12px" id="class-card" hidden>
+        <h2 id="class-h">Class</h2>
+        <div id="class-body"></div>
+      </div>
       <div class="card" style="margin-top:12px">
         <h2>History</h2>
         <table id="history"><thead><tr><th>When</th><th>Status</th><th>Note</th></tr></thead><tbody></tbody></table>
@@ -61,10 +65,36 @@ function render() {
     (pack.draft_pr_url ? ` · <a href="${esc(pack.draft_pr_url)}">draft PR</a>` : "") +
     ` · <a href="/audit/packs/${encodeURIComponent(pack.id)}">JSON</a> · <a href="/audit/packs/${encodeURIComponent(pack.id)}/brief">brief (markdown)</a> · <a href="/ui/packs">board</a>`;
   renderEvidence();
+  renderClass();
   const rows = [...(pack.history || [])].reverse();
   document.querySelector("#history tbody").innerHTML = rows.length ? rows.map((h) =>
     `<tr><td title="${esc(h.at || "")}">${UI.ago(h.at)}</td><td>${esc(String(h.status || "").replace("_", " "))}</td><td>${esc(h.note || "")}</td></tr>`).join("")
     : `<tr><td colspan="3" class="muted">No changes yet.</td></tr>`;
+}
+
+// Class packs (#54): a guard task's children and per-repo guards, or a child's guard task.
+function renderClass() {
+  const card = document.getElementById("class-card");
+  const link = (id, text) => `<a href="/ui/packs/${encodeURIComponent(id)}">${esc(text || id)}</a>`;
+  if (pack.children) {
+    card.hidden = false;
+    document.getElementById("class-h").textContent = `Guard for ${pack.class_id.replace(/_/g, " ")} (${pack.guard_type})`;
+    const proof = { proven: "ok", failed: "warn", pending: "" };
+    const guards = (pack.guards || []).map((g) => `<li><b>${esc(g.repo)}</b> <span class="mono">${esc((g.commit || "").slice(0, 10))}</span>
+      <span class="status ${proof[g.proof.status] || ""}">${esc(g.proof.status || "pending")}</span>
+      <div class="hint">${esc(g.proof.note || "")}</div></li>`).join("");
+    const open = pack.children.filter((c) => ["open", "claimed", "in_progress", "unverified"].includes(c.status)).length;
+    document.getElementById("class-body").innerHTML =
+      `<p><b>Guards</b></p>${guards ? `<ul>${guards}</ul>` : `<p class="muted">None recorded yet.</p>`}` +
+      `<p><b>Findings</b> · ${open} open of ${pack.children.length}</p><ul>` +
+      pack.children.map((c) => `<li>${UI.sevBadge(c.severity)} ${link(c.id, c.title)}
+        <div class="meta">${esc(c.repo)} · ${esc(c.path)}:${c.line} · ${esc(String(c.status).replace("_", " "))}${c.exception ? " · guard can't express it" : ""}</div></li>`).join("") + "</ul>";
+  } else if (pack.class_parent) {
+    card.hidden = false;
+    document.getElementById("class-body").innerHTML =
+      `<p>Class <b>${esc(pack.finding_class.replace(/_/g, " "))}</b>. Guard task: ${link(pack.class_parent)}</p>` +
+      (pack.class_exception ? `<p class="hint">Still reported after the guard merged, so it stays open: ${esc(pack.class_exception.reason || "")}</p>` : "");
+  }
 }
 
 // What validate_patch saw when it last judged this pack (#58): why it resolved, or what's missing.

@@ -66,7 +66,7 @@ def _since_bar(report: dict[str, Any]) -> tuple[int, int, int]:
 
 
 def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
-                classes: dict[str, Any] | None = None) -> list[Gate]:
+                classes: dict[str, Any] | None = None, class_lifecycle: dict[str, Any] | None = None) -> list[Gate]:
     t = trust or {}
     gates: list[Gate] = []
 
@@ -123,9 +123,14 @@ def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
                       "Held-out findings the classifier assigns a class (logic_error rows included)", ">=", 0.80, 50)
                  .judge(test.get("coverage"), int(test.get("n") or 0), none))
 
+    # ── #54 class packs ──
+    cl = class_lifecycle or {}
+    gates.append(Gate("class_packs.lifecycle", "class packs", 54,
+                      "Findings a proven class guard closed that stayed closed (no reopen, no recurrence)", ">=", 0.95, 10)
+                 .judge(cl.get("rate"), int(cl.get("n") or 0)))
+
     # ── not built yet: visible, never counted as passing ──
     for gid, comp, issue, desc in (
-        ("class_packs.lifecycle", "class packs", 54, "Class-guard packs close children only when the guard holds"),
         ("rules.fixtures", "suite rules", 55, "Every suite rule fires on its positive fixture and not its negative"),
         ("arch.contracts", "architecture contracts", 57, "Every architecture contract fires on a seeded violation"),
     ):
@@ -216,6 +221,16 @@ def classes_eval(out: Path) -> dict[str, Any] | None:
     return rep
 
 
+def class_lifecycle_eval(out: Path) -> dict[str, Any] | None:
+    from auditor.class_packs import lifecycle_metric
+
+    try:
+        return lifecycle_metric(out)
+    except (OSError, ValueError) as exc:
+        logger.warning("class pack lifecycle unreadable: %s", exc)
+        return None
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         return json.loads(path.read_text())
@@ -243,7 +258,8 @@ def evaluate(output_dir: str | Path | None = None, *, record: bool = True,
     from auditor.trust_metrics import HISTORY_NAME as TRUST_HISTORY
     from auditor.trust_metrics import REPORT_NAME as TRUST_REPORT
 
-    gates = build_gates(_read_json(out / TRUST_REPORT), _read_json(out / SEEDED_NAME), classes_eval(out))
+    gates = build_gates(_read_json(out / TRUST_REPORT), _read_json(out / SEEDED_NAME), classes_eval(out),
+                        class_lifecycle_eval(out))
     at = (now or datetime.now(UTC)).isoformat()
     statuses = {g.id: g.status for g in gates}
     history = [*_read_jsonl(out / HISTORY_NAME), {"at": at, "statuses": statuses}]

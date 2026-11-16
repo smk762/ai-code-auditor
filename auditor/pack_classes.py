@@ -24,7 +24,7 @@ from auditor.finding_class import UNCLASSIFIED, taxonomy
 logger = logging.getLogger(__name__)
 
 CACHE = "pack_classes.json"
-NON_FINDING_KINDS = frozenset({"world_model", "architecture", "extraction", "invariants"})
+NON_FINDING_KINDS = frozenset({"world_model", "architecture", "extraction", "invariants", "class_guard"})
 BY = f"consensus:cls-{llm.PROMPT_VERSION}"
 
 
