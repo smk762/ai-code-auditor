@@ -134,6 +134,8 @@ Finding classes (`auditor/finding_class.py`, `config/finding_classes.yaml`, #53)
 - **Gold set:** kept outside the repo because it quotes real findings: `~/.config/ai-code-auditor/eval/finding_classes_*.jsonl` (`AI_AUDIT_EVAL_DIR`). Tests point that at an empty dir.
 - **Gates:** only the `test` set, labelled blind after the rules were written, counts toward `classes.precision` (≥ 95%) and `classes.coverage` (≥ 80%).
 - **Current result:** the 2026-11-16 held-out result was 84% precision and 32% coverage (dev was 98%/67%). Title rules don't generalise, so classes are not yet written onto packs.
+- **LLM classifier** (`auditor/finding_class_llm.py`, `ai-audit eval classes --llm <models> [--dry-run]`, Batch API, `classes` spend lane). On the held-out set, Sonnet scored 87%, and all three models agreeing scored 91% precision at 86% coverage. None passes yet.
+- **Second labeller** (`auditor/finding_class_review.py`): `ai-audit eval classes --review` labels held-out findings blind, and `--adjudicate` settles each disagreement with the two labels shown as A and B, unattributed. Answers go to `review_classes.jsonl` in the eval dir. `load_gold()` uses the adjudicated label, so the gate measures against labels two people agreed on. The eval report prints the agreement between labellers, including kappa.
 
 Ecosystem map (`auditor/ui_topology.py`): `/ui/topology` (`/audit/topology/map.json`); `/audit/topology` redirects there, and the old generated HTML is at `/audit/topology/legacy`. Edges come from four sources:
 - **Documented flow:** the diagram in `ecosystem/ecosystem.md`, horizontal `──►` and vertical `│ ▼` arrows.

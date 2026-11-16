@@ -312,6 +312,11 @@ def _build_parser() -> argparse.ArgumentParser:
     evc.add_argument("--dry-run", action="store_true", help="With --llm: price it, send nothing")
     evc.add_argument("--sync", action="store_true", help="With --llm: streaming API (2x price, no batch wait)")
     evc.add_argument("--json", action="store_true", help="Print the full report as JSON")
+    evc.add_argument("--review", action="store_true",
+                     help="Second labeller: label held-out findings blind (resumable; no API spend)")
+    evc.add_argument("--adjudicate", action="store_true",
+                     help="Settle each disagreement between the two labels, shown unattributed")
+    evc.add_argument("--limit", type=int, default=0, help="With --review: stop after this many findings")
 
     tr = sub.add_parser(
         "trust",
@@ -533,7 +538,19 @@ def _pct(v: float | None) -> str:
 
 def _run_eval_classes(args) -> None:
     from auditor import finding_class as fc
+    from auditor import finding_class_review as review
 
+    if args.review or args.adjudicate:
+        first = fc.load_gold(reviewed=False)
+        if not first:
+            raise SystemExit(f"No gold set under {fc.eval_dir()} (finding_classes_*.jsonl).")
+        try:
+            n = review.run_blind(first, limit=args.limit or None) if args.review else review.run_adjudicate(first)
+        except (EOFError, KeyboardInterrupt):
+            n = None
+        print(f"\nsaved to {review.review_path()}" + (f" ({n} this session)" if n is not None else ""))
+        _print_agreement(review.agreement(first, review.load_reviews()))
+        return
     rows = fc.load_gold()
     if not rows:
         raise SystemExit(f"No gold set under {fc.eval_dir()} (finding_classes_*.jsonl).")
@@ -559,6 +576,22 @@ def _run_eval_classes(args) -> None:
         for s, d in rep["sets"].items():
             prec = "—" if d["precision"] is None else f"{d['precision']:.1%}"
             print(f"{name:<22} {s:<5} {d['n']:>4} {prec:>9} {d['coverage']:>8.1%}")
+    ag = review.agreement(fc.load_gold(reviewed=False), review.load_reviews())
+    if ag["n"]:
+        print()
+        _print_agreement(ag)
+
+
+def _print_agreement(ag: dict) -> None:
+    if not ag.get("n"):
+        print("no second labels yet")
+        return
+    kappa = "n/a" if ag["kappa"] is None else f"{ag['kappa']:.2f}"
+    guard = "n/a" if ag["guard_raw"] is None else f"{ag['guard_raw']:.0%} of {ag['guard_n']}"
+    print(f"labellers agree on {ag['agree']}/{ag['n']} ({ag['raw']:.0%}, kappa {kappa}); "
+          f"where either says a guardable class: {guard}")
+    print(f"disagreements {ag['disputed']}, adjudicated {ag['adjudicated']} "
+          f"(first label kept {ag['first_label_kept']})")
 
 
 def _run_eval_trust(args) -> None:
