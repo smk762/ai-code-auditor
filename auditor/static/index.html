@@ -53,8 +53,8 @@
 
 <script>
 const SEV_COLOR = { CRITICAL: "--sev-critical", HIGH: "--sev-high", MEDIUM: "--sev-medium", LOW: "--sev-low", INFO: "--sev-info" };
-const PACK_STATUS = ["open", "claimed", "in_progress", "unverified", "resolved", "wontfix"];
-const PACK_COLOR = { open: "--series-1", claimed: "--series-4", in_progress: "--series-7", unverified: "--series-5", resolved: "--series-3", wontfix: "--neutral" };
+const PACK_STATUS = ["open", "claimed", "in_progress", "unverified", "resolved", "wontfix", "obsolete"];
+const PACK_COLOR = { open: "--series-1", claimed: "--series-4", in_progress: "--series-7", unverified: "--series-5", resolved: "--series-3", wontfix: "--neutral", obsolete: "--neutral" };
 const { esc, money, int } = UI;
 
 function tile(label, value, note) {

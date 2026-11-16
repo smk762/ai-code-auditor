@@ -113,6 +113,7 @@ class PackView:
     history: list[dict[str, Any]] = field(default_factory=list)
     recurrence_of: str = ""
     duplicate_of: str = ""
+    snippet: str = ""  # location.code_snippet: numbered lines ("  17| code") around the finding
 
     @property
     def is_finding(self) -> bool:
@@ -144,6 +145,7 @@ def pack_view(data: dict[str, Any]) -> PackView:
         history=[h for h in hist if isinstance(h, dict)] if isinstance(hist, list) else [],
         recurrence_of=str(gov.get("recurrence_of") or ""),
         duplicate_of=str(gov.get("duplicate_of") or ""),
+        snippet=str(loc.get("code_snippet") or ""),
     )
 
 
@@ -303,6 +305,34 @@ _DISPUTE_RE = re.compile(r"\b(already (fixed|handled|done)|not a bug|false posit
 
 def _match_score(a_title: str, a_line: int, b_title: str, b_line: int) -> float:
     return 1.0 if a_title == b_title else reworded_score(a_title, b_title, a_line, b_line)
+
+
+def gc_metric(packs: Iterable[PackView]) -> dict[str, Any]:
+    """Pack GC precision (#67): packs it closed as obsolete that a scan then reported again.
+    That's the false-close rate: the GC said "gone", and it wasn't."""
+    closed, back = [], []
+    by_rule: Counter = Counter()
+    back_by_rule: Counter = Counter()
+    for p in packs:
+        seen = False
+        rule = ""
+        for h in p.history:
+            st = h.get("status")
+            if st == "obsolete":
+                if not seen:
+                    closed.append(p.id)
+                    m = re.match(r"gc \((\w+)\)", str(h.get("note") or ""))
+                    rule = m.group(1) if m else "manual"
+                    by_rule[rule] += 1
+                seen = True
+            elif seen and st in REOPEN_STATUSES:
+                back.append(p.id)
+                back_by_rule[rule] += 1
+                break
+    return {"closed": len(closed), "reopened": len(back), "rate": _rate(len(back), len(closed)),
+            "by_rule": {r: {"closed": n, "reopened": back_by_rule[r], "rate": _rate(back_by_rule[r], n)}
+                        for r, n in sorted(by_rule.items())},
+            "reopened_ids": back[:50]}
 
 
 def recurrence_metric(packs: list[PackView], scans: list[Scan]) -> dict[str, Any]:
@@ -639,6 +669,7 @@ def compute(packs: list[PackView], scans: list[Scan], prs: list[dict[str, Any]] 
         "reopen": reopen_metric(packs),
         "recurrence": recurrence_metric(packs, scans),
         "scan_persistence": scan_persistence_metric(scans, packs),
+        "gc": gc_metric(packs),
         "agent_prs": (agent_pr_metric([p for p in prs if is_agent_pr(p.get("title") or "", " ".join(p.get("pack_ids") or []))],
                                       git_log, now=now) if prs is not None else None),
         "flow": flow_metric(scans),
@@ -664,6 +695,8 @@ def headline(report: dict[str, Any]) -> dict[str, Any]:
         "recurrence_observed": report["recurrence"]["observed"],
         "dispute_rate": report["recurrence"]["dispute_rate"],
         "waiver_rate": report["false_resolve"]["waiver_rate"],
+        "gc_closed": report["gc"]["closed"],
+        "gc_reopen_rate": report["gc"]["rate"],
         "unverified_packs": report["inputs"]["status_counts"].get("unverified", 0),
         "scan_persistence": report["scan_persistence"]["rate"],
         "revert_rate": prs.get("rate"),

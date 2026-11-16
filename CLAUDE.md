@@ -24,7 +24,8 @@ ai-audit search "question" --repo argus-cortex --kind wiki   # semantic search o
 ai-audit ask "..." --deep --iterations 4 --enable-subagents --agent-brief
 ai-audit packs --json          # discover agent coding packs (no paste)
 ai-audit packs --bundle --repo argus-cortex   # one-call mission bundle (world model + specialists)
-ai-audit packs --set-status claimed --id pack-…  # lifecycle: open|claimed|in_progress|unverified|resolved|wontfix
+ai-audit packs --set-status claimed --id pack-…  # lifecycle: open|claimed|in_progress|unverified|resolved|wontfix|obsolete
+ai-audit packs --gc --dry-run                   # stale open finding packs that would close as obsolete (drop --dry-run to close; --force past the hold)
 ai-audit packs --id pack-… --brief
 ai-audit packs --dedupe --dry-run              # list duplicate packs (same file, reworded title); drop --dry-run to close them as wontfix
 ai-audit merge-poll --schedule               # hourly GitHub API → pack/RAG on dev tip moves (+ PR intel refresh)
@@ -223,6 +224,18 @@ Lifecycle: `POST /audit/packs/{id}/status {status, note?}` (mutating auth). `val
 - **Waiver:** `evidence_waiver` (≥ 20 chars) resolves anyway and is recorded.
 - **Where it's stored:** the evidence goes on `verification.evidence` (kind, repro test ids, per-tree outcomes, base SHA) and shows on `/ui/packs/{id}`. Packs now store `narrative.finding_type`. The trust metrics count resolutions by evidence kind and the waiver rate.
 - **Old rule:** `AI_AUDIT_EVIDENCE_BAR=0` restores it.
+
+Pack GC (`auditor/pack_gc.py`, #67): the only thing that closes finding packs other than an agent or a person.
+- **What it closes:** stale `open` finding packs, set to `obsolete` ("no longer reported": not a fix, not a decision). Claimed, in-progress and unverified packs are never touched.
+- **Rules:**
+  - `file_gone`: the file isn't on the mirror's `origin/dev`.
+  - `not_rescanned` (nightly packs): missed by the last 3 consecutive nightly scans since last seen (`AI_AUDIT_PACK_GC_MISSES`). `detected_at` refreshes on every re-emit, so it means "last seen".
+  - `code_changed`: the cited lines (the pack's line ±2 from `location.code_snippet`) are gone from the file at `origin/dev`, searched anywhere so a move isn't a change. For files the nightly scanner reads, a nightly scan since must also not report it.
+  - `expired` (diff_audit packs): 30 days since last seen (`AI_AUDIT_PACK_GC_DIFF_TTL_DAYS`).
+  - `ask` packs only close by `file_gone`. A nightly scan's silence about a diff_audit finding never counts alone, because it's a different detector.
+- **Safety holds:** a repo whose latest scan reports nothing while the one before didn't is skipped, and a plan closing more than half (and more than 10) of a repo's open packs is held unless `--force`.
+- **Reopening:** a re-found issue reopens the same pack (exact id or reworded match, `_carry_over_lifecycle`). The trust metrics' `gc` section counts those reopenings as the false-close rate.
+- **When it runs:** after each nightly repo audit, before the trust metrics (`AI_AUDIT_PACK_GC=0` turns it off). It writes `reports/pack_gc.json`. Also `ai-audit packs --gc [--dry-run] [--force] [--repo]` and `POST /audit/packs/gc` (auth, dry run unless `?dry_run=0`).
 
 Also on lifecycle: opt-in `semantic_check` / `AI_AUDIT_VALIDATE_SEMANTIC=1` runs `auditor/equivalence.py` first (a "trust me" change with a counterexample keeps the pack open), and conductor draft PRs set `in_progress`. Pack RAG ingest is on by default (`AI_AUDIT_PACK_RAG_INGEST=0` to disable).
 

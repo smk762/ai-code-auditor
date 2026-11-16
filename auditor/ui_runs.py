@@ -34,7 +34,7 @@ HISTORY_RUNS = 30  # runs plotted in the findings trend
 PROMPT_PACK_LIMIT = 200  # open packs listed for the "copy agent prompt" handoff
 # When one finding has several packs, active work is shown first: a closed twin is either a
 # duplicate (wontfix "duplicate of …") or a fix the finding came back after (resolved).
-PACK_STATUS_ORDER = ("in_progress", "claimed", "unverified", "open", "wontfix", "resolved")
+PACK_STATUS_ORDER = ("in_progress", "claimed", "unverified", "open", "wontfix", "resolved", "obsolete")
 
 # Markdown reports each pipeline writes to output_dir (overwritten by the next run).
 REPORTS_BY_PIPELINE: dict[str, list[str]] = {

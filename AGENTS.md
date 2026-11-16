@@ -62,7 +62,7 @@ Each hit has `title`, `url` (the wiki section), `tags` and `text`. Wiki text cit
 
 ### Status lifecycle (claim → fix → close)
 
-Statuses: `open` (default) · `claimed` · `in_progress` · `unverified` (passed, but without the evidence the pack needs; still open work) · `resolved` · `wontfix`.
+Statuses: `open` (default) · `claimed` · `in_progress` · `unverified` (passed, but without the evidence the pack needs; still open work) · `resolved` · `wontfix` · `obsolete` (closed by pack GC because no scan reports the issue any more; reopens if it's found again).
 
 ```bash
 curl -X POST "$AI_AUDIT_PUBLIC_BASE_URL/audit/packs/<id>/status" \
