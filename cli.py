@@ -317,6 +317,8 @@ def _build_parser() -> argparse.ArgumentParser:
     evc.add_argument("--adjudicate", action="store_true",
                      help="Settle each disagreement between the two labels, shown unattributed")
     evc.add_argument("--limit", type=int, default=0, help="With --review: stop after this many findings")
+    evc.add_argument("--council", action="store_true",
+                     help="Three models check each held-out label against the pack's code (Batch API, classes lane)")
 
     tr = sub.add_parser(
         "trust",
@@ -540,6 +542,21 @@ def _run_eval_classes(args) -> None:
     from auditor import finding_class as fc
     from auditor import finding_class_review as review
 
+    if args.council:
+        from auditor import finding_class_council as council
+
+        first = fc.load_gold(reviewed=False)
+        out = council.run(first, _output_dir_default(), Path(_output_dir_default()) / "agent_packs",
+                          mode="sync" if args.sync else "batch", dry_run=args.dry_run)
+        if args.dry_run:
+            print(f"council: {out['n']} findings, {out['requests']} requests, estimated ${out['est_usd']:.4f}")
+            return
+        oc = out["outcomes"]
+        print(f"council on {out['n']} held-out labels: confirmed {oc.get('confirmed', 0)}, relabelled "
+              f"{oc.get('relabelled', 0)}, contested {oc.get('contested', 0)}, split {oc.get('split', 0)} "
+              f"(fidelity {out['fidelity']:.0%}); spent ${out['cost_usd']:.4f}, {out['failed_requests']} failed")
+        print(f"details: {fc.eval_dir() / council.SUMMARY_NAME}")
+        return
     if args.review or args.adjudicate:
         first = fc.load_gold(reviewed=False)
         if not first:

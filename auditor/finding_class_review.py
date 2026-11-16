@@ -51,6 +51,8 @@ def load_reviews(directory: Path | None = None) -> dict[str, dict[str, Any]]:
             cell["second"] = e["second"]
         if "final" in e:
             cell["final"] = e["final"]
+        if "council" in e:
+            cell["council"] = e["council"]
     return out
 
 
