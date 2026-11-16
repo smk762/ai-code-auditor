@@ -299,7 +299,7 @@ Class packs (`auditor/class_packs.py`, #54): one `class_guard` pack per guardabl
 
 Suite rules (`auditor/suite_rules.py`, #55): the lint catalogue lives in argus-ci (`suite-rules/`: `catalogue.toml`, semgrep rules, positive and negative fixtures, `check.py`). Each rule names its finding class.
 - **CI:** repos opt in with argus-ci's `suite-rules.yml`. New violations fail, and the repo's `.suite-rules-baseline.json` may only shrink.
-- **Scanner:** the auditor runs the same `check.py` as a subprocess, so its findings and CI agree. It reads the catalogue from the argus-ci mirror or `AI_AUDIT_SUITE_RULES_DIR`, and uses `$RUFF` / `$SEMGREP` or this venv's tools.
+- **Scanner:** the auditor runs the same `check.py` as a subprocess, so its findings and CI agree. It reads `suite-rules/` from the argus-ci mirror's `origin/dev`, exported by tree hash to `reports/_suite_rules/` so the mirror's checked-out branch doesn't matter, or from `AI_AUDIT_SUITE_RULES_DIR`, and uses `$RUFF` / `$SEMGREP` or this venv's tools.
 - **Findings:** guard-rule hits become findings in the nightly and diff scans (source `suite`, id `suite:<rule>:<path>:<line>`). Their class comes straight from `static_rules.suite` in `config/finding_classes.yaml` with no model call (`pack_classes.static_class`; packs now keep `provenance.finding_id`). Convention rules (`kind = "convention"`, such as `silent-except`) are not findings.
 - **Gate:** `rules.fixtures` runs the catalogue's fixture proofs on every trust eval and writes `reports/rules_fixtures.json`. It needs ≥ 5 rules, all passing.
 - **False positives:** measured across all mirrors when the rules were written; the details are in the argus-ci PR. `silent-except` is a convention rule because most of its sampled hits were deliberate.
