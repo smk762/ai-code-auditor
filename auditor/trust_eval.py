@@ -117,7 +117,7 @@ def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
     test = ((classes or {}).get("sets") or {}).get("test") or {}
     none = "" if classes else "no gold set (~/.config/ai-code-auditor/eval/finding_classes_*.jsonl)"
     gates.append(Gate("classes.precision", "finding classes", 53,
-                      "Classifier precision on the held-out gold set (labelled blind)", ">=", 0.95, 30)
+                      "Classifier precision on the held-out gold set (labelled blind, council-checked)", ">=", 0.95, 30)
                  .judge(test.get("precision"), int(test.get("classified") or 0), none))
     gates.append(Gate("classes.coverage", "finding classes", 53,
                       "Held-out findings the classifier assigns a class (logic_error rows included)", ">=", 0.80, 50)
@@ -205,7 +205,13 @@ def classes_eval(out: Path) -> dict[str, Any] | None:
         return None
     if not rows:
         return None
-    rep = finding_class.evaluate(rows)
+    from auditor.finding_class_llm import consensus_predictor
+
+    # The gate scores the classifier packs actually get: all-three-models consensus, from stored
+    # answers (no API call). Until those exist, the title rules.
+    cp = consensus_predictor(out)
+    rep = finding_class.evaluate(rows, predict=cp)
+    rep["classifier"] = "consensus" if cp else "rules"
     (out / finding_class.EVAL_NAME).write_text(json.dumps(rep, indent=1))
     return rep
 

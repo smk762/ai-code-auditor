@@ -113,14 +113,16 @@ def parse_labels(text: str, n: int, valid: set[str]) -> list[str]:
     return labels
 
 
-def classify_rows(rows: list[dict[str, Any]], model: str, output_dir: str | Path, *, examples_from: list[dict[str, Any]],
+def classify_rows(rows: list[dict[str, Any]], model: str, output_dir: str | Path, *,
+                  examples_from: list[dict[str, Any]] | None = None, system: str | None = None,
                   mode: str = "batch", dry_run: bool = False, runner: Any = None) -> dict[str, Any]:
     """Classify *rows* with *model*. Returns ``{"preds": [...], "est_usd", "cost_usd", "failed"}``;
-    on a dry run, only the price."""
+    on a dry run, only the price. *system* (a frozen prompt) wins over building one from
+    *examples_from*."""
     from wiki.batch import Runner
 
     tax = taxonomy()
-    system = build_system(tax, few_shot(examples_from, tax))
+    system = system or build_system(tax, few_shot(examples_from or [], tax))
     reqs = build_requests(rows, model, system)
     est = sum(r.est_usd for r, _ in reqs) * (1 if mode == "batch" else 2)
     if dry_run:
@@ -139,6 +141,56 @@ def classify_rows(rows: list[dict[str, Any]], model: str, output_dir: str | Path
             preds[idx[k]] = lab
     return {"model": model, "requests": len(reqs), "est_usd": round(est, 4), "cost_usd": round(stats.cost_usd, 4),
             "reused": stats.reused, "failed": failed, "preds": preds}
+
+
+MODELS = ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5")
+SYSTEM_FILE = f"system-cls-{PROMPT_VERSION}.txt"
+GOLD_PREDS_FILE = f"gold_preds-cls-{PROMPT_VERSION}.json"
+
+
+def consensus(labels: list[str]) -> str:
+    """The class when every model gave the same one, else unclassified (#53: the only
+    classifier that met the precision gate on the held-out set)."""
+    return labels[0] if labels and labels[0] and all(x == labels[0] for x in labels) else UNCLASSIFIED
+
+
+def classes_dir(output_dir: str | Path) -> Path:
+    return Path(output_dir) / "_classes"
+
+
+def frozen_system(output_dir: str | Path, gold: list[dict[str, Any]] | None = None) -> str | None:
+    """The exact prompt the eval measured. Its few-shot examples come from the private dev gold
+    set, so it is frozen under ``reports/_classes/`` (gitignored, mounted in the container) the
+    first time the gold set is at hand. Without either, there's no prompt: a different one would
+    be an unmeasured classifier."""
+    path = classes_dir(output_dir) / SYSTEM_FILE
+    if gold:
+        system = build_system(taxonomy(), few_shot(gold, taxonomy()))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists() or path.read_text(encoding="utf-8") != system:
+            path.write_text(system, encoding="utf-8")
+        return system
+    return path.read_text(encoding="utf-8") if path.exists() else None
+
+
+def save_gold_preds(output_dir: str | Path, rows: list[dict[str, Any]], model: str, preds: list[str]) -> None:
+    path = classes_dir(output_dir) / GOLD_PREDS_FILE
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    data[model] = {r["id"]: p for r, p in zip(rows, preds, strict=True)}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
+
+
+def consensus_predictor(output_dir: str | Path) -> Callable[[dict[str, Any]], str] | None:
+    """Predict the gold set from stored answers (no API call); None unless every model has them."""
+    path = classes_dir(output_dir) / GOLD_PREDS_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not all(m in data for m in MODELS):
+        return None
+    return lambda row: consensus([data[m].get(row["id"], UNCLASSIFIED) for m in MODELS])
 
 
 def predictor(rows: list[dict[str, Any]], preds: list[str]) -> Callable[[dict[str, Any]], str]:

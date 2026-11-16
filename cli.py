@@ -224,6 +224,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Close open finding packs no scan reports any more as obsolete (file gone, missed by the last nightly "
              "scans, changed and unreported, diff_audit TTL); they reopen if found again",
     )
+    packs.add_argument("--classify", action="store_true",
+                       help="Write finding classes onto packs where Haiku, Sonnet and Opus agree on a guardable "
+                            "class (Batch API, classes lane; --dry-run prices it)")
     packs.add_argument("--force", action="store_true", help="With --gc: override the hold on repos where it would "
                        "close more than half the open packs")
     packs.add_argument("--dry-run", action="store_true", help="With --dedupe or --gc: list what would close, change nothing")
@@ -576,11 +579,19 @@ def _run_eval_classes(args) -> None:
     for model in [m.strip() for m in args.llm.split(",") if m.strip()]:
         from auditor import finding_class_llm as llm
 
-        out = llm.classify_rows(rows, model, _output_dir_default(), examples_from=rows,
+        system = llm.frozen_system(_output_dir_default(), fc.load_gold(reviewed=False))
+        out = llm.classify_rows(rows, model, _output_dir_default(), system=system,
                                 mode="sync" if args.sync else "batch", dry_run=args.dry_run)
         priced.append(out)
         if out["preds"] is not None:
+            llm.save_gold_preds(_output_dir_default(), rows, model, out["preds"])
             reports[model] = fc.evaluate(rows, predict=llm.predictor(rows, out["preds"]))
+    if priced and all(p["preds"] is not None for p in priced):
+        from auditor import finding_class_llm as llm
+
+        cp = llm.consensus_predictor(_output_dir_default())
+        if cp:
+            reports["consensus"] = fc.evaluate(rows, predict=cp)
     if args.json:
         print(json.dumps({"priced": [{k: v for k, v in p.items() if k != "preds"} for p in priced],
                           "reports": reports}, indent=2))
@@ -1255,6 +1266,19 @@ def main() -> None:
                     f"~{bundle['approx_tokens']}/{bundle['token_budget']} tokens "
                     f"truncated={bundle['truncated']} — GET {bundle['discovery']['bundle']}"
                 )
+        elif args.classify:
+            from auditor import pack_classes
+
+            rep = pack_classes.run(out, dry_run=args.dry_run, public_base_url=public_base_url())
+            if args.json or "skipped" in rep:
+                print(json.dumps(rep, indent=2))
+            elif args.dry_run:
+                print(f"{rep['to_classify']} of {rep['packs']} finding packs to classify, estimated ${rep['est_usd']:.2f}")
+            else:
+                print(f"classified {rep['classified_now']} packs for ${rep['cost_usd']:.4f}; {rep['with_class']} of "
+                      f"{rep['packs']} carry a class ({rep['written']} written, {rep['removed']} removed)")
+                for cls, n in sorted(rep["by_class"].items(), key=lambda kv: -kv[1]):
+                    print(f"  {cls:<24} {n}")
         elif args.gc:
             from auditor import pack_gc
 

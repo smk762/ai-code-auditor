@@ -133,7 +133,20 @@ Finding classes (`auditor/finding_class.py`, `config/finding_classes.yaml`, #53)
 - **How it classifies:** rules first. A static tool's rule id maps directly; otherwise title regexes are tried in file order (most specific class first) and the first match wins. Anything else stays unclassified.
 - **Gold set:** kept outside the repo because it quotes real findings: `~/.config/ai-code-auditor/eval/finding_classes_*.jsonl` (`AI_AUDIT_EVAL_DIR`). Tests point that at an empty dir.
 - **Gates:** only the `test` set, labelled blind after the rules were written, counts toward `classes.precision` (≥ 95%) and `classes.coverage` (≥ 80%).
-- **Current result:** the 2026-11-16 held-out result was 84% precision and 32% coverage (dev was 98%/67%). Title rules don't generalise, so classes are not yet written onto packs.
+- **Current result (2026-11-16, held-out set, council-checked labels):**
+
+  | Classifier | Precision | Coverage |
+  |---|---|---|
+  | Title rules | 87.5% | 32% |
+  | Sonnet | 90% | 100% |
+  | Opus | 91% | 100% |
+  | All three agree | 95.3% | 86% |
+
+  The two class gates score the all-three classifier from the answers stored in `reports/_classes/gold_preds-cls-v1.json`, so a nightly gate never calls the API. Without that file they fall back to the title rules.
+- **Classes on packs** (`auditor/pack_classes.py`, `ai-audit packs --classify [--dry-run]`). Haiku, Sonnet and Opus classify every finding pack, using the measured prompt frozen at `reports/_classes/system-cls-v1.txt`. When there is no frozen prompt, the step is skipped: a different prompt would be an unmeasured classifier.
+  - **What gets written:** a class goes onto a pack only when all three models agree and the class has a guard. It is stored in `governance.finding_class` (`{id, guard, by, text_sha}`) and in the `finding_class` field of INDEX.json.
+  - **Caching:** answers are cached by a hash of the pack's text in `reports/_classes/pack_classes.json`, so re-emits are free. A pack whose text changed is asked again, and its class is dropped if it no longer holds.
+  - **When it runs:** nightly, after pack GC (`AI_AUDIT_PACK_CLASSES=0` turns it off). Spend goes to the `classes` lane. `reports/_classes/` is gitignored because it quotes findings.
 - **LLM classifier** (`auditor/finding_class_llm.py`, `ai-audit eval classes --llm <models> [--dry-run]`, Batch API, `classes` spend lane). On the held-out set, Sonnet scored 87%, and all three models agreeing scored 91% precision at 86% coverage. None passes yet.
 - **Second labeller** (`auditor/finding_class_review.py`): `ai-audit eval classes --review` labels held-out findings blind, and `--adjudicate` settles each disagreement with the two labels shown as A and B, unattributed. Answers go to `review_classes.jsonl` in the eval dir. `load_gold()` uses the adjudicated label, so the gate measures against labels two people agreed on. The eval report prints the agreement between labellers, including kappa.
 - **Label council** (`auditor/finding_class_council.py`, `ai-audit eval classes --council [--dry-run]`). Haiku, Sonnet and Opus each judge whether a held-out label fits the finding, from the pack's full description and cited code. A label changes only when at least two members reject it and at least two name the same replacement. Outcomes go into `review_classes.jsonl`, so `load_gold()` uses them, and a summary goes to `council_classes.json` in the eval dir. The council is made of the models being graded, so scores against its labels mean agreement with a better-informed judge, not ground truth.
