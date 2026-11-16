@@ -1,0 +1,281 @@
+# Finding classes (#53): name a class of mistake reliably so it can be eliminated, not reviewed
+# forever. Each class says which kind of guard could eliminate it (#54, #55, #56):
+#   ruff / semgrep  — a lint rule in the suite catalogue (argus-ci)
+#   helper          — a paved-road helper in argus-cortex, plus a rule pointing at it
+#   import_contract — an import-linter contract (#57)
+#   none            — judgment; no mechanical guard (stays a reviewed finding)
+#
+# Classification (auditor/finding_class.py) is rules first: a static tool's rule id, then the
+# `title` patterns below in file order, first match wins. Patterns are case-insensitive Python
+# regexes over the finding title; `desc` patterns (optional) also look at the description and
+# only count when no title pattern matched anywhere. Classes are ordered most specific first:
+# ssrf before secret_exposure, info_leak before unhandled_error, and so on.
+#
+# Precision matters more than coverage: a wrong class sends a guard after the wrong thing.
+# Leave a finding unclassified rather than guess.
+
+classes:
+  - id: test_quality
+    description: A test cannot detect the regression it claims to guard, or passes vacuously.
+    guard: none
+    title:
+      - '\btest\w*\b.*\b(cannot|can''t|does not|doesn''t|never|can pass|passes even|without checking|ignores)\b'
+      - '\b(assertion|assert)\b.*\b(passes|accepts)\b'
+      - '\bfake\b.*\b(ignores|never)\b'
+      - '\btest result depends\b'
+
+  - id: untrusted_instructions
+    description: Agent-facing docs or rules that make agents fetch and act on remote, unreviewed instructions.
+    guard: none
+    title:
+      - '\balwaysApply\b'
+      - '\b(remote|unreviewed|unauthenticated)[- ](pack content|instructions?)\b'
+      - '\bAGENTS\.md embeds\b'
+      - '\bwithout a trust gate\b'
+
+  - id: ssrf
+    description: The server makes a request to a host or URL the caller controls.
+    cwe: 918
+    guard: helper  # cortex.net.fetch with a host allowlist
+    title:
+      - '\bSSRF\b'
+      - '\bserver-side (fetch|request)s?\b'
+      - '\b(caller|client)[- ](supplied|controlled|chosen)\b.*\b(url|host|origin|target)s?\b'
+      - '\boutbound (request|fetch)\b.*\b(caller|client)'
+      - '\bmake server-side requests\b'
+
+  - id: path_traversal
+    description: A filesystem path from input reaches the filesystem outside the intended root, or a planted link is followed.
+    cwe: 22
+    guard: helper  # cortex.fs.safe_join
+    title:
+      - '\bpath[- ]traversal\b'
+      - '\bdot-segment\b'
+      - '\barbitrary (filesystem )?paths?\b'
+      - '\b(bypass|escape)\w*\b.*\b(confine|root|fence|sandbox)\b'
+      - '\b(symlink\w*|hardlink\w*|O_NOFOLLOW)\b'
+      - '\b(\.\.|dot-dot)\b.*\b(escaped|validated|confined)\b'
+
+  - id: secret_exposure
+    description: A secret (token, key, password) is sent, stored, logged or defaulted where others can read or guess it.
+    cwe: 200
+    guard: semgrep
+    title:
+      - '\b(token|api key|secret|credentials?|password)s?\b.*\b(plaintext|plain[- ]http|over http|logs?|verbatim|forwarded|sent to|stored as|base64|redirect)\b'
+      - '\b(sent|forwarded) (over|to)\b.*\b(plain|http|host|url)\b'
+      - '\bplain(text| HTTP)\b'
+      - '\bpublicly known key\b'
+      - '\b(guessable|default) (database )?credentials\b'
+      - '\b(secret|key) material\b'
+      - '\bprints the matched secret\b'
+      - '\bmay contain provider API keys\b'
+      - '\bencryption silently downgrades\b'
+      - '\b(stored|storage)\b.*\b(unencrypted|plaintext|in the clear)\b'
+      - '\b(credentials|secrets?|keys?) (committed|hard-?coded|checked in)\b'
+      - '\b(source )?diffs\b.*\b(posted|sent)\b.*\bremote\b'
+
+  - id: fail_open
+    description: An auth or safety check allows by default when its configuration, input or dependency is missing.
+    cwe: 636
+    guard: helper  # cortex.auth dependency that fails closed
+    title:
+      - '\bfails? open\b'
+      - '\bfail-open\b'
+      - '\bdefault-allow\b'
+      - '\bunauthenticated\b'
+      - '\b(no|without) (documented )?auth(entication)?\b'
+      - '\bauth\w*\b.*\b(unset|empty|bypass)\b'
+      - '\b(unset|empty)\b.*\b(token|secret|key)\b.*\b(open|unauthenticated|empty HMAC)\b'
+      - '\btrusted without\b'
+      - '\b(unverified|untrusted)\b.*\bheader\b'
+      - '\b(endpoints?|routes?|admin\w*)\b.*\b(is|are) open when\b'
+      - '\bcan be revealed\b'
+      - '\bgate only rejects\b'
+      - '\bbinds? to all interfaces\b'
+      - '\b(listens|published) on (all interfaces|LAN)\b'
+      - '\bwildcard origins?\b'
+      - '\boutside the Zero Trust\b'
+      - '\bweakens\b.*\b(contract|auth|check)\b'
+      - '\b(gate|check|guard)\b.*\bsilently skips\b'
+
+  - id: info_leak
+    description: Internal detail (exception text, file paths, internals, existence) is returned to a client or output.
+    cwe: 209
+    guard: semgrep
+    title:
+      - '\b(raw|internal|upstream)\b.*\b(exception|error)\b.*\b(text|body|detail)\b'
+      - '\b(exception|error) (text|body|detail)\b.*\b(returned|reflected|echoe?s?d?|client|caller)\b'
+      - '\bechoes raw exception\b'
+      - '\bleaks? (absolute )?(file ?system )?paths?\b'
+      - '\breveals? whether\b'
+      - '\bwith GPU internals\b'
+      - '\b(details?|internals?) (reflected|returned|echoed)\b'
+      - '\breflected to (the )?clients?\b'
+
+  - id: injection
+    description: Untrusted text is interpreted as code, markup, arguments, control tokens or instructions.
+    cwe: 74
+    guard: semgrep
+    title:
+      - '\binjection\b'
+      - '\binjected\b'
+      - '\bXSS\b'
+      - '\binnerHTML\b'
+      - '\bbroken out of\b'
+      - '\bcontrol tokens\b'
+      - '\bformula[- ]trigger\b'
+      - '\bwithout delimiting or escaping\b'
+      - '\bunescaped\b'
+      - '\brendered as (clickable )?links?\b'
+
+  - id: unbounded_resource
+    description: Input size, count or work is unbounded, so memory, GPU or cost can be exhausted.
+    cwe: 400
+    guard: helper  # bounded read / bounded queue helpers
+    title:
+      - '\bunbounded (read|decode|decompression|memory|growth|queue|cache|image|width|height|n|count|loop)\b'
+      - '\bunbounded\b.*\b(exhaustion|amplification|DoS)\b'
+      - '\b(zip|decompression)[- ]bomb\b'
+      - '\b(memory|resource|cost|GPU)[- /]?(memory )?exhaustion\b'
+      - '\b(entire|every|full)\b.*\b(into|in) memory\b'
+      - '\b(size|limit) (check|guard)\w*\b.*\b(after|trusts|whole)\b'
+      - '\bfull decode happens before\b'
+      - '\bsize guard trusts\b'
+
+  - id: missing_timeout
+    description: A network or subprocess call can hang forever because it has no timeout.
+    cwe: 400
+    guard: ruff  # S113 and friends
+    title:
+      - '\b(no|without|missing) (a )?timeout\b'
+      - '\bcan hang (forever|indefinitely)\b'
+
+  - id: blocking_io_async
+    description: Blocking I/O or CPU work runs on an async event loop.
+    guard: ruff  # ASYNC2xx
+    title:
+      - '\bblocking\b.*\bevent loop\b'
+      - '\bon the event loop\b'
+      - '\bsynchronously on the event loop\b'
+
+  - id: race_condition
+    description: Concurrent or interleaved operations (async awaits, threads, double clicks, overlapping loads) corrupt or mislabel state.
+    cwe: 362
+    guard: none
+    title:
+      - '\brace (condition|on|between)\b'
+      - '\bTOCTOU\b|time-of-check'
+      - '\bconcurrent(ly)?\b'
+      - '\bin[- ]flight\b'
+      - '\b(overlapping|double-click\w*|parallel)\b'
+      - '\bwhile (a |the |another )?\w+ (is|are) (running|loading|in flight)\b'
+      - '\b(outside|without) the lock\b'
+      - '\bafter the await\b'
+      - '\bbetween the read and\b'
+      - '\b(land|lands) in whichever\b'
+      - '\b(another|a second) (client|request)\b'
+      - '\bwhile (face detection|a navigation) is\b'
+      - '\bright after typing\b'
+      - '\bcancellation\b.*\bstill running\b'
+
+  - id: resource_leak
+    description: A handle, buffer, file, process or GPU allocation is not released on some path.
+    cwe: 404
+    guard: semgrep
+    title:
+      - '\bleak(s|ed|ing)?\b.*\b(stream|handle|file|connection|client|socket|process|context|AudioContext|instance|renderer|geometry|tokenizer|memory|thread|task|temp)s?\b'
+      - '\bnever (closed|disposed|released)\b'
+      - '\bnot release\b|\bdoes not release\b|\bnever released\b'
+      - '\bkeeps running\b'
+      - '\bholds stale model\b'
+      - '\b(leaves|leaving)\b.*\b(running|resident|loaded)\b'
+
+  - id: data_integrity
+    description: A failure or overwrite leaves stored data partial, destroyed or inconsistent (non-atomic or destructive update).
+    guard: none
+    title:
+      - '\bnon-atomic\b'
+      - '\b(overwrites?|loses|destroy)\b.*\b(images?|files?|data|records?|tile|archive)\b'
+      - '\b(orphan|committed before)\b'
+      - '\bpartial (points )?file\b'
+      - '\b(deleted|wipes?|destroys?|overwrite)\b.*\b(before|existing|failed|empty)\b'
+      - '\bhalf-moved\b'
+      - '\bpersisted only after\b'
+      - '\bcan reference\b.*\bdifferent\b'
+
+  - id: silent_failure
+    description: An error or empty result is swallowed, mislabelled or turned into plausible output instead of surfacing.
+    cwe: 390
+    guard: ruff  # BLE001 / S110 / TRY
+    title:
+      - '\bsilently (drops?|dropped|produces|ignored|discarded|fails?)\b'
+      - '\b(failures?|errors?) (are|is) silently\b'
+      - '\bemitted in-band\b'
+      - '\bzero-byte\b'
+      - '\bwithout checking that\b.*\bsucceed'
+      - '\bdrops\b.*\b(chunks|messages|events|records)\b'
+
+  - id: stale_state
+    description: State from an earlier item, request or failure is not reset and leaks into a later one.
+    guard: none
+    title:
+      - '\bstale\b'
+      - '\bnot (reset|cleared)\b'
+      - '\bsticky\b'
+      - '\bnot cleared\b'
+      - '\bpermanently disables\b'
+      - '\bbuffer not cleared\b'
+
+  - id: unhandled_error
+    description: An edge input (empty, missing, malformed, zero) raises an uncaught exception or crash.
+    cwe: 755
+    guard: none
+    title:
+      - '\b(crash(es)?|raises?)\b'
+      - '\bunhandled\b'
+      - '\buncaught\b'
+      - '\b(ValueError|KeyError|ZeroDivisionError|AttributeError|UnicodeDecodeError|TypeError)\b'
+      - '\boutside the try\b'
+      - '\bno error handling\b'
+      - '\bescape the (fallback|error)\b'
+      - '\bsurface as (raw|unhandled) 500s?\b'
+      - '\bescapes? as\b'
+      - '\bthrows instead\b'
+
+  - id: missing_validation
+    description: Input is not validated for range, type, format or provenance before use.
+    cwe: 20
+    guard: none
+    title:
+      - '\b(not|never|un) ?validated\b'
+      - '\bnot range-checked\b|\bnever range-checked\b'
+      - '\bunanchored\b'
+      - '\bwithout an allowlist\b'
+      - '\bnot enforced\b'
+      - '\bare accepted as valid\b'
+      - '\bpasses the\b.*\bguard\b'
+      - '\bnever checked against\b'
+      - '\bchecks the record''s claimed\b'
+      - '\bunvalidated\b'
+      - '\b(stored|accepted|used) without checking\b'
+      - '\bsilently accepted\b'
+      - '\bstripped under -O\b'
+      - '\baccepts unbounded values\b'
+
+# Static tools' rule ids, mapped directly (no title guessing).
+static_rules:
+  bandit:
+    B113: missing_timeout
+    B108: path_traversal
+    B110: silent_failure
+    B112: silent_failure
+    B105: secret_exposure
+    B106: secret_exposure
+    B107: secret_exposure
+    B602: injection
+    B603: injection
+    B608: injection
+  semgrep:
+    requests-without-timeout: missing_timeout
+    tainted-path: path_traversal
+    ssrf: ssrf
