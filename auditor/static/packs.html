@@ -7,7 +7,21 @@
 <link rel="stylesheet" href="/audit/static/ui.css">
 <script src="/audit/static/ui.js"></script>
 <style>
-  .board { display: grid; grid-template-columns: repeat(5, minmax(220px, 1fr)); gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+  /* Columns are sized per render: full columns share the width, empty ones collapse to a rail. */
+  .board { display: grid; gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+  .col.rail { padding: 10px 0; align-items: center; }
+  /* A column that has the room (e.g. Open with the others empty) lays its cards out in sub-columns. */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; align-items: start; }
+  .col.rail h2 { writing-mode: vertical-rl; transform: rotate(180deg); margin: 0; gap: 8px; white-space: nowrap; }
+  .cols { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 12px; font-size: 12px; }
+  .cols .lbl { color: var(--text-secondary); margin-right: 2px; }
+  .chip { font: inherit; font-size: 12px; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-secondary);
+          border-radius: 999px; padding: 3px 10px; cursor: pointer; text-transform: capitalize; }
+  .chip span { font-variant-numeric: tabular-nums; margin-left: 4px; color: var(--text-muted); }
+  .chip[aria-pressed="true"] { background: var(--surface-2); color: var(--text-primary); border-color: var(--text-muted); }
+  .chip[aria-pressed="true"]::before { content: "✓ "; }
+  .chip.preset { text-transform: none; border-style: dashed; }
+  .chip.preset::before { content: none; }
   .col { background: var(--surface-2); border-radius: 10px; padding: 10px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
   .col h2 { font-size: 13px; margin: 0 2px; display: flex; justify-content: space-between; text-transform: capitalize; }
   .col h2 span { color: var(--text-secondary); font-weight: 500; font-variant-numeric: tabular-nums; }
@@ -41,6 +55,7 @@
       <label>Kind <select id="f-kind"><option value="">all</option></select></label>
       <span class="flash" id="flash" role="status"></span>
     </div>
+    <div class="cols" id="cols" role="group" aria-label="Columns to show"></div>
     <div class="board" id="board"></div>
   </section>
 </main>
@@ -48,7 +63,19 @@
 <script>
 const { esc, int } = UI;
 const STATUSES = ["open", "claimed", "in_progress", "unverified", "resolved", "wontfix", "obsolete"];
+const ACTIVE = ["open", "claimed", "in_progress", "unverified"];  // work still to do; closed columns start hidden
+const COLS_KEY = "packs-board-cols";
 const p = UI.params();
+// Visible columns: ?cols= wins (shareable), then this browser's last choice, then active work.
+function initialCols() {
+  let saved = null;
+  try { saved = localStorage.getItem(COLS_KEY); } catch { /* storage blocked: use the default */ }
+  const raw = p.cols || saved || "";
+  const picked = raw.split(",").filter((s) => STATUSES.includes(s));
+  return new Set(picked.length ? picked : ACTIVE);
+}
+const shown = initialCols();
+let last = null;
 const state = { repo: p.repo || "", severity: p.severity || "", layer: p.layer || "", kind: p.kind || "", q: p.q || "" };
 const els = { repo: "f-repo", severity: "f-severity", layer: "f-layer", kind: "f-kind", q: "f-q" };
 for (const k in els) els[k] = document.getElementById(els[k]);
@@ -71,20 +98,42 @@ function card(pk) {
     </div></div>`;
 }
 
+function colsParam() {
+  const list = STATUSES.filter((s) => shown.has(s));
+  return list.join(",") === ACTIVE.join(",") ? "" : list.join(",");
+}
+
+function renderChips(d) {
+  const total = Object.fromEntries(d.columns.map((c) => [c.status, c.total]));
+  const same = (xs) => xs.length === shown.size && xs.every((s) => shown.has(s));
+  document.getElementById("cols").innerHTML = `<span class="lbl">Columns</span>` +
+    STATUSES.map((s) => `<button type="button" class="chip" data-col="${s}" aria-pressed="${shown.has(s)}">${esc(s.replace("_", " "))}<span>${int(total[s] || 0)}</span></button>`).join("") +
+    (same(ACTIVE) ? "" : `<button type="button" class="chip preset" data-preset="active">Active work</button>`) +
+    (same(STATUSES) ? "" : `<button type="button" class="chip preset" data-preset="all">All</button>`);
+}
+
 function render(d) {
+  last = d;
   fill(els.repo, d.facets.repos, state.repo);
   fill(els.layer, d.facets.layers, state.layer);
   fill(els.kind, d.facets.kinds, state.kind);
-  document.getElementById("board").innerHTML = d.columns.map((c) => `<div class="col" aria-label="${esc(c.status)}">
+  renderChips(d);
+  const cols = d.columns.filter((c) => shown.has(c.status));
+  const board = document.getElementById("board");
+  // An empty column is a slim rail: it still says "0", but costs no width.
+  board.style.gridTemplateColumns = cols.map((c) => c.total ? "minmax(240px, 1fr)" : "36px").join(" ") || "1fr";
+  board.innerHTML = cols.map((c) => c.total ? `<div class="col" aria-label="${esc(c.status)}">
       <h2>${esc(c.status.replace("_", " "))} <span>${int(c.total)}</span></h2>
-      ${c.packs.map((pk) => card({ ...pk, status: c.status })).join("") || `<div class="more">empty</div>`}
+      <div class="cards">${c.packs.map((pk) => card({ ...pk, status: c.status })).join("")}</div>
       ${c.total > c.packs.length ? `<div class="more">+${int(c.total - c.packs.length)} more · narrow the filters</div>` : ""}
-    </div>`).join("");
+    </div>` : `<div class="col rail" aria-label="${esc(c.status)}: empty" title="${esc(c.status.replace("_", " "))}: no packs">
+      <h2>${esc(c.status.replace("_", " "))} <span>0</span></h2></div>`).join("")
+    || `<div class="more">No columns selected. Pick one above.</div>`;
   document.getElementById("sub").textContent = `${UI.plural(d.total, "pack")} match · most severe, then highest score first · the world-model layer is reference material, not work`;
 }
 
 function load() {
-  UI.setParams(state);
+  UI.setParams({ ...state, cols: colsParam() });
   const qs = new URLSearchParams(Object.entries(state).filter(([, v]) => v));
   return UI.load(`/audit/packs/board.json?${qs}`, render, document.getElementById("sub"));
 }
@@ -103,6 +152,21 @@ document.getElementById("board").addEventListener("change", async (e) => {
     sel.disabled = false;
     flash.innerHTML = `<span class="err">Not moved: ${esc(err.message)}</span>`;
   }
+});
+document.getElementById("cols").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.preset) {
+    shown.clear();
+    (b.dataset.preset === "all" ? STATUSES : ACTIVE).forEach((s) => shown.add(s));
+  } else if (shown.has(b.dataset.col)) {
+    shown.delete(b.dataset.col);
+  } else {
+    shown.add(b.dataset.col);
+  }
+  try { localStorage.setItem(COLS_KEY, STATUSES.filter((s) => shown.has(s)).join(",")); } catch { /* per-browser nicety only */ }
+  UI.setParams({ ...state, cols: colsParam() });
+  if (last) render(last);  // showing/hiding needs no refetch
 });
 for (const k of ["repo", "severity", "layer", "kind"]) els[k].addEventListener("change", () => { state[k] = els[k].value; load(); });
 let typing = null;
