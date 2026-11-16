@@ -37,6 +37,7 @@ ai-audit repair --pack-id pack-… --audit-api-base "$AI_AUDIT_PUBLIC_BASE_URL" 
 ai-audit pack-savings                        # estimated token savings from packs vs crawling (--history, --cached, --json)
 ai-audit eval trust [--seeded]               # reliability gates for epic #64 (--seeded re-plants bugs in real repos first; minutes, no API spend)
 ai-audit trust [--github]                    # trust metrics: lint-only resolutions, regressions, reverts (--history, --cached, --json)
+ai-audit pr-summary --pack pack-… [--trailers --evidence repro]   # PR-body table, or the commit trailer block (#73); --range origin/dev..HEAD reads trailers
 ai-audit qa-benchmark --json
 ai-audit wiki build --repos argus-cortex --dry-run   # price a wiki build (no API calls)
 ai-audit wiki build [--repos a,b] [--sync]          # generate wiki pages via the Batch API
@@ -115,8 +116,9 @@ Trust metrics (`auditor/trust_metrics.py`, epic #64, issue #52): `/ui/trust` (`/
   - **Recurrence:** a resolved finding pack's issue comes back, from a later pack or a later scan, matched one-to-one with `finding_match`. Split into `disputed` (closed without a patch as "already handled" while the scanner still reports it) and `regressed`. Only regressions count in the rate. Precision is limited by title matching.
   - **Scan persistence:** the share of a scan's findings the next scan of the repo re-reports. That's the detector's stability, so read recurrence against it.
   - **Agent PR revert / fix-forward rate:** reverts and fix-forwards within 14 days.
+  - **Pack revert rate (`pack_commits`):** read from each mirror's `git log`, not GitHub. A revert within 14 days of a commit with `Pack:` trailers, or of a merge that brought one in, counts against exactly the packs it names.
   - **Weekly finding flow** by type.
-- **Data sources:** pack YAMLs, the findings DB (only pipelines that store findings count as scans, so ecosystem runs don't look like empty scans) and the mirrors' `git log`. GitHub only lists agent PRs: a pack id in the body, or a title that fixes ai-code-auditor findings. That list is cached in `reports/trust_prs.json`.
+- **Data sources:** pack YAMLs, the findings DB (only pipelines that store findings count as scans, so ecosystem runs don't look like empty scans) and the mirrors' `git log`. GitHub only lists agent PRs: a commit with `Pack:` trailers first, else a pack id in the body or a title that fixes ai-code-auditor findings. That list is cached in `reports/trust_prs.json`.
 - **Emit-time link:** a new pack that repeats a resolved pack gets `governance.recurrence_of` (`link_recurrences`).
 - **When it runs:** after every nightly repo audit, once the run is recorded (`AI_AUDIT_TRUST_METRICS=0` turns it off). It writes `reports/trust.json` and appends `trust_history.jsonl`, which is never overwritten.
 
@@ -291,6 +293,11 @@ Class packs (`auditor/class_packs.py`, #54): one `class_guard` pack per guardabl
 - **When it runs:** nightly after pack classes (`AI_AUDIT_CLASS_PACKS=0` turns it off), via `ai-audit packs --classes [--dry-run]`, and at the end of `scripts/emit_agent_packs.py`. Class packs are not findings: GC, the classifier and dedupe skip them.
 - **Gate:** `class_packs.lifecycle` is the share of class-guard closures that stayed closed (≥ 95%, n ≥ 10).
 - **UI:** `/ui/packs` has a Class filter (`cls=`) and a class line on each card, and a class pack's page lists its guards and children.
+
+Commit trailers (`auditor/trailers.py`, #73): an agent fix commit ends with one `Pack: <id>` line per pack it fixes, plus `Evidence: <kind>`, `Class: <class>` and `Waiver: <reason>` where they apply.
+- **Parsing:** the same rule as `git interpret-trailers`: last paragraph only, every line a trailer.
+- **Getting the block:** `GET /audit/pr-summary?packs=a,b[&evidence=]` (read-only, no auth) returns that block plus the visible "Audit packs" PR-body table, looked up in the pack store. The CLI is `ai-audit pr-summary`.
+- **Templates:** the awareness installer ships an "Audit packs" section in `.github/pull_request_template.md` and a managed `.github/ISSUE_TEMPLATE/audit-finding.yml` issue form. `trailers.issue_fields` parses the issue form's answers.
 
 Also on lifecycle: opt-in `semantic_check` / `AI_AUDIT_VALIDATE_SEMANTIC=1` runs `auditor/equivalence.py` first (a "trust me" change with a counterexample keeps the pack open), and conductor draft PRs set `in_progress`. Pack RAG ingest is on by default (`AI_AUDIT_PACK_RAG_INGEST=0` to disable).
 

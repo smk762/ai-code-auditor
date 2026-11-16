@@ -612,6 +612,84 @@ def agent_pr_metric(prs: list[dict[str, Any]], git_log: GitLog | None, *, now: d
     }
 
 
+class MirrorCommits:
+    """Commits on a mirror's ``origin/dev`` (else HEAD), with parents, for pack-level attribution."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.ref = ""
+        for ref in ("origin/dev", "HEAD"):
+            if self._git("rev-parse", "--verify", "-q", ref).returncode == 0:
+                self.ref = ref
+                break
+
+    def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", *args], cwd=self.path, capture_output=True, text=True, timeout=60, check=False)
+
+    def commits(self, since: str) -> list[dict[str, Any]]:
+        if not self.ref:
+            return []
+        r = self._git("log", self.ref, f"--since={since}", "--format=%H%x1f%P%x1f%cI%x1f%B%x1e")
+        out = []
+        for rec in r.stdout.split("\x1e") if r.returncode == 0 else []:
+            parts = rec.strip("\n").split("\x1f")
+            if len(parts) == 4:
+                out.append({"sha": parts[0], "parents": parts[1].split(), "date": parts[2], "message": parts[3]})
+        return out
+
+    def merged_by(self, merge: dict[str, Any]) -> list[str]:
+        """The commits a merge brought in (``first-parent..second-parent``)."""
+        if len(merge["parents"]) < 2:
+            return []
+        r = self._git("rev-list", f"{merge['parents'][0]}..{merge['parents'][1]}")
+        return r.stdout.split() if r.returncode == 0 else []
+
+
+def pack_commit_metric(commits_by_repo: dict[str, list[dict[str, Any]]], merged_by: Callable[[str, dict], list[str]],
+                       *, now: datetime, window_days: int = REVERT_WINDOW_DAYS) -> dict[str, Any]:
+    """Reverts per pack, from ``Pack:`` trailers (#73). A revert of a trailer-bearing commit, or of
+    a merge that brought one in, counts against exactly the packs that commit named."""
+    from auditor.trailers import pack_ids
+
+    fixes: dict[str, dict[str, Any]] = {}       # pack id -> first fix {repo, sha, at}
+    reverted: dict[str, dict[str, Any]] = {}
+    commits_seen = 0
+    for repo, commits in commits_by_repo.items():
+        by_sha = {c["sha"]: c for c in commits}
+        for c in commits:
+            ids = pack_ids(c["message"])
+            if ids and not c["message"].lstrip().lower().startswith("revert"):
+                commits_seen += 1
+                for i in ids:
+                    fixes.setdefault(i, {"repo": repo, "sha": c["sha"], "at": c["date"]})
+        for c in commits:
+            for target in re.findall(r"This reverts commit ([0-9a-f]{7,40})", c["message"]):
+                t = next((x for s, x in by_sha.items() if s.startswith(target)), None)
+                if t is None:
+                    continue
+                when, base = _parse_ts(c["date"]), _parse_ts(t["date"])
+                if not (when and base and timedelta(0) <= when - base <= timedelta(days=window_days)):
+                    continue
+                members = [t] + [by_sha[s] for s in merged_by(repo, t) if s in by_sha]
+                for m in members:
+                    for i in pack_ids(m["message"]):
+                        reverted.setdefault(i, {"repo": repo, "revert": c["sha"], "of": t["sha"]})
+    mature = [i for i, f in fixes.items() if (at := _parse_ts(f["at"])) and now - at >= timedelta(days=window_days)]
+    return {
+        "commits": commits_seen, "packs": len(fixes), "reverted": len(reverted),
+        "rate": _rate(len(reverted), len(fixes)),
+        "mature": len(mature), "mature_rate": _rate(sum(1 for i in mature if i in reverted), len(mature)),
+        "window_days": window_days,
+        "reverted_packs": [{"pack": i, **v} for i, v in sorted(reverted.items())][:100],
+    }
+
+
+def mirror_pack_commits(mirror_paths: dict[str, Path], *, since: str) -> tuple[dict[str, list[dict]], Callable]:
+    mirrors = {r: MirrorCommits(p) for r, p in mirror_paths.items() if (p / ".git").exists()}
+    commits = {r: m.commits(since) for r, m in mirrors.items()}
+    return commits, lambda repo, c: mirrors[repo].merged_by(c) if repo in mirrors else []
+
+
 _PR_QUERY = """
 query($q: String!, $cursor: String) {
   search(query: $q, type: ISSUE, first: 50, after: $cursor) {
@@ -620,7 +698,7 @@ query($q: String!, $cursor: String) {
       number title body url mergedAt
       repository { name nameWithOwner }
       mergeCommit { oid }
-      commits(first: 100) { nodes { commit { oid } } }
+      commits(first: 100) { nodes { commit { oid message } } }
     } }
   }
 }"""
@@ -641,7 +719,13 @@ def fetch_agent_prs(graphql: Callable[[str, dict[str, Any]], dict[str, Any]], ow
                 repo = (n.get("repository") or {}).get("name") or ""
                 if repos is not None and repo not in repos:
                     continue
-                if not is_agent_pr(n.get("title") or "", n.get("body") or ""):
+                from auditor.trailers import pack_ids as trailer_ids
+
+                msgs = [c["commit"].get("message") or "" for c in ((n.get("commits") or {}).get("nodes") or [])
+                        if c and c.get("commit")]
+                trailed = sorted({i for m in msgs for i in trailer_ids(m)})
+                # Trailers first (#73): a commit that names its packs is an agent fix, whatever the title.
+                if not trailed and not is_agent_pr(n.get("title") or "", n.get("body") or ""):
                     continue
                 found[n["url"]] = {
                     "repo": repo, "slug": (n.get("repository") or {}).get("nameWithOwner") or "",
@@ -649,7 +733,8 @@ def fetch_agent_prs(graphql: Callable[[str, dict[str, Any]], dict[str, Any]], ow
                     "merged_at": n["mergedAt"], "merge_sha": (n.get("mergeCommit") or {}).get("oid") or "",
                     "commit_shas": [c["commit"]["oid"] for c in ((n.get("commits") or {}).get("nodes") or [])
                                     if c and c.get("commit")],
-                    "pack_ids": sorted(set(PACK_ID_RE.findall(n.get("body") or ""))),
+                    "pack_ids": sorted(set(PACK_ID_RE.findall(n.get("body") or "")) | set(trailed)),
+                    "trailers": bool(trailed),
                 }
             info = data.get("pageInfo") or {}
             if not info.get("hasNextPage"):
@@ -661,7 +746,8 @@ def fetch_agent_prs(graphql: Callable[[str, dict[str, Any]], dict[str, Any]], ow
 # ── report ───────────────────────────────────────────────────────────────────
 
 def compute(packs: list[PackView], scans: list[Scan], prs: list[dict[str, Any]] | None,
-            git_log: GitLog | None, *, now: datetime | None = None) -> dict[str, Any]:
+            git_log: GitLog | None, *, now: datetime | None = None,
+            pack_commits: dict[str, Any] | None = None) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     events = resolution_events(packs)
     report = {
@@ -671,7 +757,9 @@ def compute(packs: list[PackView], scans: list[Scan], prs: list[dict[str, Any]] 
         "recurrence": recurrence_metric(packs, scans),
         "scan_persistence": scan_persistence_metric(scans, packs),
         "gc": gc_metric(packs),
-        "agent_prs": (agent_pr_metric([p for p in prs if is_agent_pr(p.get("title") or "", " ".join(p.get("pack_ids") or []))],
+        "pack_commits": pack_commits,
+        "agent_prs": (agent_pr_metric([p for p in prs if p.get("trailers")
+                                       or is_agent_pr(p.get("title") or "", " ".join(p.get("pack_ids") or []))],
                                       git_log, now=now) if prs is not None else None),
         "flow": flow_metric(scans),
         "inputs": {
@@ -702,6 +790,8 @@ def headline(report: dict[str, Any]) -> dict[str, Any]:
         "scan_persistence": report["scan_persistence"]["rate"],
         "revert_rate": prs.get("rate"),
         "agent_prs": prs.get("merged"),
+        "pack_revert_rate": (report.get("pack_commits") or {}).get("rate"),
+        "trailer_packs": (report.get("pack_commits") or {}).get("packs"),
         "open_finding_packs": sum(1 for _ in ()),  # filled below
     }
 
@@ -757,8 +847,16 @@ def build(output_dir: str | Path, *, session=None, refresh_github: bool = False,
             prs = refresh_prs(out, mirrors_path=mirrors_path)
         except Exception as exc:  # noqa: BLE001 — keep the cached list, say why
             logger.warning("agent PR refresh failed, using cache: %s", exc)
-    git_log = mirror_git_log(_mirror_paths(mirrors_path))
-    report = compute(packs, scans, prs, git_log, now=now)
+    paths = _mirror_paths(mirrors_path)
+    git_log = mirror_git_log(paths)
+    now_ = now or datetime.now(UTC)
+    try:
+        commits, merged_by = mirror_pack_commits(paths, since=(now_ - timedelta(days=lookback_days())).isoformat())
+        pc = pack_commit_metric(commits, merged_by, now=now_)
+    except Exception as exc:  # noqa: BLE001 — a mirror problem leaves this metric empty, not the report
+        logger.warning("pack commit metric failed: %s", exc)
+        pc = None
+    report = compute(packs, scans, prs, git_log, now=now, pack_commits=pc)
     report["headline"]["open_finding_packs"] = sum(1 for p in packs if p.is_finding and p.status == "open"
                                                    and not p.duplicate_of)
     return report

@@ -79,6 +79,21 @@ changes, nothing extra for docs/config-only patches, or an `evidence_waiver`); a
 `repair.draft_pr_url`. Status survives re-emits. Pack docs are slim-ingested to RAG by default
 (`AI_AUDIT_PACK_RAG_INGEST=0` / `--no-rag` to disable).
 
+### Commit trailers
+
+End each fix commit with one trailer block: one `Pack: <id>` line per pack the commit fixes, then
+`Evidence: <kind>` (what `validate_patch` reported) and `Class: <class>` when the packs have one
+(`Waiver: <reason>` if you used `evidence_waiver`). A revert of the commit then counts against
+exactly those packs. Get the block and the PR-body table in one call:
+
+```bash
+curl "$AI_AUDIT_PUBLIC_BASE_URL/audit/pr-summary?packs=<id>,<id>&evidence=repro"   # {"trailers", "markdown"}
+ai-audit pr-summary --pack <id> --trailers --evidence repro                        # same, locally
+```
+
+Paste `markdown` into the PR's "Audit packs" section. Don't hide it in an HTML comment: reviewers
+read it.
+
 ### Class packs (guard tasks)
 
 A `class_guard` pack (`pack-class-<class>`) is one task that eliminates a whole class of finding

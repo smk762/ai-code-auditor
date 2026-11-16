@@ -330,6 +330,15 @@ def _build_parser() -> argparse.ArgumentParser:
     evc.add_argument("--council", action="store_true",
                      help="Three models check each held-out label against the pack's code (Batch API, classes lane)")
 
+    prs_ = sub.add_parser("pr-summary", help="Commit trailers and the PR-body table for packs a change fixes (#73)")
+    prs_.add_argument("--pack", action="append", default=[], help="Pack id (repeatable)")
+    prs_.add_argument("--range", dest="rev_range", default="",
+                      help="Read Pack: trailers from these commits instead (e.g. origin/dev..HEAD)")
+    prs_.add_argument("--repo-path", default=".", help="With --range: the checkout to read")
+    prs_.add_argument("--trailers", action="store_true", help="Print the commit trailer block instead of the table")
+    prs_.add_argument("--evidence", default="", help="With --trailers: evidence kind from validate_patch")
+    prs_.add_argument("--waiver", default="", help="With --trailers: the evidence waiver reason")
+
     tr = sub.add_parser(
         "trust",
         help="Trust metrics: false-resolve, reopen, recurrence, scan persistence, agent PR reverts (#52)",
@@ -1548,6 +1557,17 @@ def main() -> None:
         _run_pr_intel(as_json=args.json, cached=args.cached, label_p0=args.label_p0, dry_run=args.dry_run)
     elif args.command == "eval":
         _run_eval_classes(args) if args.eval_command == "classes" else _run_eval_trust(args)
+    elif args.command == "pr-summary":
+        from auditor import trailers
+        from conductor.publish import public_base_url
+
+        ids = list(args.pack)
+        if args.rev_range:
+            ids += trailers.range_pack_ids(args.repo_path, args.rev_range)
+        if args.trailers:
+            print(trailers.render(_output_dir_default(), ids, evidence=args.evidence, waiver=args.waiver))
+        else:
+            print(trailers.summary_markdown(_output_dir_default(), ids, public_base_url=public_base_url()))
     elif args.command == "trust":
         _run_trust(as_json=args.json, cached=args.cached, history=args.history, github=args.github)
     elif args.command == "pack-savings":
