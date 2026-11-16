@@ -33,6 +33,7 @@ POST /audit/extraction/{id}/approve   Approve an extraction candidate (adds a ru
 GET  /audit/runs.json                 All pipelines' runs + facets (pipeline, status filters)
 GET  /audit/runs/{run_id}/summary.json  Run summary with findings delta vs the previous run
 GET  /audit/findings.json             Filtered findings + severity × repo matrix for a run
+POST /audit/packs/gc                 Close stale finding packs as obsolete (auth; dry run unless ?dry_run=0)
 GET  /audit/trust.json                Trust metrics (?history=1 for the trend); POST /audit/trust/refresh (auth)
 GET  /reports/mithrandir/LATEST.json  Atomic rest-session status for mithrandir (Jarrah)
 GET  /reports/mithrandir/LATEST.md    TTS-safe companion briefing for Holly
@@ -45,7 +46,7 @@ GET  /audit/packs                     List/search agent coding packs (repo, seve
 GET  /audit/packs/bundle              Mission bundle: world model + ranked specialists, token-capped briefs
 GET  /audit/packs/{pack_id}           Full agent coding pack (YAML-backed JSON)
 GET  /audit/packs/{pack_id}/brief     Markdown brief for coding agents
-POST /audit/packs/{pack_id}/status    Set pack lifecycle status (open|claimed|in_progress|unverified|resolved|wontfix)
+POST /audit/packs/{pack_id}/status    Set pack lifecycle status (open|claimed|in_progress|unverified|resolved|wontfix|obsolete)
 
 Start:
     .venv/bin/uvicorn auditor.audit_api:app --host 0.0.0.0 --port 8765
@@ -1069,6 +1070,17 @@ def post_pack_savings_refresh() -> JSONResponse:
     return JSONResponse(refresh(output_dir=_output_dir()))
 
 
+@app.post("/audit/packs/gc", dependencies=[Depends(_require_mutating_auth)])
+def post_pack_gc(dry_run: bool = True, force: bool = False, repo: str = "") -> JSONResponse:
+    """Pack GC (#67): close open finding packs no scan reports any more as ``obsolete``.
+    Dry run by default (``?dry_run=0`` applies); ``force`` overrides the per-repo hold."""
+    from auditor import pack_gc
+    from conductor.publish import public_base_url
+
+    return JSONResponse(pack_gc.run(_output_dir(), dry_run=dry_run, force=force, repo=repo,
+                                    public_base_url=public_base_url()))
+
+
 @app.get("/audit/trust.json")
 def get_trust_json(history: bool = False) -> JSONResponse:
     """Trust metrics (#52): false-resolve, reopen, recurrence, scan persistence, agent PR reverts, flow.
@@ -2022,7 +2034,7 @@ def list_agent_packs(
     run_id: str = Query(default=""),
     status: str = Query(
         default="",
-        description="open | claimed | in_progress | unverified | resolved | wontfix (comma-separated allowed)",
+        description="open | claimed | in_progress | unverified | resolved | wontfix | obsolete (comma-separated allowed)",
     ),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> JSONResponse:
@@ -2119,7 +2131,7 @@ def get_agent_pack_bundle(
 
 
 class _PackStatusRequest(BaseModel):
-    status: Literal["open", "claimed", "in_progress", "unverified", "resolved", "wontfix"]
+    status: Literal["open", "claimed", "in_progress", "unverified", "resolved", "wontfix", "obsolete"]
     note: str = ""
 
 

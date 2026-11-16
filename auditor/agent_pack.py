@@ -30,7 +30,7 @@ PACK_VERSION = 1
 _SNIPPET_RADIUS = 12
 _SEVERITY_SCORE = {"CRITICAL": 1.0, "HIGH": 0.85, "MEDIUM": 0.55, "LOW": 0.3, "INFO": 0.1}
 
-PACK_STATUSES = ("open", "claimed", "in_progress", "unverified", "resolved", "wontfix")
+PACK_STATUSES = ("open", "claimed", "in_progress", "unverified", "resolved", "wontfix", "obsolete")
 DEFAULT_PACK_STATUS = "open"
 # Statuses a consuming agent should still pick up (resolved/wontfix are closed).
 # unverified: validate_patch passed without the evidence the pack needs (#58); still open work.
@@ -40,7 +40,8 @@ _STATUS_HISTORY_MAX = 20
 # pack. Resolved packs are not merge targets: an issue that comes back after a fix gets a fresh
 # open pack instead of hiding under "resolved". Kinds whose titles don't describe the issue
 # (architecture titles are "repo: path:line") dedupe on exact id only.
-_MERGE_INTO_STATUSES = ("in_progress", "claimed", "unverified", "wontfix", "open")  # keeper preference order
+# obsolete (closed by pack GC, #67) is a target so a re-found issue reopens its own pack instead of a twin.
+_MERGE_INTO_STATUSES = ("in_progress", "claimed", "unverified", "wontfix", "open", "obsolete")  # keeper preference order
 _NO_TITLE_MATCH_KINDS = frozenset({"architecture", "extraction", "world_model", "invariants"})
 
 # Bundle sizing: token_budget is approximated as chars / CHARS_PER_TOKEN.
@@ -509,6 +510,11 @@ def _carry_over_lifecycle(pack: AgentCodingPack, existing: dict[str, Any]) -> No
     pack.status_history = prev.status_history
     if prev.governance.get("duplicate_of"):
         pack.governance["duplicate_of"] = prev.governance["duplicate_of"]
+    if prev.governance.get("gc"):
+        pack.governance["gc"] = prev.governance["gc"]
+    if pack.status == "obsolete":
+        # GC closed it because no scan reported it; a scan just did, so it's open work again (#67)
+        pack.apply_status("open", f"reported again after pack GC closed it ({prev.governance.get('gc', {}).get('rule', 'gc')})")
     if not pack.repair.get("draft_pr_url") and prev.repair.get("draft_pr_url"):
         pack.repair["draft_pr_url"] = prev.repair["draft_pr_url"]
 

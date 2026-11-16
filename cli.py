@@ -197,7 +197,7 @@ def _build_parser() -> argparse.ArgumentParser:
     packs.add_argument(
         "--status",
         default="",
-        help="Filter by status: open|claimed|in_progress|unverified|resolved|wontfix (comma-separated)",
+        help="Filter by status: open|claimed|in_progress|unverified|resolved|wontfix|obsolete (comma-separated)",
     )
     packs.add_argument(
         "--bundle",
@@ -209,7 +209,7 @@ def _build_parser() -> argparse.ArgumentParser:
     packs.add_argument(
         "--set-status",
         default="",
-        choices=["", "open", "claimed", "in_progress", "unverified", "resolved", "wontfix"],
+        choices=["", "open", "claimed", "in_progress", "unverified", "resolved", "wontfix", "obsolete"],
         help="Set lifecycle status on --id PACK_ID",
     )
     packs.add_argument("--note", default="", help="Optional note with --set-status")
@@ -218,7 +218,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Close open packs that repeat another (same file, reworded title) as wontfix 'duplicate of <id>'",
     )
-    packs.add_argument("--dry-run", action="store_true", help="With --dedupe: list duplicates, change nothing")
+    packs.add_argument(
+        "--gc",
+        action="store_true",
+        help="Close open finding packs no scan reports any more as obsolete (file gone, missed by the last nightly "
+             "scans, changed and unreported, diff_audit TTL); they reopen if found again",
+    )
+    packs.add_argument("--force", action="store_true", help="With --gc: override the hold on repos where it would "
+                       "close more than half the open packs")
+    packs.add_argument("--dry-run", action="store_true", help="With --dedupe or --gc: list what would close, change nothing")
 
     merge = sub.add_parser(
         "merge-refresh",
@@ -1098,6 +1106,22 @@ def main() -> None:
                     f"~{bundle['approx_tokens']}/{bundle['token_budget']} tokens "
                     f"truncated={bundle['truncated']} — GET {bundle['discovery']['bundle']}"
                 )
+        elif args.gc:
+            from auditor import pack_gc
+
+            rep = pack_gc.run(out, dry_run=args.dry_run, force=args.force, repo=args.repo or "",
+                              public_base_url=public_base_url())
+            if args.json:
+                print(json.dumps(rep, indent=2))
+            else:
+                for c in rep["closures"]:
+                    print(f"{c['pack_id']}  {c['rule']:<18} {c['repo']}:{c['path']}  {c['title'][:70]}\n    {c['reason']}")
+                for r, why in {**rep["skipped"], **rep["held"]}.items():
+                    print(f"held {r}: {why}")
+                verb = "would close" if args.dry_run else "closed"
+                rules = ", ".join(f"{k} {v}" for k, v in sorted(rep["by_rule"].items()))
+                print(f"{verb} {rep['planned'] if args.dry_run else rep['closed']} of {rep['open_considered']} open "
+                      f"finding packs as obsolete ({rules or 'none'})")
         elif args.dedupe:
             from auditor.agent_pack import dedupe_packs
 
