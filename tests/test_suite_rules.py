@@ -106,3 +106,31 @@ def test_suite_packs_get_their_class_without_a_model(tmp_path: Path) -> None:
     assert rep["written"] == 1 and rep["classified_now"] == 0
     got = load_pack(tmp_path, "p1")["governance"]["finding_class"]
     assert got["id"] == "secret_exposure" and got["by"] == "static:suite"
+
+
+def test_catalogue_is_read_from_dev_not_the_checkout(tmp_path: Path, monkeypatch) -> None:
+    import subprocess
+
+    m = tmp_path / "argus-ci"
+    m.mkdir()
+    run = lambda *a: subprocess.run(["git", *a], cwd=m, check=True, capture_output=True)
+    run("init", "-q", "-b", "dev")
+    run("config", "user.email", "t@t")
+    run("config", "user.name", "t")
+    (m / "suite-rules").mkdir()
+    (m / "suite-rules" / "check.py").write_text("print('v1')\n")
+    (m / "suite-rules" / "catalogue.toml").write_text("version = 1\n")
+    run("add", ".")
+    run("commit", "-qm", "rules")
+    run("update-ref", "refs/remotes/origin/dev", "HEAD")   # the merged catalogue, as a mirror has it
+    run("checkout", "-q", "-b", "work")               # a repair branch checked out, without the rules
+    run("rm", "-rq", "suite-rules")
+    run("commit", "-qm", "drop")
+    cache = tmp_path / "cache"
+    d = suite_rules.export_catalogue(m, cache)
+    assert d is not None and (d / "check.py").read_text() == "print('v1')\n"   # HEAD has none; origin/dev does
+    assert suite_rules.export_catalogue(m, cache) == d                          # cached by tree hash
+    monkeypatch.delenv("AI_AUDIT_SUITE_RULES_DIR")
+    monkeypatch.setattr("auditor.trust_metrics._mirror_paths", lambda *_: {"argus-ci": m})
+    got = suite_rules.catalogue_dir(cache_root=tmp_path / "out")          # cache_root is the output dir
+    assert got == tmp_path / "out" / "_suite_rules" / d.parent.name / "suite-rules" and (got / "check.py").exists()

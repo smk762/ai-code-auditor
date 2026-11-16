@@ -37,6 +37,7 @@ reports/wiki/
 reports/wiki_public/
 reports/_brand/
 reports/_classes/
+reports/_suite_rules/
 reports/repo_readiness/
 reports/_validate_venvs/
 reports/_validate_git/

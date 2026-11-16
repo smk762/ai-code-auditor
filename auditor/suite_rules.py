@@ -11,7 +11,8 @@ from the argus-ci mirror, so a scan's findings and CI can't disagree:
 * ``fixtures()``: the ``rules.fixtures`` gate. Every rule must fire on its positive fixture and stay
   silent on its negative one.
 
-The catalogue is found at ``AI_AUDIT_SUITE_RULES_DIR``, else ``<argus-ci mirror>/suite-rules``.
+The catalogue is ``suite-rules/`` from the argus-ci mirror's ``origin/dev`` (exported to a cache by
+tree hash), or ``AI_AUDIT_SUITE_RULES_DIR``.
 ruff and semgrep come from ``$RUFF`` / ``$SEMGREP``, else from this environment.
 """
 from __future__ import annotations
@@ -35,18 +36,57 @@ SECURITY_CLASSES = frozenset({"ssrf", "path_traversal", "secret_exposure", "inje
 _SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
 
 
-def catalogue_dir(mirrors_path: str | Path = "config/repo_mirrors.yaml") -> Path | None:
+def catalogue_dir(mirrors_path: str | Path = "config/repo_mirrors.yaml", *,
+                  cache_root: str | Path | None = None) -> Path | None:
+    """The catalogue as merged on argus-ci's ``dev``: exported from the mirror's ``origin/dev`` into
+    ``<output_dir>/_suite_rules/<sha>/``, so whatever branch the mirror has checked out doesn't
+    matter. ``AI_AUDIT_SUITE_RULES_DIR`` points at a directory instead."""
     env = os.getenv("AI_AUDIT_SUITE_RULES_DIR")
     if env:
         d = Path(env)
-    else:
-        from auditor.trust_metrics import _mirror_paths
+        return d if (d / "check.py").is_file() and (d / "catalogue.toml").is_file() else None
+    from auditor.trust_metrics import _mirror_paths
 
-        ci = _mirror_paths(mirrors_path).get("argus-ci")
-        if ci is None:
-            return None
-        d = ci / "suite-rules"
-    return d if (d / "check.py").is_file() and (d / "catalogue.toml").is_file() else None
+    ci = _mirror_paths(mirrors_path).get("argus-ci")
+    if ci is None or not (ci / ".git").exists():
+        return None
+    return export_catalogue(ci, Path(cache_root or os.getenv("AI_AUDIT_OUTPUT_DIR") or "reports") / "_suite_rules")
+
+
+def export_catalogue(mirror: Path, cache: Path) -> Path | None:
+    def git(*args: str, **kw: Any) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=mirror, capture_output=True, timeout=60, check=False, **kw)
+
+    for ref in ("origin/dev", "HEAD"):
+        r = git("rev-parse", "--verify", "-q", f"{ref}:suite-rules", text=True)
+        if r.returncode == 0:
+            tree = r.stdout.strip()
+            break
+    else:
+        return None
+    dest = cache / tree[:16]
+    if (dest / "suite-rules" / "check.py").is_file():
+        return dest / "suite-rules"
+    arch = git("archive", "--format=tar", ref, "suite-rules")
+    if arch.returncode != 0:
+        return None
+    import io
+    import tarfile
+
+    tmp = cache / f".tmp-{tree[:16]}-{os.getpid()}"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    with tarfile.open(fileobj=io.BytesIO(arch.stdout)) as tf:
+        tf.extractall(tmp, filter="data")
+    try:
+        tmp.rename(dest)
+    except OSError:  # another process exported the same tree first
+        shutil.rmtree(tmp, ignore_errors=True)
+    for old in cache.iterdir():  # keep only the current catalogue
+        if old.name != dest.name and not old.name.startswith(".tmp-"):
+            shutil.rmtree(old, ignore_errors=True)
+    d = dest / "suite-rules"
+    return d if (d / "check.py").is_file() else None
 
 
 def _env() -> dict[str, str]:
