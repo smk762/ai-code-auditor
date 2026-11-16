@@ -435,6 +435,7 @@ def build_pack_from_finding(
         },
         provenance={
             "source": finding.source,
+            "finding_id": finding.id,
             "run_id": run_id,
             "task_id": task_id,
             "detected_at": finding.detected_at or utc_now_iso(),
