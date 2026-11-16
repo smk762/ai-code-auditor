@@ -33,6 +33,7 @@ NAV_ITEMS: list[tuple[str, str]] = [
     ("/ui/packs", "Packs"),
     ("/ui/wiki", "Wiki"),
     ("/ui/pack-savings", "Pack savings"),
+    ("/ui/trust", "Trust"),
     ("/ui/night", "Night"),
     ("/ui/architecture", "Architecture"),
     ("/audit/usage", "Usage"),

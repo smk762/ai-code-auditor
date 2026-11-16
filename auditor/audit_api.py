@@ -21,6 +21,7 @@ GET  /ui/runs, /ui/runs/{run_id}      Runs list and run summary pages (live via 
 GET  /ui/findings                     Findings page: trend, severity × repo matrix with +/-, filters, new/fixed
 GET  /ui/reports/{name}               A markdown report from output_dir, rendered server-side
 GET  /ui/pack-savings                 Pack token-savings page (data: /audit/pack-savings.json)
+GET  /ui/trust                        Agent trust metrics page (data: /audit/trust.json)
 GET  /ui/repos                        Repo summary cards (data: /audit/repos/summary.json)
 GET  /ui/packs, /ui/packs/{id}        Packs board and pack page (data: /audit/packs/board.json)
 GET  /ui/wiki, /ui/wiki/{repo}/{page}  Generated wiki (data: /audit/wiki[/{repo}[/{page}]])
@@ -32,6 +33,7 @@ POST /audit/extraction/{id}/approve   Approve an extraction candidate (adds a ru
 GET  /audit/runs.json                 All pipelines' runs + facets (pipeline, status filters)
 GET  /audit/runs/{run_id}/summary.json  Run summary with findings delta vs the previous run
 GET  /audit/findings.json             Filtered findings + severity × repo matrix for a run
+GET  /audit/trust.json                Trust metrics (?history=1 for the trend); POST /audit/trust/refresh (auth)
 GET  /reports/mithrandir/LATEST.json  Atomic rest-session status for mithrandir (Jarrah)
 GET  /reports/mithrandir/LATEST.md    TTS-safe companion briefing for Holly
 POST /audit/ingest                    Trigger RAG briefing ingest to the audit_docs collection
@@ -934,6 +936,12 @@ def get_pack_savings_page() -> HTMLResponse:
     return HTMLResponse(render_page("pack_savings.html", "/ui/pack-savings"))
 
 
+@app.get("/ui/trust", response_class=HTMLResponse)
+def get_trust_page() -> HTMLResponse:
+    """Agent trust (#52): lint-only resolutions, regressions, disputes, reverts, scan persistence."""
+    return HTMLResponse(render_page("trust.html", "/ui/trust"))
+
+
 @app.get("/ui/reports/{name}", response_class=HTMLResponse)
 def get_report_page(name: str) -> HTMLResponse:
     """One markdown report from the output dir, rendered server-side."""
@@ -1059,6 +1067,29 @@ def post_pack_savings_refresh() -> JSONResponse:
     from auditor.pack_savings import refresh
 
     return JSONResponse(refresh(output_dir=_output_dir()))
+
+
+@app.get("/audit/trust.json")
+def get_trust_json(history: bool = False) -> JSONResponse:
+    """Trust metrics (#52): false-resolve, reopen, recurrence, scan persistence, agent PR reverts, flow.
+    ``?history=1`` returns the recorded headline trend instead."""
+    from auditor.trust_metrics import load_history, load_report
+
+    if history:
+        return JSONResponse({"history": load_history(_output_dir())})
+    report = load_report(_output_dir())
+    if report is None:
+        raise HTTPException(status_code=404,
+                            detail="No trust metrics yet: run `ai-audit trust` or POST /audit/trust/refresh.")
+    return JSONResponse(report)
+
+
+@app.post("/audit/trust/refresh", dependencies=[Depends(_require_mutating_auth)])
+def post_trust_refresh(github: bool = False) -> JSONResponse:
+    """Recompute trust metrics now (``?github=1`` also re-lists agent PRs); appends to the history."""
+    from auditor.trust_metrics import refresh
+
+    return JSONResponse(refresh(_output_dir(), refresh_github=github)["headline"])
 
 
 @app.get("/audit/topology.json")

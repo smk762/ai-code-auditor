@@ -146,6 +146,7 @@ class AgentCodingPack:
             "file_path": (self.location or {}).get("file_path", ""),
             "line": int((self.location or {}).get("line") or 0),
             "duplicate_of": (self.governance or {}).get("duplicate_of") or "",
+            "recurrence_of": (self.governance or {}).get("recurrence_of") or "",
             "run_id": (self.provenance or {}).get("run_id", ""),
             "path": path,
             "url": url,
@@ -471,6 +472,8 @@ def _read_pack_yaml(path: Path) -> dict[str, Any] | None:
 def _carry_over_lifecycle(pack: AgentCodingPack, existing: dict[str, Any]) -> None:
     """Re-emitting a pack must not reset an agent-set status back to ``open``."""
     prev = AgentCodingPack.from_dict(existing, fallback_id=pack.work_item_id)
+    if prev.governance.get("recurrence_of") and not pack.governance.get("recurrence_of"):
+        pack.governance["recurrence_of"] = prev.governance["recurrence_of"]
     if prev.status == DEFAULT_PACK_STATUS and not prev.status_history:
         return
     if pack.status != DEFAULT_PACK_STATUS:
@@ -1019,6 +1022,46 @@ def merge_into_existing(packs: list[AgentCodingPack], output_dir: str | Path) ->
     return merged
 
 
+def link_recurrences(packs: list[AgentCodingPack], output_dir: str | Path) -> dict[str, str]:
+    """Mark each new pack that repeats a *resolved* pack with ``governance.recurrence_of``.
+
+    Resolved packs aren't merge targets (a comeback gets a fresh open pack), but the trust
+    metrics (#52) need to know the fix didn't hold. Same match as dedupe (same repo and file,
+    reworded title, different run), one resolved pack per new pack, best match first.
+    Returns ``{new_id: resolved_id}``."""
+    resolved: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for e in _index_entries(output_dir):
+        if (e.get("status") == "resolved" and e.get("layer") != "world_model"
+                and e.get("kind") not in _NO_TITLE_MATCH_KINDS):
+            resolved[(str(e.get("repo") or ""), str(e.get("file_path") or ""))].append(e)
+    if not resolved:
+        return {}
+    cands: list[tuple[float, int, str]] = []
+    for i, p in enumerate(packs):
+        if p.kind in _NO_TITLE_MATCH_KINDS or (p.governance or {}).get("recurrence_of"):
+            continue
+        run = str((p.provenance or {}).get("run_id") or "")
+        loc = p.location or {}
+        for e in resolved.get(((p.repo or {}).get("name", ""), loc.get("file_path", "")), []):
+            if e["id"] == p.work_item_id or (run and str(e.get("run_id") or "") == run):
+                continue
+            score = reworded_score((p.narrative or {}).get("title", ""), str(e.get("title") or ""),
+                                   loc.get("line"), e.get("line"))
+            if score > 0:
+                cands.append((-score, i, e["id"]))
+    linked: dict[str, str] = {}
+    used_new: set[int] = set()
+    used_old: set[str] = set()
+    for _neg, i, eid in sorted(cands):
+        if i in used_new or eid in used_old:
+            continue
+        used_new.add(i)
+        used_old.add(eid)
+        packs[i].governance["recurrence_of"] = eid
+        linked[packs[i].work_item_id] = eid
+    return linked
+
+
 def dedupe_packs(
     output_dir: str | Path, *, dry_run: bool = False, public_base_url: str = "",
 ) -> list[dict[str, Any]]:
@@ -1099,6 +1142,9 @@ def emit_packs_from_findings(
     merged = merge_into_existing(packs, output_dir)
     if merged:
         logger.info("%d of %d %s packs repeat an existing pack; reusing its id", len(merged), len(packs), kind)
+    recurred = link_recurrences([p for p in packs if p.work_item_id not in merged.values()], output_dir)
+    if recurred:
+        logger.info("%d %s packs repeat a resolved pack (recurrence_of)", len(recurred), kind)
     for pack in packs:
         write_pack(pack, output_dir)
     rebuild_index(output_dir, public_base_url=public_base_url)

@@ -104,6 +104,10 @@ def run() -> None:
     finally:
         record_run_finish(meta, "repo-audit")
         write_run_metadata(meta, output_dir=cfg.output_dir)
+    # After the run is recorded, so this scan counts (#52). Never fails the run.
+    from auditor.trust_metrics import refresh_quietly as refresh_trust
+
+    logger.info("trust metrics: %s", refresh_trust(cfg.output_dir))
 
 
 if __name__ == "__main__":
