@@ -26,6 +26,7 @@ here and in code. Don't add a rule to remember.
 | A partial RAG send retiring other docs | `test_rag_retire::test_sync_retires_only_what_the_send_replaced`, `::test_failed_delete_is_retried_and_failed_send_retires_nothing` |
 | Remove a GitHub label this tool didn't add, or label an external item | `test_linchpin::test_apply_labels_adds_removes_only_its_own_and_records_ledger` |
 | Spend past a lane budget | `test_spend_ledger::test_lane_and_total_caps`, `::test_batch_prefetch_trims_to_budget` |
+| Suite-rule findings that disagree with argus-ci's CI (a different catalogue or checker) | `test_suite_rules::test_catalogue_is_read_from_dev_not_the_checkout`; the scanner runs argus-ci's own `check.py` |
 | Serve a brand SVG with scripts or event handlers | `test_ui_topology::test_mark_rejects_active_content` |
 | A mutating endpoint without `_require_mutating_auth` | Per endpoint (`test_code_review_high_fixes::test_mutating_api_requires_token_when_configured` and others). **UNENFORCED** for a new endpoint: no test sweeps the routes |
 | Work pushed to `main`, a PR into `main` other than the release, or `main` ahead of `dev` except the release merge commit | **UNENFORCED** (see Branches) |
@@ -35,7 +36,7 @@ here and in code. Don't add a rule to remember.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e .[dev]            # ai-audit CLI; .[semantic] adds faiss-cpu
+pip install -e .[dev]            # ai-audit CLI; .[semantic] adds faiss-cpu; .[rules] the pinned semgrep
 alembic upgrade head             # audit DB (Postgres or SQLite)
 python -m pytest tests/ -v
 
@@ -100,6 +101,12 @@ set is made of the models being graded, so read scores as agreement, not ground 
 only when all three models agree, the class has a guard, and the frozen prompt in `reports/_classes/` exists
 (`auditor/pack_classes.py`). One class-guard pack per guardable class closes its children once a guard is proven
 (`auditor/class_packs.py`).
+
+**Suite rules** (#55, `auditor/suite_rules.py`). The lint catalogue lives in argus-ci (`suite-rules/`), not here. The
+scanner runs argus-ci's own `check.py` on the catalogue exported from the mirror's `origin/dev`, so its findings match
+CI. Guard-rule hits become findings (source `suite`) whose class comes from `config/finding_classes.yaml` with no model
+call. Convention rules such as `silent-except` are not findings. The `rules.fixtures` gate needs at least 5 rules, all
+passing their fixtures. In CI, a repo's `.suite-rules-baseline.json` may only shrink.
 
 **Pack GC** (`auditor/pack_gc.py`) is the only thing besides an agent or a person that closes finding packs. It only
 closes `open` packs, as `obsolete`, which means "no longer reported", not a fix. A re-found issue reopens the same pack.

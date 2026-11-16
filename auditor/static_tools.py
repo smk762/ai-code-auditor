@@ -8,19 +8,30 @@ from auditor.contracts import Finding
 
 
 def run_static_checks(repo_name: str, repo_path: str) -> list[Finding]:
+    from auditor import suite_rules
+
     findings: list[Finding] = []
     findings.extend(_run_bandit(repo_name, ["-r", repo_path]))
     findings.extend(_run_semgrep(repo_name, [repo_path]))
+    findings.extend(suite_rules.scan(repo_name, repo_path))  # the argus-ci catalogue, as CI runs it (#55)
     return findings
 
 
-def run_static_checks_on_files(repo_name: str, file_paths: list[str]) -> list[Finding]:
-    """Run static analysis on specific files (for diff-targeted auditing)."""
+def run_static_checks_on_files(repo_name: str, file_paths: list[str], *, root: str | None = None) -> list[Finding]:
+    """Run static analysis on specific files (for diff-targeted auditing). With *root*, the suite
+    rules run too (they key hits by path relative to the repo root)."""
     if not file_paths:
         return []
     findings: list[Finding] = []
     findings.extend(_run_bandit(repo_name, list(file_paths)))
     findings.extend(_run_semgrep(repo_name, list(file_paths)))
+    if root:
+        import os
+
+        from auditor import suite_rules
+
+        rel = [os.path.relpath(p, root) for p in file_paths]
+        findings.extend(suite_rules.scan(repo_name, root, rel))
     return findings
 
 
