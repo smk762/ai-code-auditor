@@ -307,6 +307,12 @@ def _build_parser() -> argparse.ArgumentParser:
     evt.add_argument("--json", action="store_true", help="Print the full report as JSON")
     evt.add_argument("--no-record", action="store_true", help="Don't write trust_eval.json or append the history")
 
+    evc = ev_sub.add_parser("classes", help="Score finding classifiers on the private gold set (#53)")
+    evc.add_argument("--llm", default="", help="Also score these models, comma-separated (e.g. claude-haiku-5-5)")
+    evc.add_argument("--dry-run", action="store_true", help="With --llm: price it, send nothing")
+    evc.add_argument("--sync", action="store_true", help="With --llm: streaming API (2x price, no batch wait)")
+    evc.add_argument("--json", action="store_true", help="Print the full report as JSON")
+
     tr = sub.add_parser(
         "trust",
         help="Trust metrics: false-resolve, reopen, recurrence, scan persistence, agent PR reverts (#52)",
@@ -523,6 +529,36 @@ def _refresh_pr_intel_quietly() -> dict:
 
 def _pct(v: float | None) -> str:
     return "  n/a" if v is None else f"{v:>5.0%}"
+
+
+def _run_eval_classes(args) -> None:
+    from auditor import finding_class as fc
+
+    rows = fc.load_gold()
+    if not rows:
+        raise SystemExit(f"No gold set under {fc.eval_dir()} (finding_classes_*.jsonl).")
+    reports = {"rules": fc.evaluate(rows)}
+    priced = []
+    for model in [m.strip() for m in args.llm.split(",") if m.strip()]:
+        from auditor import finding_class_llm as llm
+
+        out = llm.classify_rows(rows, model, _output_dir_default(), examples_from=rows,
+                                mode="sync" if args.sync else "batch", dry_run=args.dry_run)
+        priced.append(out)
+        if out["preds"] is not None:
+            reports[model] = fc.evaluate(rows, predict=llm.predictor(rows, out["preds"]))
+    if args.json:
+        print(json.dumps({"priced": [{k: v for k, v in p.items() if k != "preds"} for p in priced],
+                          "reports": reports}, indent=2))
+        return
+    for p in priced:
+        spent = f", spent ${p['cost_usd']:.4f} ({p['reused']} reused, {p['failed']} failed)" if "cost_usd" in p else ""
+        print(f"{p['model']}: {p['requests']} requests, estimated ${p['est_usd']:.4f}{spent}")
+    print(f"\n{'classifier':<22} {'set':<5} {'n':>4} {'precision':>9} {'coverage':>8}")
+    for name, rep in reports.items():
+        for s, d in rep["sets"].items():
+            prec = "—" if d["precision"] is None else f"{d['precision']:.1%}"
+            print(f"{name:<22} {s:<5} {d['n']:>4} {prec:>9} {d['coverage']:>8.1%}")
 
 
 def _run_eval_trust(args) -> None:
@@ -1402,7 +1438,7 @@ def main() -> None:
     elif args.command == "pr-intel":
         _run_pr_intel(as_json=args.json, cached=args.cached, label_p0=args.label_p0, dry_run=args.dry_run)
     elif args.command == "eval":
-        _run_eval_trust(args)
+        _run_eval_classes(args) if args.eval_command == "classes" else _run_eval_trust(args)
     elif args.command == "trust":
         _run_trust(as_json=args.json, cached=args.cached, history=args.history, github=args.github)
     elif args.command == "pack-savings":

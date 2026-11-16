@@ -128,8 +128,10 @@ def load_gold(directory: Path | None = None) -> list[dict[str, Any]]:
     return rows
 
 
-def evaluate(rows: list[dict[str, Any]], *, tax: Taxonomy | None = None) -> dict[str, Any]:
-    """Precision and coverage of the rules, per set (dev / test) and per class.
+def evaluate(rows: list[dict[str, Any]], *, tax: Taxonomy | None = None,
+             predict: Any = None) -> dict[str, Any]:
+    """Precision and coverage of a classifier, per set (dev / test) and per class. *predict*
+    maps a gold row to a class id ("" = unclassified); the default is the title rules.
 
     Precision = right / classified (unclassified rows don't count against it).
     Coverage = classified / all rows."""
@@ -141,7 +143,7 @@ def evaluate(rows: list[dict[str, Any]], *, tax: Taxonomy | None = None) -> dict
         wrong: list[dict[str, str]] = []
         classified = right = 0
         for r in sub:
-            m = classify(r["title"], tax=tax)
+            m = classify(r["title"], tax=tax) if predict is None else Match(predict(r), "llm")
             gold = r["label"]
             cell = per.setdefault(gold, {"n": 0, "found": 0})
             cell["n"] += 1
