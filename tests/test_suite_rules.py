@@ -91,7 +91,7 @@ def test_fixtures_feed_the_gate(tmp_path: Path) -> None:
 def test_taxonomy_maps_every_suite_guard_rule() -> None:
     tax = fc.taxonomy()
     assert set(tax.static_rules["suite"]) == {"missing-timeout", "predictable-tmp", "request-path-to-fs",
-                                              "request-url-outbound", "token-compare"}
+                                              "request-url-outbound", "token-compare", "agpl-import"}
     assert all(tax.get(c).guard != "none" for c in tax.static_rules["suite"].values())
 
 

@@ -262,6 +262,15 @@ classes:
       - '\bstripped under -O\b'
       - '\baccepts unbounded values\b'
 
+  - id: licence_violation
+    description: >-
+      An AGPL (or otherwise incompatible) package is imported in-process, which puts the importing package under its
+      licence. The fix is to call it over HTTP from its own service.
+    guard: semgrep  # argus-ci suite rule agpl-import
+    title:
+      - '\bAGPL\b'
+      - '\blicen[cs]e (violation|incompatib)'
+
 # Static tools' rule ids, mapped directly (no title guessing).
 static_rules:
   # argus-ci suite rules (#55): guard rules only; convention rules are not findings.
@@ -271,6 +280,7 @@ static_rules:
     request-path-to-fs: path_traversal
     request-url-outbound: ssrf
     token-compare: secret_exposure
+    agpl-import: licence_violation
   bandit:
     B113: missing_timeout
     B108: path_traversal
