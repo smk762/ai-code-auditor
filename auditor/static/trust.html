@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent trust</title>
+<link rel="stylesheet" href="/audit/static/ui.css">
+<script src="/audit/static/ui.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  .chart-box { position: relative; height: 240px; }
+  .legend i.dash { background: none !important; height: 0; border-top: 2px dashed; width: 14px; border-radius: 0; }
+  .legend i.dot2 { background: none !important; height: 0; border-top: 2px dotted; width: 14px; border-radius: 0; }
+  details summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); margin-top: 10px; }
+  .kpi .goal { font-size: 12px; color: var(--text-muted); }
+  .kpi .goal b { font-weight: 600; color: var(--text-secondary); }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--text-secondary); white-space: nowrap; }
+  .tag.regressed { border-color: var(--warn); color: var(--warn); }
+  td.title { max-width: 420px; }
+</style>
+</head>
+<body>
+<!--#nav-->
+<main>
+  <header class="page">
+    <h1>Agent trust</h1>
+    <div class="sub" id="sub">Loading…</div>
+  </header>
+
+  <section class="grid" id="kpis" aria-label="Headline numbers"></section>
+
+  <section class="grid">
+    <div class="card span-12">
+      <h2>Over time</h2>
+      <p class="hint">Lower is better for every line. Each point is one measurement, taken after every nightly repo audit. Scan persistence isn't plotted: it describes the scanner, not the agents.</p>
+      <div class="chart-box"><canvas id="trend" aria-label="Line chart of agent trust rates over time"></canvas></div>
+      <div class="legend" id="trend-legend"></div>
+      <details><summary>Show as table</summary>
+        <div class="table-wrap"><table id="history"><thead><tr><th>Measured</th><th class="num">Lint-only</th><th class="num">Regressed</th><th class="num">Disputed</th><th class="num">Reopened</th><th class="num">Reverted</th><th class="num">Persistence</th><th class="num">Open packs</th></tr></thead><tbody></tbody></table></div>
+      </details>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card span-12">
+      <h2>Per repo</h2>
+      <p class="hint"><b>Lint-only</b>: share of validator resolutions where no tests ran. <b>Regressed</b>: resolved packs whose issue came back after the fix. <b>Persistence</b>: share of a scan's findings the next scan of the repo reports again.</p>
+      <div class="table-wrap"><table id="repos"><thead><tr><th>Repo</th><th class="num">Validator resolutions</th><th class="num">Lint-only</th><th class="num">Observed</th><th class="num">Regressed</th><th class="num">Disputed</th><th class="num">Persistence</th></tr></thead><tbody><tr><td colspan="7" class="empty">Loading…</td></tr></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card span-12">
+      <h2>Recurrences</h2>
+      <p class="hint">Resolved packs whose issue came back. <b>Disputed</b>: the pack was closed without a patch as already handled, and the scanner still reports it. <b>Regressed</b>: a fix that didn't hold. Matching is by file and title wording, so some pairs are two different issues in one file.</p>
+      <div class="table-wrap"><table id="recur"><thead><tr><th>Kind</th><th>Repo</th><th>Resolved pack</th><th>Came back as</th><th>Resolved</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card span-12">
+      <h2>Agent PRs</h2>
+      <p class="hint" id="prs-hint"></p>
+      <div class="table-wrap"><table id="prs"><thead><tr><th>PR</th><th>Merged</th><th>Follow-ups</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card span-12">
+      <h2>Finding flow</h2>
+      <p class="hint">Per ISO week, findings new to a repo's scan and findings gone since its previous scan, by finding type (rewordings in the same file paired). Classes from #53 will replace types.</p>
+      <div class="table-wrap"><table id="flow"></table></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const { esc, int } = UI;
+const pct = (x) => x == null ? "—" : `${Math.round(x * 100)}%`;
+// Fixed slot per measure (never by rank); dashes are the non-colour cue.
+const SERIES = [
+  { key: "false_resolve_rate", label: "resolved on lint alone", color: "--series-1", dash: [] },
+  { key: "recurrence_rate", label: "regressed after a fix", color: "--series-3", dash: [6, 4], cls: "dash" },
+  { key: "dispute_rate", label: "disputed", color: "--series-5", dash: [2, 3], cls: "dot2" },
+  { key: "revert_rate", label: "agent PRs reverted", color: "--series-7", dash: [10, 3] , cls: "dash" },
+];
+let report = null, history = [], chart = null;
+
+function tile(label, value, note, goal) {
+  return `<div class="card kpi span-3"><div class="label">${label}</div><div class="value">${value}</div><div class="note">${note}</div>${goal ? `<div class="goal">${goal}</div>` : ""}</div>`;
+}
+
+function render() {
+  const fr = report.false_resolve, ro = report.reopen, rc = report.recurrence, sp = report.scan_persistence, prs = report.agent_prs;
+  const inp = report.inputs;
+  document.getElementById("sub").innerHTML =
+    `Measured ${UI.ago(report.generated_at)} · ${int(inp.finding_packs)} finding packs (${int(report.headline.open_finding_packs)} open) · ${UI.plural(inp.runs, "scan run")} since ${inp.first_scan ? esc(new Date(inp.first_scan).toLocaleDateString()) : "—"} · <a href="/audit/trust.json">JSON</a> · epic <a href="https://github.com/smk762/ai-code-auditor/issues/64">#64</a>`;
+  document.getElementById("kpis").innerHTML = [
+    tile("Resolved on lint alone", pct(fr.rate), `${int(fr.lint_only)} of ${int(fr.validator)} validator resolutions ran no tests · ${int(fr.manual)} closed by hand`, "<b>goal</b> ≤ 5% (#58)"),
+    tile("Regressed after a fix", pct(rc.rate), `${int(rc.regressed)} of ${int(rc.observed)} resolved packs came back · ${int(rc.disputed)} disputed · ${int(rc.pending)} awaiting a rescan`, "<b>goal</b> ≤ 5%"),
+    tile("Agent PRs reverted", prs ? pct(prs.rate) : "—", prs ? `${int(prs.reverted)} of ${int(prs.observed)} merged fix PRs · ${int(prs.fixed_forward)} fixed forward · ${int(prs.mature)} past ${prs.window_days} days` : "No PR list yet: run <code>ai-audit trust --github</code>", "<b>goal</b> ≤ 2%"),
+    tile("Scan persistence", pct(sp.rate), `${int(sp.refound)} of ${int(sp.findings)} findings re-reported by the next scan · reopened packs ${pct(ro.rate)}`, "the scanner's stability, read recurrence against it"),
+  ].join("");
+
+  const repos = new Set([...Object.keys(fr.by_repo), ...Object.keys(rc.by_repo), ...Object.keys(sp.by_repo)]);
+  document.querySelector("#repos tbody").innerHTML = [...repos].sort().map((r) => {
+    const f = fr.by_repo[r] || {}, c = rc.by_repo[r] || {}, s = sp.by_repo[r] || {};
+    return `<tr><td>${esc(r)}</td><td class="num">${int(f.validator || 0)}</td><td class="num">${pct(f.rate)}</td>
+      <td class="num">${int(c.observed || 0)}</td><td class="num">${c.regressed ? int(c.regressed) : "—"}</td><td class="num">${c.disputed ? int(c.disputed) : "—"}</td>
+      <td class="num">${pct(s.rate)}</td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="empty">No data yet.</td></tr>`;
+
+  document.querySelector("#recur tbody").innerHTML = rc.examples.map((e) => {
+    const m = /^pack (pack-[\w-]+)/.exec(e.evidence);
+    const back = m ? `<a href="/ui/packs/${encodeURIComponent(m[1])}">${esc(e.evidence.replace(/^pack [\w-]+:?\s*/, "") || m[1])}</a>` : esc(e.evidence);
+    return `<tr><td><span class="tag ${esc(e.kind)}">${esc(e.kind)}</span></td><td>${esc(e.repo)}</td>
+      <td class="title"><a href="/ui/packs/${encodeURIComponent(e.pack_id)}">${esc(e.title)}</a><div class="muted mono">${esc(e.path)}</div>${e.resolve_note ? `<div class="muted">${esc(e.resolve_note)}</div>` : ""}</td>
+      <td class="title">${back}</td><td>${UI.ago(e.resolved_at)}</td></tr>`;
+  }).join("") || `<tr><td colspan="5" class="empty">No resolved pack has come back.</td></tr>`;
+
+  document.getElementById("prs-hint").innerHTML = prs
+    ? `Merged PRs that fix audit packs: the body names a pack id, or the title fixes ai-code-auditor findings. A revert is a commit on the mirror's <span class="mono">dev</span> within ${prs.window_days} days that reverts one of the PR's commits or names it. A fix-forward is a later <span class="mono">fix…</span> commit that names it.`
+    : "No PR list cached yet.";
+  document.querySelector("#prs tbody").innerHTML = (prs?.prs || []).map((p) => {
+    const fu = !p.observed ? `<span class="muted">no mirror</span>`
+      : [...(p.reverts || []).map((s) => `<span class="tag regressed">revert ${esc(s.slice(0, 8))}</span>`),
+         ...(p.fixes || []).map((s) => `<span class="tag">fix ${esc(s.slice(0, 8))}</span>`)].join(" ") || `<span class="muted">none${p.mature ? "" : " yet"}</span>`;
+    return `<tr><td><a href="${esc(p.url)}">${esc(p.repo)}#${int(p.number)}</a> ${esc(p.title)}</td><td>${UI.ago(p.merged_at)}</td><td>${fu}</td></tr>`;
+  }).join("") || `<tr><td colspan="3" class="empty">No agent PRs found.</td></tr>`;
+
+  const weeks = Object.keys(report.flow);
+  const types = [...new Set(weeks.flatMap((w) => [...Object.keys(report.flow[w].new), ...Object.keys(report.flow[w].gone)]))].sort();
+  document.getElementById("flow").innerHTML = weeks.length
+    ? `<thead><tr><th>Week</th>${types.map((t) => `<th class="num">${esc(t)} new</th><th class="num">${esc(t)} gone</th>`).join("")}</tr></thead><tbody>` +
+      weeks.slice().reverse().map((w) => `<tr><td class="mono">${esc(w)}</td>${types.map((t) =>
+        `<td class="num">${int(report.flow[w].new[t] || 0)}</td><td class="num">${int(report.flow[w].gone[t] || 0)}</td>`).join("")}</tr>`).join("") + "</tbody>"
+    : `<tbody><tr><td class="empty">Needs two scans of a repo.</td></tr></tbody>`;
+}
+
+function renderTrend() {
+  document.querySelector("#history tbody").innerHTML = [...history].reverse().map((h) => `<tr><td>${esc(new Date(h.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }))}</td>
+    <td class="num">${pct(h.false_resolve_rate)}</td><td class="num">${pct(h.recurrence_rate)}</td><td class="num">${pct(h.dispute_rate)}</td>
+    <td class="num">${pct(h.reopen_rate)}</td><td class="num">${pct(h.revert_rate)}</td><td class="num">${pct(h.scan_persistence)}</td>
+    <td class="num">${h.open_finding_packs == null ? "—" : int(h.open_finding_packs)}</td></tr>`).join("")
+    || `<tr><td colspan="8" class="empty">No history yet.</td></tr>`;
+  document.getElementById("trend-legend").innerHTML = SERIES.map((s) =>
+    `<span><i class="${s.cls || ""}" style="background:var(${s.color});border-color:var(${s.color})"></i>${esc(s.label)}</span>`).join("");
+
+  const css = UI.css;
+  Chart.defaults.color = css("--text-secondary");
+  Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+  Chart.defaults.font.size = 12;
+  const fmt = (d) => d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const endLabels = {
+    id: "endLabels", afterDatasetsDraw(c) {
+      const { ctx } = c; ctx.save(); ctx.font = `12px ${Chart.defaults.font.family}`; ctx.fillStyle = css("--text-secondary"); ctx.textBaseline = "middle";
+      c.data.datasets.forEach((ds, i) => {
+        const pt = c.getDatasetMeta(i).data.at(-1);
+        if (pt && ds.data.at(-1) != null) ctx.fillText(pct(ds.data.at(-1)), pt.x + 8, pt.y);
+      });
+      ctx.restore();
+    },
+  };
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById("trend"), {
+    type: "line",
+    data: {
+      labels: history.map((h) => fmt(new Date(h.at))),
+      datasets: SERIES.map((s) => ({
+        label: s.label, data: history.map((h) => h[s.key]), borderColor: css(s.color), backgroundColor: css(s.color),
+        borderDash: s.dash, borderWidth: 2, pointRadius: history.length < 20 ? 4 : 0, pointHoverRadius: 5,
+        pointBorderColor: css("--surface-1"), pointBorderWidth: 2, tension: 0, spanGaps: true,
+      })),
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      layout: { padding: { right: 44 } },
+      interaction: { mode: "index", intersect: false },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+        y: { min: 0, max: 1, grid: { color: css("--grid") }, border: { display: false }, ticks: { callback: (v) => `${v * 100}%`, stepSize: 0.25 } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: css("--surface-1"), titleColor: css("--text-primary"), bodyColor: css("--text-secondary"),
+          borderColor: css("--border"), borderWidth: 1, padding: 10, boxPadding: 4, usePointStyle: true,
+          callbacks: { label: (c) => ` ${c.dataset.label}: ${pct(c.parsed.y)}` },
+        },
+      },
+    },
+    plugins: [endLabels],
+  });
+}
+
+async function load() {
+  const sub = document.getElementById("sub");
+  try {
+    const [r, h] = await Promise.all([fetch("/audit/trust.json"), UI.getJSON("/audit/trust.json?history=1")]);
+    history = h.history || [];
+    if (r.status === 404) {
+      sub.innerHTML = `No measurement yet. Run <code>ai-audit trust</code> (it also runs after every nightly repo audit).`;
+    } else if (!r.ok) {
+      throw new Error(`${r.status} ${(await r.text()).slice(0, 200)}`);
+    } else {
+      report = await r.json();
+      render();
+    }
+    renderTrend();
+  } catch (e) {
+    sub.innerHTML = `<span class="err">Could not load trust metrics: ${esc(e.message)}</span>`;
+  }
+}
+UI.onThemeChange(() => { if (history.length) renderTrend(); });
+load();
+</script>
+</body>
+</html>

@@ -284,6 +284,15 @@ def _build_parser() -> argparse.ArgumentParser:
     sav.add_argument("--cached", action="store_true", help="Show the last report instead of re-measuring")
     sav.add_argument("--history", action="store_true", help="Show the recorded trend instead")
 
+    tr = sub.add_parser(
+        "trust",
+        help="Trust metrics: false-resolve, reopen, recurrence, scan persistence, agent PR reverts (#52)",
+    )
+    tr.add_argument("--json", action="store_true", help="Print the full report as JSON")
+    tr.add_argument("--cached", action="store_true", help="Show the last report instead of recomputing")
+    tr.add_argument("--history", action="store_true", help="Show the recorded trend instead")
+    tr.add_argument("--github", action="store_true", help="Re-list agent PRs from GitHub (needs GITHUB_TOKEN)")
+
     wk = sub.add_parser("wiki", help="Generated per-repo wiki (DeepWiki-style): build or show status")
     wk_sub = wk.add_subparsers(dest="wiki_command", required=True)
     wkb = wk_sub.add_parser("build", help="Build wiki pages (notes → drafts → check-and-fix) via the Batch API")
@@ -491,6 +500,48 @@ def _refresh_pr_intel_quietly() -> dict:
 
 def _pct(v: float | None) -> str:
     return "  n/a" if v is None else f"{v:>5.0%}"
+
+
+def _run_trust(*, as_json: bool, cached: bool, history: bool, github: bool) -> None:
+    from auditor.trust_metrics import load_history, load_report, refresh
+
+    if history:
+        rows = load_history(_output_dir_default())
+        if as_json:
+            print(json.dumps(rows, indent=2))
+            return
+        if not rows:
+            raise SystemExit("No trust history yet; run `ai-audit trust` first.")
+        print(f"{'measured':16} {'lint-only':>9} {'reopen':>7} {'regress':>8} {'dispute':>8} {'persist':>8} {'revert':>7} {'open':>6}")
+        for r in rows:
+            print(f"{str(r.get('at'))[:16]:16} {_pct(r.get('false_resolve_rate')):>9} {_pct(r.get('reopen_rate')):>7} "
+                  f"{_pct(r.get('recurrence_rate')):>8} {_pct(r.get('dispute_rate')):>8} "
+                  f"{_pct(r.get('scan_persistence')):>8} {_pct(r.get('revert_rate')):>7} {r.get('open_finding_packs') or 0:>6}")
+        return
+    report = load_report(_output_dir_default()) if cached else refresh(_output_dir_default(), refresh_github=github)
+    if report is None:
+        raise SystemExit("No cached trust metrics; run `ai-audit trust` first.")
+    if as_json:
+        print(json.dumps(report, indent=2, default=str))
+        return
+    fr, ro, rc, sp = report["false_resolve"], report["reopen"], report["recurrence"], report["scan_persistence"]
+    prs = report.get("agent_prs") or {}
+    print(f"false-resolve   {_pct(fr['rate'])}  {fr['lint_only']} of {fr['validator']} validator resolutions ran no tests "
+          f"({fr['manual']} manual)")
+    print(f"reopen          {_pct(ro['rate'])}  {ro['reopened']} of {ro['ever_resolved']} resolved packs reopened")
+    print(f"recurrence      {_pct(rc['rate'])}  {rc['regressed']} regressed, {rc['disputed']} disputed, of "
+          f"{rc['observed']} observed ({rc['pending']} pending a rescan)")
+    print(f"persistence     {_pct(sp['rate'])}  {sp['refound']} of {sp['findings']} findings re-reported by the next scan")
+    if prs:
+        print(f"agent PR revert {_pct(prs.get('rate'))}  {prs['reverted']} reverted, {prs['fixed_forward']} fixed forward, "
+              f"of {prs['observed']} observed ({prs['mature']} past the {prs['window_days']}-day window)")
+    else:
+        print("agent PR revert   n/a  no PR list cached; run with --github")
+    print(f"open finding packs {report['headline'].get('open_finding_packs')}")
+
+
+def _output_dir_default() -> str:
+    return os.getenv("AI_AUDIT_OUTPUT_DIR") or "reports"
 
 
 def _run_pack_savings(*, as_json: bool, cached: bool, history: bool) -> None:
@@ -1263,6 +1314,8 @@ def main() -> None:
         print(json.dumps(out, indent=2))
     elif args.command == "pr-intel":
         _run_pr_intel(as_json=args.json, cached=args.cached)
+    elif args.command == "trust":
+        _run_trust(as_json=args.json, cached=args.cached, history=args.history, github=args.github)
     elif args.command == "pack-savings":
         _run_pack_savings(as_json=args.json, cached=args.cached, history=args.history)
     elif args.command == "wiki":
