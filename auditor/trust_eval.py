@@ -65,7 +65,8 @@ def _since_bar(report: dict[str, Any]) -> tuple[int, int, int]:
     return n, int(fr.get("lint_only_since_bar") or 0), int(by.get("waiver") or 0)
 
 
-def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None) -> list[Gate]:
+def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
+                classes: dict[str, Any] | None = None) -> list[Gate]:
     t = trust or {}
     gates: list[Gate] = []
 
@@ -112,9 +113,18 @@ def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None) -> 
                       "Packs GC closed as obsolete that a scan then reported again", "<=", 0.10, 20)
                  .judge(g.get("rate"), int(g.get("closed") or 0)))
 
+    # ── #53 finding classes: measured on the blind, held-out gold set only ──
+    test = ((classes or {}).get("sets") or {}).get("test") or {}
+    none = "" if classes else "no gold set (~/.config/ai-code-auditor/eval/finding_classes_*.jsonl)"
+    gates.append(Gate("classes.precision", "finding classes", 53,
+                      "Classifier precision on the held-out gold set (labelled blind, council-checked)", ">=", 0.95, 30)
+                 .judge(test.get("precision"), int(test.get("classified") or 0), none))
+    gates.append(Gate("classes.coverage", "finding classes", 53,
+                      "Held-out findings the classifier assigns a class (logic_error rows included)", ">=", 0.80, 50)
+                 .judge(test.get("coverage"), int(test.get("n") or 0), none))
+
     # ── not built yet: visible, never counted as passing ──
     for gid, comp, issue, desc in (
-        ("classes.precision", "finding classes", 53, "Rule classifier precision on the held-out gold set"),
         ("class_packs.lifecycle", "class packs", 54, "Class-guard packs close children only when the guard holds"),
         ("rules.fixtures", "suite rules", 55, "Every suite rule fires on its positive fixture and not its negative"),
         ("arch.contracts", "architecture contracts", 57, "Every architecture contract fires on a seeded violation"),
@@ -184,6 +194,28 @@ def metrics_exit(trust_history: list[dict[str, Any]]) -> dict[str, Any]:
 
 # ── run ──────────────────────────────────────────────────────────────────────
 
+def classes_eval(out: Path) -> dict[str, Any] | None:
+    """Score the classifier on the private gold set (cheap: no model calls); None without one."""
+    from auditor import finding_class
+
+    try:
+        rows = finding_class.load_gold()
+    except (OSError, ValueError) as exc:
+        logger.warning("gold set unreadable: %s", exc)
+        return None
+    if not rows:
+        return None
+    from auditor.finding_class_llm import consensus_predictor
+
+    # The gate scores the classifier packs actually get: all-three-models consensus, from stored
+    # answers (no API call). Until those exist, the title rules.
+    cp = consensus_predictor(out)
+    rep = finding_class.evaluate(rows, predict=cp)
+    rep["classifier"] = "consensus" if cp else "rules"
+    (out / finding_class.EVAL_NAME).write_text(json.dumps(rep, indent=1))
+    return rep
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         return json.loads(path.read_text())
@@ -211,7 +243,7 @@ def evaluate(output_dir: str | Path | None = None, *, record: bool = True,
     from auditor.trust_metrics import HISTORY_NAME as TRUST_HISTORY
     from auditor.trust_metrics import REPORT_NAME as TRUST_REPORT
 
-    gates = build_gates(_read_json(out / TRUST_REPORT), _read_json(out / SEEDED_NAME))
+    gates = build_gates(_read_json(out / TRUST_REPORT), _read_json(out / SEEDED_NAME), classes_eval(out))
     at = (now or datetime.now(UTC)).isoformat()
     statuses = {g.id: g.status for g in gates}
     history = [*_read_jsonl(out / HISTORY_NAME), {"at": at, "statuses": statuses}]

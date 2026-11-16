@@ -110,6 +110,10 @@ def run() -> None:
     from auditor.trust_metrics import refresh_quietly as refresh_trust
 
     logger.info("pack gc: %s", pack_gc(cfg.output_dir))
+    # Classes onto new packs (#53): only re-asks packs whose text changed; the classes lane caps it.
+    from auditor.pack_classes import run_quietly as classify_packs
+
+    logger.info("pack classes: %s", classify_packs(cfg.output_dir))
     logger.info("trust metrics: %s", refresh_trust(cfg.output_dir))
     # Gates last: they read the fresh metrics. The seeded-defect eval re-runs when it's a week old (#63).
     from auditor.trust_eval import evaluate_quietly

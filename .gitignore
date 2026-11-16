@@ -36,6 +36,7 @@ reports/wiki_eval/
 reports/wiki/
 reports/wiki_public/
 reports/_brand/
+reports/_classes/
 reports/repo_readiness/
 reports/_validate_venvs/
 reports/_validate_git/

@@ -34,7 +34,8 @@ PRICES: dict[str, tuple[float, float]] = {
     "claude-fable-5-2": (8.00, 40.00),
 }
 # wiki: generated repo wiki (ai-code-auditor#8), ~$20-30/mo with incremental rebuilds
-DEFAULT_LANE_CAPS = {"audit": 15.0, "audit_batch": 100.0, "conductor": 80.0, "wiki": 30.0}
+# classes: LLM finding classifier (#53); evals + backfill approved up to $5 on 2026-11-16
+DEFAULT_LANE_CAPS = {"audit": 15.0, "audit_batch": 100.0, "conductor": 80.0, "wiki": 30.0, "classes": 5.0}
 DEFAULT_PATH = "index/llm_spend.db"
 
 

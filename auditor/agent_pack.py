@@ -149,6 +149,7 @@ class AgentCodingPack:
             "line": int((self.location or {}).get("line") or 0),
             "duplicate_of": (self.governance or {}).get("duplicate_of") or "",
             "recurrence_of": (self.governance or {}).get("recurrence_of") or "",
+            "finding_class": ((self.governance or {}).get("finding_class") or {}).get("id") or "",
             "run_id": (self.provenance or {}).get("run_id", ""),
             "path": path,
             "url": url,
@@ -500,6 +501,9 @@ def _carry_over_lifecycle(pack: AgentCodingPack, existing: dict[str, Any]) -> No
     prev = AgentCodingPack.from_dict(existing, fallback_id=pack.work_item_id)
     if prev.governance.get("recurrence_of") and not pack.governance.get("recurrence_of"):
         pack.governance["recurrence_of"] = prev.governance["recurrence_of"]
+    if prev.governance.get("finding_class") and not pack.governance.get("finding_class"):
+        # The nightly classify step re-checks it against the text hash (#53)
+        pack.governance["finding_class"] = prev.governance["finding_class"]
     if prev.status == DEFAULT_PACK_STATUS and not prev.status_history:
         return
     if pack.status != DEFAULT_PACK_STATUS:

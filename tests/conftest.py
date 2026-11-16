@@ -31,6 +31,12 @@ def _isolated_rag_ledger(tmp_path_factory: pytest.TempPathFactory, monkeypatch: 
 
 
 @pytest.fixture(autouse=True)
+def _isolated_eval_dir(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never read the private gold sets under ~/.config/ai-code-auditor/eval (they quote real findings)."""
+    monkeypatch.setenv("AI_AUDIT_EVAL_DIR", str(tmp_path_factory.mktemp("eval")))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """auditor.env_loader pulls the developer's real .env into os.environ; tests must
     see built-in defaults, not whichever provider/model is configured locally."""

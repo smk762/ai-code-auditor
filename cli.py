@@ -224,6 +224,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Close open finding packs no scan reports any more as obsolete (file gone, missed by the last nightly "
              "scans, changed and unreported, diff_audit TTL); they reopen if found again",
     )
+    packs.add_argument("--classify", action="store_true",
+                       help="Write finding classes onto packs where Haiku, Sonnet and Opus agree on a guardable "
+                            "class (Batch API, classes lane; --dry-run prices it)")
     packs.add_argument("--force", action="store_true", help="With --gc: override the hold on repos where it would "
                        "close more than half the open packs")
     packs.add_argument("--dry-run", action="store_true", help="With --dedupe or --gc: list what would close, change nothing")
@@ -306,6 +309,19 @@ def _build_parser() -> argparse.ArgumentParser:
     evt.add_argument("--repos", default="", help="With --seeded: comma-separated repos (default: a weekly sample)")
     evt.add_argument("--json", action="store_true", help="Print the full report as JSON")
     evt.add_argument("--no-record", action="store_true", help="Don't write trust_eval.json or append the history")
+
+    evc = ev_sub.add_parser("classes", help="Score finding classifiers on the private gold set (#53)")
+    evc.add_argument("--llm", default="", help="Also score these models, comma-separated (e.g. claude-haiku-5-5)")
+    evc.add_argument("--dry-run", action="store_true", help="With --llm: price it, send nothing")
+    evc.add_argument("--sync", action="store_true", help="With --llm: streaming API (2x price, no batch wait)")
+    evc.add_argument("--json", action="store_true", help="Print the full report as JSON")
+    evc.add_argument("--review", action="store_true",
+                     help="Second labeller: label held-out findings blind (resumable; no API spend)")
+    evc.add_argument("--adjudicate", action="store_true",
+                     help="Settle each disagreement between the two labels, shown unattributed")
+    evc.add_argument("--limit", type=int, default=0, help="With --review: stop after this many findings")
+    evc.add_argument("--council", action="store_true",
+                     help="Three models check each held-out label against the pack's code (Batch API, classes lane)")
 
     tr = sub.add_parser(
         "trust",
@@ -523,6 +539,87 @@ def _refresh_pr_intel_quietly() -> dict:
 
 def _pct(v: float | None) -> str:
     return "  n/a" if v is None else f"{v:>5.0%}"
+
+
+def _run_eval_classes(args) -> None:
+    from auditor import finding_class as fc
+    from auditor import finding_class_review as review
+
+    if args.council:
+        from auditor import finding_class_council as council
+
+        first = fc.load_gold(reviewed=False)
+        out = council.run(first, _output_dir_default(), Path(_output_dir_default()) / "agent_packs",
+                          mode="sync" if args.sync else "batch", dry_run=args.dry_run)
+        if args.dry_run:
+            print(f"council: {out['n']} findings, {out['requests']} requests, estimated ${out['est_usd']:.4f}")
+            return
+        oc = out["outcomes"]
+        print(f"council on {out['n']} held-out labels: confirmed {oc.get('confirmed', 0)}, relabelled "
+              f"{oc.get('relabelled', 0)}, contested {oc.get('contested', 0)}, split {oc.get('split', 0)} "
+              f"(fidelity {out['fidelity']:.0%}); spent ${out['cost_usd']:.4f}, {out['failed_requests']} failed")
+        print(f"details: {fc.eval_dir() / council.SUMMARY_NAME}")
+        return
+    if args.review or args.adjudicate:
+        first = fc.load_gold(reviewed=False)
+        if not first:
+            raise SystemExit(f"No gold set under {fc.eval_dir()} (finding_classes_*.jsonl).")
+        try:
+            n = review.run_blind(first, limit=args.limit or None) if args.review else review.run_adjudicate(first)
+        except (EOFError, KeyboardInterrupt):
+            n = None
+        print(f"\nsaved to {review.review_path()}" + (f" ({n} this session)" if n is not None else ""))
+        _print_agreement(review.agreement(first, review.load_reviews()))
+        return
+    rows = fc.load_gold()
+    if not rows:
+        raise SystemExit(f"No gold set under {fc.eval_dir()} (finding_classes_*.jsonl).")
+    reports = {"rules": fc.evaluate(rows)}
+    priced = []
+    for model in [m.strip() for m in args.llm.split(",") if m.strip()]:
+        from auditor import finding_class_llm as llm
+
+        system = llm.frozen_system(_output_dir_default(), fc.load_gold(reviewed=False))
+        out = llm.classify_rows(rows, model, _output_dir_default(), system=system,
+                                mode="sync" if args.sync else "batch", dry_run=args.dry_run)
+        priced.append(out)
+        if out["preds"] is not None:
+            llm.save_gold_preds(_output_dir_default(), rows, model, out["preds"])
+            reports[model] = fc.evaluate(rows, predict=llm.predictor(rows, out["preds"]))
+    if priced and all(p["preds"] is not None for p in priced):
+        from auditor import finding_class_llm as llm
+
+        cp = llm.consensus_predictor(_output_dir_default())
+        if cp:
+            reports["consensus"] = fc.evaluate(rows, predict=cp)
+    if args.json:
+        print(json.dumps({"priced": [{k: v for k, v in p.items() if k != "preds"} for p in priced],
+                          "reports": reports}, indent=2))
+        return
+    for p in priced:
+        spent = f", spent ${p['cost_usd']:.4f} ({p['reused']} reused, {p['failed']} failed)" if "cost_usd" in p else ""
+        print(f"{p['model']}: {p['requests']} requests, estimated ${p['est_usd']:.4f}{spent}")
+    print(f"\n{'classifier':<22} {'set':<5} {'n':>4} {'precision':>9} {'coverage':>8}")
+    for name, rep in reports.items():
+        for s, d in rep["sets"].items():
+            prec = "—" if d["precision"] is None else f"{d['precision']:.1%}"
+            print(f"{name:<22} {s:<5} {d['n']:>4} {prec:>9} {d['coverage']:>8.1%}")
+    ag = review.agreement(fc.load_gold(reviewed=False), review.load_reviews())
+    if ag["n"]:
+        print()
+        _print_agreement(ag)
+
+
+def _print_agreement(ag: dict) -> None:
+    if not ag.get("n"):
+        print("no second labels yet")
+        return
+    kappa = "n/a" if ag["kappa"] is None else f"{ag['kappa']:.2f}"
+    guard = "n/a" if ag["guard_raw"] is None else f"{ag['guard_raw']:.0%} of {ag['guard_n']}"
+    print(f"labellers agree on {ag['agree']}/{ag['n']} ({ag['raw']:.0%}, kappa {kappa}); "
+          f"where either says a guardable class: {guard}")
+    print(f"disagreements {ag['disputed']}, adjudicated {ag['adjudicated']} "
+          f"(first label kept {ag['first_label_kept']})")
 
 
 def _run_eval_trust(args) -> None:
@@ -1169,6 +1266,19 @@ def main() -> None:
                     f"~{bundle['approx_tokens']}/{bundle['token_budget']} tokens "
                     f"truncated={bundle['truncated']} — GET {bundle['discovery']['bundle']}"
                 )
+        elif args.classify:
+            from auditor import pack_classes
+
+            rep = pack_classes.run(out, dry_run=args.dry_run, public_base_url=public_base_url())
+            if args.json or "skipped" in rep:
+                print(json.dumps(rep, indent=2))
+            elif args.dry_run:
+                print(f"{rep['to_classify']} of {rep['packs']} finding packs to classify, estimated ${rep['est_usd']:.2f}")
+            else:
+                print(f"classified {rep['classified_now']} packs for ${rep['cost_usd']:.4f}; {rep['with_class']} of "
+                      f"{rep['packs']} carry a class ({rep['written']} written, {rep['removed']} removed)")
+                for cls, n in sorted(rep["by_class"].items(), key=lambda kv: -kv[1]):
+                    print(f"  {cls:<24} {n}")
         elif args.gc:
             from auditor import pack_gc
 
@@ -1402,7 +1512,7 @@ def main() -> None:
     elif args.command == "pr-intel":
         _run_pr_intel(as_json=args.json, cached=args.cached, label_p0=args.label_p0, dry_run=args.dry_run)
     elif args.command == "eval":
-        _run_eval_trust(args)
+        _run_eval_classes(args) if args.eval_command == "classes" else _run_eval_trust(args)
     elif args.command == "trust":
         _run_trust(as_json=args.json, cached=args.cached, history=args.history, github=args.github)
     elif args.command == "pack-savings":

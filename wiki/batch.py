@@ -75,10 +75,15 @@ class StageStats:
 
 class Runner:
     def __init__(self, output_dir: str | Path, *, mode: str = "batch", client: Any = None,
-                 poll_s: int = 30, max_wait_s: int = 6 * 3600, concurrency: int = 4):
+                 poll_s: int = 30, max_wait_s: int = 6 * 3600, concurrency: int = 4,
+                 lane: str = LANE, subdir: str = "wiki"):
+        """*lane* is the spend-ledger lane checked and charged; *subdir* (under *output_dir*)
+        holds this runner's stored results and batch state. Other users (the finding-class
+        classifier) pass their own, so they never share a budget or a result cache with the wiki."""
         if mode not in ("batch", "sync"):
             raise ValueError(f"mode must be batch or sync, not {mode!r}")
-        self.root = Path(output_dir) / "wiki"
+        self.lane = lane
+        self.root = Path(output_dir) / subdir
         self.results_dir = self.root / "_results"
         self.state_path = self.root / "_batches.json"
         self.mode, self.poll_s, self.max_wait_s, self.concurrency = mode, poll_s, max_wait_s, concurrency
@@ -119,7 +124,7 @@ class Runner:
         self._result_path(r.custom_id).write_text(json.dumps(r.__dict__), encoding="utf-8")
 
     def _record(self, custom_id: str, msg: Any, note: str, *, batch: bool) -> Result:
-        cost = get_ledger().record_usage(LANE, getattr(msg, "model", ""), msg.usage, batch=batch, note=note)
+        cost = get_ledger().record_usage(self.lane, getattr(msg, "model", ""), msg.usage, batch=batch, note=note)
         text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
         r = Result(custom_id, text=text, stop_reason=msg.stop_reason, cost=cost)
         self._store(r)
@@ -181,10 +186,10 @@ class Runner:
         stats.est_usd = sum(r.est_usd for r in todo) * (1 if self.mode == "batch" else 2)
         if not todo:
             return results, stats
-        left = get_ledger().remaining(LANE)
+        left = get_ledger().remaining(self.lane)
         if stats.est_usd > left:
-            raise BudgetExceeded(f"wiki {stage}: estimated ${stats.est_usd:.2f} for {len(todo)} requests, "
-                                 f"but the wiki lane has ${left:.2f} left this budget month")
+            raise BudgetExceeded(f"{self.lane} {stage}: estimated ${stats.est_usd:.2f} for {len(todo)} requests, "
+                                 f"but the {self.lane} lane has ${left:.2f} left this budget month")
         stats.submitted = len(todo)
         logger.info("wiki %s: %d requests (~$%.2f), %d reused", stage, len(todo), stats.est_usd, stats.reused)
         if self.mode == "sync":
