@@ -292,6 +292,15 @@ def _build_parser() -> argparse.ArgumentParser:
     sav.add_argument("--cached", action="store_true", help="Show the last report instead of re-measuring")
     sav.add_argument("--history", action="store_true", help="Show the recorded trend instead")
 
+    ev = sub.add_parser("eval", help="Reliability evals (#63)")
+    ev_sub = ev.add_subparsers(dest="eval_command", required=True)
+    evt = ev_sub.add_parser("trust", help="Gates for the trust upgrade: what passes, fails, lacks data, or isn't built")
+    evt.add_argument("--seeded", action="store_true",
+                     help="Re-run the seeded-defect eval first (plants bugs in real repos; minutes, no API spend)")
+    evt.add_argument("--repos", default="", help="With --seeded: comma-separated repos (default: a weekly sample)")
+    evt.add_argument("--json", action="store_true", help="Print the full report as JSON")
+    evt.add_argument("--no-record", action="store_true", help="Don't write trust_eval.json or append the history")
+
     tr = sub.add_parser(
         "trust",
         help="Trust metrics: false-resolve, reopen, recurrence, scan persistence, agent PR reverts (#52)",
@@ -508,6 +517,32 @@ def _refresh_pr_intel_quietly() -> dict:
 
 def _pct(v: float | None) -> str:
     return "  n/a" if v is None else f"{v:>5.0%}"
+
+
+def _run_eval_trust(args) -> None:
+    from auditor import eval_seeded, trust_eval
+
+    out = _output_dir_default()
+    if args.seeded:
+        r = eval_seeded.run(out, repos=[x for x in args.repos.split(",") if x] or None)
+        print(f"seeded eval: {r['fix']['detected']}/{r['fix']['n']} bugs proven, "
+              f"{r['control']['wrongly_accepted']}/{r['control']['n']} non-fixes wrongly accepted, "
+              f"repos {', '.join(r['repos_with_scenarios']) or 'none'} ({r['seconds']}s)")
+    rep = trust_eval.evaluate(out, record=not args.no_record)
+    if args.json:
+        print(json.dumps(rep, indent=2))
+        return
+    mark = {"pass": "PASS", "fail": "FAIL", "insufficient": "  ..", "pending": "  --"}
+    for g in rep["gates"]:
+        val = "" if g["value"] is None else f"{g['value']:.0%}" if g["threshold"] <= 1 else f"{g['value']}"
+        need = f"{g['op']} {g['threshold']:.0%}"
+        extra = f"n={g['n']}" + (f" (needs {g['min_n']})" if g["status"] == "insufficient" else "")
+        print(f"{mark[g['status']]}  {g['id']:<28} {val:>6} {need:<7} {extra:<18} #{g['issue']} {g['note']}")
+    s, ex = rep["summary"], rep["exit"]
+    print(f"\n{s['pass']} pass · {s['fail']} fail · {s['insufficient']} need data · {s['pending']} not built")
+    print(f"exit: gates green two weeks running: {ex['gates_two_weeks']['met']} · "
+          f"metrics not worse over 4 weeks: {ex['metrics_four_weeks']['met']} "
+          f"({ex['metrics_four_weeks'].get('note') or ex['metrics_four_weeks'].get('worse')}) · epic done: {ex['met']}")
 
 
 def _run_trust(*, as_json: bool, cached: bool, history: bool, github: bool) -> None:
@@ -1338,6 +1373,8 @@ def main() -> None:
         print(json.dumps(out, indent=2))
     elif args.command == "pr-intel":
         _run_pr_intel(as_json=args.json, cached=args.cached)
+    elif args.command == "eval":
+        _run_eval_trust(args)
     elif args.command == "trust":
         _run_trust(as_json=args.json, cached=args.cached, history=args.history, github=args.github)
     elif args.command == "pack-savings":

@@ -111,6 +111,10 @@ def run() -> None:
 
     logger.info("pack gc: %s", pack_gc(cfg.output_dir))
     logger.info("trust metrics: %s", refresh_trust(cfg.output_dir))
+    # Gates last: they read the fresh metrics. The seeded-defect eval re-runs when it's a week old (#63).
+    from auditor.trust_eval import evaluate_quietly
+
+    logger.info("trust eval: %s", evaluate_quietly(cfg.output_dir))
 
 
 if __name__ == "__main__":

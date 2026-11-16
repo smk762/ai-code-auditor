@@ -34,6 +34,7 @@ ai-audit merge-refresh --repo argus-cortex --schedule  # one-repo pack/RAG (or -
 ai-audit repair --pack-id pack-… --mode review   # agent-composer repair loop driven by a pack (fetches pack, no diff needed)
 ai-audit repair --pack-id pack-… --audit-api-base "$AI_AUDIT_PUBLIC_BASE_URL"   # real URL in local .env (see .env.example); rag-chat must allow it (its AUDIT_API_URL / AI_AUDIT_PUBLIC_BASE_URL, or AUDIT_API_ALLOWED_HOSTS), else 422
 ai-audit pack-savings                        # estimated token savings from packs vs crawling (--history, --cached, --json)
+ai-audit eval trust [--seeded]               # reliability gates for epic #64 (--seeded re-plants bugs in real repos first; minutes, no API spend)
 ai-audit trust [--github]                    # trust metrics: lint-only resolutions, regressions, reverts (--history, --cached, --json)
 ai-audit qa-benchmark --json
 ai-audit wiki build --repos argus-cortex --dry-run   # price a wiki build (no API calls)
@@ -117,6 +118,15 @@ Trust metrics (`auditor/trust_metrics.py`, epic #64, issue #52): `/ui/trust` (`/
 - **Data sources:** pack YAMLs, the findings DB (only pipelines that store findings count as scans, so ecosystem runs don't look like empty scans) and the mirrors' `git log`. GitHub only lists agent PRs: a pack id in the body, or a title that fixes ai-code-auditor findings. That list is cached in `reports/trust_prs.json`.
 - **Emit-time link:** a new pack that repeats a resolved pack gets `governance.recurrence_of` (`link_recurrences`).
 - **When it runs:** after every nightly repo audit, once the run is recorded (`AI_AUDIT_TRUST_METRICS=0` turns it off). It writes `reports/trust.json` and appends `trust_history.jsonl`, which is never overwritten.
+
+Reliability gates (`auditor/trust_eval.py`, #63) define "provably reliable" for epic #64.
+- **Gates:** each has a value, a threshold and a minimum sample. Below the sample it's `insufficient`, never a pass, and a component not built yet is `pending`.
+- **Where:** `ai-audit eval trust`, `/audit/trust/eval.json`, and the gates section of `/ui/trust`. Each evaluation is appended to `trust_eval_history.jsonl`.
+- **Exit criteria:** every non-pending gate passed in each of the last two ISO weeks (the week's last evaluation counts), and the headline metrics didn't get worse over 4 weekly `trust_history` snapshots.
+- **Seeded-defect eval (`auditor/eval_seeded.py`):** it tests the evidence bar on the suite's real repos. In a weekly sample of mirrors (`origin/dev`), it flips one operator in a function that a real test imports, and keeps the mutant only if that test kills it. Then:
+  - **fix** (dev = the mutant, patch = the original): the bar must resolve with `repro` naming a killing test;
+  - **control** (patch = a cosmetic comment): the bar must not resolve.
+- **When it runs:** results go to `reports/eval_seeded.json` and refresh after a week. The gates run after every nightly repo audit, after the trust metrics (`AI_AUDIT_TRUST_EVAL=0` turns them off).
 
 Ecosystem map (`auditor/ui_topology.py`): `/ui/topology` (`/audit/topology/map.json`); `/audit/topology` redirects there, and the old generated HTML is at `/audit/topology/legacy`. Edges come from four sources:
 - **Documented flow:** the diagram in `ecosystem/ecosystem.md`, horizontal `──►` and vertical `│ ▼` arrows.
