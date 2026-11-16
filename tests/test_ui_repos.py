@@ -50,7 +50,7 @@ def packs(tmp_path: Path) -> Path:
 def test_board_groups_by_status_most_severe_then_score(packs: Path) -> None:
     b = ui_repos.packs_board(packs)
     cols = {c["status"]: c for c in b["columns"]}
-    assert [c["status"] for c in b["columns"]] == ["open", "claimed", "in_progress", "resolved", "wontfix"]
+    assert [c["status"] for c in b["columns"]] == ["open", "claimed", "in_progress", "unverified", "resolved", "wontfix"]
     assert [p["id"] for p in cols["open"]["packs"]] == [
         "pack-crit", "pack-high-b", "pack-high-a", "pack-low", "pack-world-argus-cortex"]
     assert cols["claimed"]["total"] == 1 and cols["resolved"]["total"] == 0
@@ -183,7 +183,7 @@ def test_repos_data_builds_one_card_per_enabled_repo(packs: Path, memdb, monkeyp
     assert cortex["findings"] == {"by_severity": {"LOW": 2, "HIGH": 1}, "total": 3, "new": 2}
     assert studio["findings"] == {"by_severity": {}, "total": 0, "new": 0}
     # world-model packs aren't work; claimed counts separately
-    assert cortex["packs"] == {"open": 3, "claimed": 1, "in_progress": 0, "resolved": 0, "wontfix": 0, "open_high": 2}
+    assert cortex["packs"] == {"open": 3, "claimed": 1, "in_progress": 0, "unverified": 0, "resolved": 0, "wontfix": 0, "open_high": 2}
     assert studio["packs"]["open_high"] == 1
     assert cortex["violations"] == 0 and studio["violations"] == 2
     assert d["findings_run"]["run_id"] == "r-new" and d["findings_has_baseline"] is True

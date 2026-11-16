@@ -29,7 +29,10 @@ Optional: `q=<keyword>` boosts matches, `status=open,claimed,in_progress` (defau
    directly from the pack brief (`GET /audit/packs/<id>/brief`). `--mode review` / `suggest` needs no
    rag-chat credential; `--apply` / `--commit` / `--push` need a rag-chat API key in `RAG_CHAT_API_KEY`
    (or `--rag-chat-api-key`). The ai-audit JWT is never forwarded to rag-chat.
-4. **Close** — `POST /audit/validate_patch {"repo","patch","pack_id":"<id>"}`; `passed=true` marks the pack `resolved`.
+4. **Close** — `POST /audit/validate_patch {"repo","patch","pack_id":"<id>"}`. A pass resolves the pack only with
+   evidence (see "Done means" in the brief): for bug and security packs, a test in the patch that **fails on `dev` and
+   passes with the fix**. Otherwise the pack becomes `unverified` and `pack.reason` says what's missing;
+   `"evidence_waiver": "<why no test can exercise it>"` resolves it anyway, recorded on the pack.
 
 ```bash
 B=$AI_AUDIT_PUBLIC_BASE_URL   # real value in local .env
@@ -59,7 +62,7 @@ Each hit has `title`, `url` (the wiki section), `tags` and `text`. Wiki text cit
 
 ### Status lifecycle (claim → fix → close)
 
-Statuses: `open` (default) · `claimed` · `in_progress` · `resolved` · `wontfix`.
+Statuses: `open` (default) · `claimed` · `in_progress` · `unverified` (passed, but without the evidence the pack needs; still open work) · `resolved` · `wontfix`.
 
 ```bash
 curl -X POST "$AI_AUDIT_PUBLIC_BASE_URL/audit/packs/<id>/status" \
@@ -70,7 +73,9 @@ ai-audit packs --status open --layer specialist --json       # filter
 ```
 
 Closure is automatic where possible: `POST /audit/validate_patch` with `"pack_id": "<id>"` marks
-the pack `resolved` when `passed=true`; a conductor draft PR marks its pack `in_progress` and stores
+the pack `resolved` when `passed=true` *and* the evidence fits the pack, else `unverified`
+(`auditor/evidence.py`: a failing-then-passing test for bug/security packs, tests for other code
+changes, nothing extra for docs/config-only patches, or an `evidence_waiver`); a conductor draft PR marks its pack `in_progress` and stores
 `repair.draft_pr_url`. Status survives re-emits. Pack docs are slim-ingested to RAG by default
 (`AI_AUDIT_PACK_RAG_INGEST=0` / `--no-rag` to disable).
 

@@ -269,6 +269,7 @@ def render_pack_page(output_dir: str | Path, pack_id: str) -> str | None:
         "status_note": pack.status_note,
         "draft_pr_url": (pack.repair or {}).get("draft_pr_url") or "",
         "history": pack.status_history,
+        "evidence": (pack.verification or {}).get("evidence") or None,
     }
     title = (pack.narrative or {}).get("title") or pack.work_item_id
     return ui.render_page("pack.html", "/ui/packs", {

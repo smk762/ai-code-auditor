@@ -45,7 +45,7 @@ GET  /audit/packs                     List/search agent coding packs (repo, seve
 GET  /audit/packs/bundle              Mission bundle: world model + ranked specialists, token-capped briefs
 GET  /audit/packs/{pack_id}           Full agent coding pack (YAML-backed JSON)
 GET  /audit/packs/{pack_id}/brief     Markdown brief for coding agents
-POST /audit/packs/{pack_id}/status    Set pack lifecycle status (open|claimed|in_progress|resolved|wontfix)
+POST /audit/packs/{pack_id}/status    Set pack lifecycle status (open|claimed|in_progress|unverified|resolved|wontfix)
 
 Start:
     .venv/bin/uvicorn auditor.audit_api:app --host 0.0.0.0 --port 8765
@@ -1386,39 +1386,91 @@ class _ValidatePatchRequest(BaseModel):
     repo: str
     patch: str
     timeout_s: int = 120
-    pack_id: str | None = None  # when set and validation passes, the pack is marked resolved
+    pack_id: str | None = None  # when set and validation passes with evidence, the pack is marked resolved
     # classify changes as equivalent / behaviour change / "trust me" (None: AI_AUDIT_VALIDATE_SEMANTIC)
     semantic_check: bool | None = None
+    # why this fix can't carry a failing-then-passing test (≥ 20 chars); recorded on the pack (#58)
+    evidence_waiver: str | None = None
+
+
+def _load_pack_for_repo(pack_id: str, repo: str) -> tuple[dict[str, Any] | None, str]:
+    """The pack, or ``(None, reason)`` when it is missing or doesn't apply to *repo*."""
+    from auditor.agent_pack import load_pack
+
+    data = load_pack(_output_dir(), pack_id)
+    if data is None:
+        return None, "pack not found"
+    pack_repo = str((data.get("repo") or {}).get("name") or "")
+    impacted = list((data.get("impact") or {}).get("impacted_repos") or [])
+    if data.get("kind") == "world_model" or repo not in {pack_repo, *impacted}:
+        return None, "pack does not apply to this repo"
+    return data, ""
 
 
 def _resolve_pack_after_validation(
-    pack_id: str, *, repo: str, tool: str
+    pack_id: str, *, repo: str, tool: str, status: str = "resolved", note: str = "",
+    evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Mark *pack_id* resolved after a passing validate_patch. Never raises."""
-    from auditor.agent_pack import load_pack, refresh_pack_rag, update_pack_status
+    """Set *pack_id* to *status* (resolved, or unverified when the evidence fell short) after a
+    passing validate_patch, recording the evidence on the pack. Never raises."""
+    from datetime import datetime, timezone
+
+    from auditor.agent_pack import refresh_pack_rag, update_pack_status
     from conductor.publish import public_base_url
 
     out = _output_dir()
     try:
-        data = load_pack(out, pack_id)
+        data, why = _load_pack_for_repo(pack_id, repo)
         if data is None:
-            return {"id": pack_id, "updated": False, "reason": "pack not found"}
-        pack_repo = str((data.get("repo") or {}).get("name") or "")
-        impacted = list((data.get("impact") or {}).get("impacted_repos") or [])
-        if data.get("kind") == "world_model" or repo not in {pack_repo, *impacted}:
-            return {"id": pack_id, "updated": False, "reason": "pack does not apply to this repo"}
+            return {"id": pack_id, "updated": False, "reason": why}
+        ver = {"evidence": {**evidence, "at": datetime.now(timezone.utc).isoformat()}} if evidence else None
         updated = update_pack_status(
             out,
             pack_id,
-            "resolved",
-            f"validate_patch passed (repo={repo}, tool={tool})",
+            status,
+            note or f"validate_patch passed (repo={repo}, tool={tool})",
             public_base_url=public_base_url(),
+            verification_updates=ver,
         )
-        refresh_pack_rag(out, updated)  # a resolved pack leaves the RAG collection
-        return {"id": pack_id, "updated": updated is not None, "status": "resolved"}
+        refresh_pack_rag(out, updated)  # a resolved pack leaves the RAG collection; unverified stays
+        return {"id": pack_id, "updated": updated is not None, "status": status}
     except Exception as exc:  # closure is best-effort; the validation result stands
-        logger.warning("could not mark pack %s resolved: %s", pack_id, exc)
+        logger.warning("could not set pack %s to %s: %s", pack_id, status, exc)
         return {"id": pack_id, "updated": False, "reason": str(exc)}
+
+
+def _judge_evidence(
+    request: "_ValidatePatchRequest", *, tool: str, changed: list[str], tree: Path, fresh_base: Any,
+    base_sha: str, venv_cache: Path, node_cache: Path, timeout_s: int,
+) -> dict[str, Any]:
+    """Run the evidence bar (#58) for a passing patch and set the pack resolved or unverified."""
+    from auditor import evidence
+
+    pack, why = _load_pack_for_repo(request.pack_id or "", request.repo)
+    if pack is None:
+        return {"pack": {"id": request.pack_id, "updated": False, "reason": why}}
+    ch = evidence.classify_changes(changed)
+    repro = None
+    if evidence.needs_repro(pack) and ch["code"] and ch["tests"] and not request.evidence_waiver:
+        repro = evidence.run_repro(tree, fresh_base, ch["tests"], venv_cache=venv_cache, node_cache=node_cache,
+                                   timeout_s=timeout_s)
+    d = evidence.decide(pack, tool=tool, changed=changed, repro=repro, waiver=request.evidence_waiver or "",
+                        base_sha=base_sha)
+    if d.status == "resolved":
+        note = f"validate_patch passed (repo={request.repo}, tool={tool}, evidence={d.kind})"
+    else:
+        note = f"validate_patch passed, unverified (repo={request.repo}, tool={tool}): {d.reason}"
+    out = _resolve_pack_after_validation(request.pack_id or "", repo=request.repo, tool=tool, status=d.status,
+                                         note=note, evidence=d.evidence)
+    out["evidence"] = d.kind
+    out["reason"] = d.reason
+    return {"pack": out, "evidence": d.evidence}
+
+
+def evidence_bar_enabled() -> bool:
+    from auditor.evidence import enabled
+
+    return enabled()
 
 
 @app.post("/audit/validate_patch", dependencies=[Depends(_require_mutating_auth)])
@@ -1446,6 +1498,11 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
         failure_summary: list[str] — compact LLM-ready failure lines (≤20).
         raw_output:      str  — last 2000 chars of runner output.
         skipped_reason:  str  — non-empty when validation was skipped.
+        pack:            with ``pack_id``: ``{id, updated, status, evidence, reason}``. A pass resolves
+                         the pack only with evidence (``auditor/evidence.py``): a failing-then-passing
+                         test for bug/security packs, tests for other code changes. Otherwise the pack
+                         becomes ``unverified`` and ``reason`` says what is missing.
+        evidence:        the evidence record stored on the pack (kind, repro test ids, tool, base_sha).
     """
     import shutil
     import tempfile
@@ -1524,12 +1581,24 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
                     return None
             return base_dir
 
+        venv_cache = Path(os.getenv("AI_AUDIT_VALIDATE_VENV_DIR") or Path(cfg.output_dir) / "_validate_venvs")
+        node_cache = Path(os.getenv("AI_AUDIT_VALIDATE_NODE_DIR") or Path(cfg.output_dir) / "_validate_node")
         val_result = validate_patch_tree(
             repo_cfg, repo_copy, changed, timeout_s=timeout_s,
-            cache_dir=Path(os.getenv("AI_AUDIT_VALIDATE_VENV_DIR") or Path(cfg.output_dir) / "_validate_venvs"),
-            base_tree=_base_tree,
-            node_cache_dir=Path(os.getenv("AI_AUDIT_VALIDATE_NODE_DIR") or Path(cfg.output_dir) / "_validate_node"),
+            cache_dir=venv_cache, base_tree=_base_tree, node_cache_dir=node_cache,
         )
+
+        repro_dir = tmp_root / "repro_base"
+
+        def _fresh_base() -> Path | None:
+            """A second clean dev tree that the patch's tests are copied onto (never the shared base)."""
+            if not repro_dir.exists():
+                try:
+                    _export_clean_tree(Path(repo_path), repro_dir, base)
+                except Exception as exc:  # noqa: BLE001 — no dev tree, no repro evidence
+                    logger.warning("validate_patch: no repro tree for %s: %s", request.repo, exc)
+                    return None
+            return repro_dir
 
         summary = extract_failure_summary(val_result.raw_output, val_result.tool)
         skipped = bool(val_result.skipped_reason)
@@ -1575,10 +1644,16 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
                 # tests pass, but a claimed-equivalent change has a counterexample: a human decides
                 response["pack"] = {"id": request.pack_id, "updated": False,
                                     "reason": f"{len(refuted)} 'trust me' change(s) have a counterexample"}
-            else:
+            elif not evidence_bar_enabled():
                 response["pack"] = _resolve_pack_after_validation(
                     request.pack_id, repo=request.repo, tool=val_result.tool
                 )
+            else:
+                response.update(_judge_evidence(
+                    request, tool=val_result.tool, changed=changed, tree=repo_copy, fresh_base=_fresh_base,
+                    base_sha=str(base_info.get("base_sha") or ""), venv_cache=venv_cache, node_cache=node_cache,
+                    timeout_s=timeout_s,
+                ))
         return JSONResponse(response)
     except Exception as exc:
         logger.exception("validate_patch failed for repo %r", request.repo)
@@ -1947,7 +2022,7 @@ def list_agent_packs(
     run_id: str = Query(default=""),
     status: str = Query(
         default="",
-        description="open | claimed | in_progress | resolved | wontfix (comma-separated allowed)",
+        description="open | claimed | in_progress | unverified | resolved | wontfix (comma-separated allowed)",
     ),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> JSONResponse:
@@ -2019,7 +2094,7 @@ def get_agent_pack_bundle(
     q: str = Query(default="", description="Boost specialists matching id/title/path/kind"),
     limit_specialists: int = Query(default=5, ge=0, le=50),
     status: str = Query(
-        default="open,claimed,in_progress",
+        default="open,claimed,in_progress,unverified",
         description="Specialist statuses to include (comma-separated)",
     ),
 ) -> JSONResponse:
@@ -2044,7 +2119,7 @@ def get_agent_pack_bundle(
 
 
 class _PackStatusRequest(BaseModel):
-    status: Literal["open", "claimed", "in_progress", "resolved", "wontfix"]
+    status: Literal["open", "claimed", "in_progress", "unverified", "resolved", "wontfix"]
     note: str = ""
 
 

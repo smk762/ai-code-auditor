@@ -30,16 +30,17 @@ PACK_VERSION = 1
 _SNIPPET_RADIUS = 12
 _SEVERITY_SCORE = {"CRITICAL": 1.0, "HIGH": 0.85, "MEDIUM": 0.55, "LOW": 0.3, "INFO": 0.1}
 
-PACK_STATUSES = ("open", "claimed", "in_progress", "resolved", "wontfix")
+PACK_STATUSES = ("open", "claimed", "in_progress", "unverified", "resolved", "wontfix")
 DEFAULT_PACK_STATUS = "open"
 # Statuses a consuming agent should still pick up (resolved/wontfix are closed).
-ACTIVE_PACK_STATUSES = ("open", "claimed", "in_progress")
+# unverified: validate_patch passed without the evidence the pack needs (#58); still open work.
+ACTIVE_PACK_STATUSES = ("open", "claimed", "in_progress", "unverified")
 _STATUS_HISTORY_MAX = 20
 # Dedupe: a re-found issue (same repo and file, reworded title, earlier emit) reuses the existing
 # pack. Resolved packs are not merge targets: an issue that comes back after a fix gets a fresh
 # open pack instead of hiding under "resolved". Kinds whose titles don't describe the issue
 # (architecture titles are "repo: path:line") dedupe on exact id only.
-_MERGE_INTO_STATUSES = ("in_progress", "claimed", "wontfix", "open")  # keeper preference order
+_MERGE_INTO_STATUSES = ("in_progress", "claimed", "unverified", "wontfix", "open")  # keeper preference order
 _NO_TITLE_MATCH_KINDS = frozenset({"architecture", "extraction", "world_model", "invariants"})
 
 # Bundle sizing: token_budget is approximated as chars / CHARS_PER_TOKEN.
@@ -201,6 +202,10 @@ class AgentCodingPack:
         cmds = verify.get("suggested_test_commands") or []
         if cmds:
             lines.extend(["", "## Verify", *[f"- `{c}`" for c in cmds]])
+        lines.extend(["", "## Done means", f"- {self.done_means()}"])
+        last = verify.get("evidence") or {}
+        if self.status == "unverified" and last.get("reason"):
+            lines.append(f"- Last validate_patch passed but didn't prove the fix: {last['reason']}")
         rules = (self.governance or {}).get("architecture_rules_hit") or []
         if rules:
             lines.append("")
@@ -217,6 +222,23 @@ class AgentCodingPack:
         lines.append("Do not auto-merge. Prefer minimal patches with citations.")
         return "\n".join(lines)
 
+    def done_means(self, *, short: bool = False) -> str:
+        """The evidence validate_patch needs before it resolves this pack (#58). *short* is the
+        one-liner for compact briefs, where every character comes out of the bundle budget."""
+        from auditor.evidence import needs_repro
+
+        if self.kind == "world_model":
+            return "Nothing to close: this is context, not work."
+        repro = needs_repro({"kind": self.kind, "narrative": self.narrative})
+        if short:
+            return "a test failing on dev, passing with the fix" if repro else "tests pass (lint alone: unverified)"
+        if repro:
+            return ("Add or change a test that fails on `dev` and passes with your fix; validate_patch runs it on "
+                    "both trees. Without one the pack becomes `unverified`. If no test can exercise the behaviour, "
+                    "pass `evidence_waiver` with the reason.")
+        return ("The project's tests (or npm checks) must run and pass; lint alone leaves the pack `unverified`. "
+                "Docs- or config-only changes are exempt.")
+
     def to_compact_md(self) -> str:
         """Short brief (no snippet/evidence) used by bundles under a token budget."""
         title = (self.narrative or {}).get("title", self.work_item_id)
@@ -229,6 +251,8 @@ class AgentCodingPack:
             f"`{loc.get('file_path', '')}`:{loc.get('line', 0)}",
             "",
             (self.narrative or {}).get("recommendation") or (self.narrative or {}).get("description") or title,
+            "",
+            f"Done: {self.done_means(short=True)}",
         ]
         criteria = (self.narrative or {}).get("acceptance_criteria") or []
         if criteria:
@@ -375,6 +399,7 @@ def build_pack_from_finding(
         },
         narrative={
             "title": finding.title,
+            "finding_type": finding.type or "",
             "description": finding.description,
             "recommendation": finding.recommendation,
             "acceptance_criteria": _acceptance_from_finding(
@@ -664,6 +689,7 @@ def update_pack_status(
     *,
     public_base_url: str = "",
     repair_updates: dict[str, Any] | None = None,
+    verification_updates: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Persist a lifecycle status on the pack YAML and refresh INDEX.json.
 
@@ -679,6 +705,8 @@ def update_pack_status(
     pack.apply_status(status, (note or "")[:2000])
     if repair_updates:
         pack.repair.update(repair_updates)
+    if verification_updates:
+        pack.verification.update(verification_updates)
     write_pack(pack, output_dir, preserve_status=False)
     rebuild_index(output_dir, public_base_url=public_base_url)
     return pack.to_dict()
@@ -784,6 +812,8 @@ def _specialist_rank(entry: dict[str, Any], *, repo: str, q: str) -> float | Non
         score -= 0.15
     elif status == "in_progress":
         score -= 0.3
+    elif status == "unverified":
+        score -= 0.2  # a fix exists; what's missing is the proof
     return score
 
 
