@@ -2107,6 +2107,25 @@ def get_packs_board_json(
                                     severity=severity, q=q, cls=cls, per_column=per_column))
 
 
+@app.get("/audit/pr-summary")
+def get_pr_summary(
+    packs: str = Query(..., min_length=1, description="comma-separated pack ids the change fixes"),
+    evidence: str = Query(default="", description="evidence kind validate_patch reported"),
+    waiver: str = Query(default="", max_length=500),
+) -> JSONResponse:
+    """Commit trailers and the visible PR-body table for a fix (#73). Read-only, no auth."""
+    from auditor import trailers
+    from conductor.publish import public_base_url
+
+    ids = [p.strip() for p in packs.split(",") if p.strip()][:100]
+    try:
+        block = trailers.render(_output_dir(), ids, evidence=evidence, waiver=waiver)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse({"packs": ids, "trailers": block,
+                         "markdown": trailers.summary_markdown(_output_dir(), ids, public_base_url=public_base_url())})
+
+
 @app.get("/audit/packs/bundle")
 def get_agent_pack_bundle(
     repo: str = Query(..., min_length=1, description="Target repo name (e.g. argus-cortex)"),
