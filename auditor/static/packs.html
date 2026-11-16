@@ -47,7 +47,7 @@
 
 <script>
 const { esc, int } = UI;
-const STATUSES = ["open", "claimed", "in_progress", "resolved", "wontfix"];
+const STATUSES = ["open", "claimed", "in_progress", "unverified", "resolved", "wontfix"];
 const p = UI.params();
 const state = { repo: p.repo || "", severity: p.severity || "", layer: p.layer || "", kind: p.kind || "", q: p.q || "" };
 const els = { repo: "f-repo", severity: "f-severity", layer: "f-layer", kind: "f-kind", q: "f-q" };

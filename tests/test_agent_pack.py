@@ -557,7 +557,9 @@ def test_validate_patch_pass_resolves_pack(tmp_path: Path, monkeypatch):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["passed"] is True
-    assert body["pack"] == {"id": "pack-fixme", "updated": True, "status": "resolved"}
+    assert {k: body["pack"][k] for k in ("id", "updated", "status")} == {
+        "id": "pack-fixme", "updated": True, "status": "resolved"}
+    assert body["pack"]["evidence"] == "non_code"  # a .txt-only patch: docs/config, no test needed (#58)
 
     data = load_pack(out, "pack-fixme")
     assert data["status"] == "resolved"

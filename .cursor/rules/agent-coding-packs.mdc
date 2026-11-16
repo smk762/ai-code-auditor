@@ -17,7 +17,7 @@ API base: `$AI_AUDIT_PUBLIC_BASE_URL` (`http://<AUDIT_HOST>:8765`). The real hos
    (world model + ranked specialists + token-capped `briefs_markdown`). CLI: `ai-audit packs --bundle --repo <name>`.
 2. **Claim:** `POST /audit/packs/{id}/status {"status":"claimed"}` (`X-API-Token`).
 3. **Fix:** `ai-audit repair --pack-id <id>` (fetches the pack; no diff needed) — or implement from `GET /audit/packs/{id}/brief`.
-4. **Close:** `POST /audit/validate_patch {"repo": "...", "patch": "...", "pack_id": "<id>"}` — a passing run marks it `resolved`.
+4. **Close:** `POST /audit/validate_patch {"repo": "...", "patch": "...", "pack_id": "<id>"}` — a pass marks it `resolved` only with evidence: for bug/security packs, a test in the patch that fails on `dev` and passes with the fix (else `unverified`; `"evidence_waiver": "<why>"` if no test can exercise it).
 
 Other repos receive this via `bash scripts/install_agent_pack_awareness.sh` (idempotent, local files only).
 

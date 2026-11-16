@@ -42,7 +42,7 @@ NAV_ITEMS: list[tuple[str, str]] = [
 ]
 
 SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
-PACK_STATUSES = ["open", "claimed", "in_progress", "resolved", "wontfix"]
+PACK_STATUSES = ["open", "claimed", "in_progress", "unverified", "resolved", "wontfix"]
 
 
 # ── nav + pages ──────────────────────────────────────────────────────────────

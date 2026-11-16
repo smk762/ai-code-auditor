@@ -197,7 +197,7 @@ def _build_parser() -> argparse.ArgumentParser:
     packs.add_argument(
         "--status",
         default="",
-        help="Filter by status: open|claimed|in_progress|resolved|wontfix (comma-separated)",
+        help="Filter by status: open|claimed|in_progress|unverified|resolved|wontfix (comma-separated)",
     )
     packs.add_argument(
         "--bundle",
@@ -209,7 +209,7 @@ def _build_parser() -> argparse.ArgumentParser:
     packs.add_argument(
         "--set-status",
         default="",
-        choices=["", "open", "claimed", "in_progress", "resolved", "wontfix"],
+        choices=["", "open", "claimed", "in_progress", "unverified", "resolved", "wontfix"],
         help="Set lifecycle status on --id PACK_ID",
     )
     packs.add_argument("--note", default="", help="Optional note with --set-status")
@@ -1086,7 +1086,7 @@ def main() -> None:
                 token_budget=args.token_budget,
                 q=args.q,
                 limit_specialists=args.limit_specialists,
-                status=args.status or "open,claimed,in_progress",
+                status=args.status or "open,claimed,in_progress,unverified",
                 public_base_url=public_base_url(),
             )
             if args.json:

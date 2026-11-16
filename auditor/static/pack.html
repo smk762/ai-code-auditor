@@ -29,7 +29,8 @@
           <div class="row">
             <select id="status" aria-label="Status">
               <option value="open">open</option><option value="claimed">claimed</option>
-              <option value="in_progress">in progress</option><option value="resolved">resolved</option>
+              <option value="in_progress">in progress</option><option value="unverified">unverified</option>
+              <option value="resolved">resolved</option>
               <option value="wontfix">wontfix</option>
             </select>
             <button class="primary" type="submit">Save</button>
@@ -37,6 +38,10 @@
           </div>
           <textarea id="note" placeholder="Note (optional)" aria-label="Note"></textarea>
         </form>
+      </div>
+      <div class="card" style="margin-top:12px" id="evidence-card" hidden>
+        <h2>Evidence</h2>
+        <div id="evidence"></div>
       </div>
       <div class="card" style="margin-top:12px">
         <h2>History</h2>
@@ -55,10 +60,33 @@ function render() {
   document.getElementById("sub").innerHTML = `<span class="mono">${esc(pack.id)}</span> · ${esc(pack.status.replace("_", " "))}` +
     (pack.draft_pr_url ? ` · <a href="${esc(pack.draft_pr_url)}">draft PR</a>` : "") +
     ` · <a href="/audit/packs/${encodeURIComponent(pack.id)}">JSON</a> · <a href="/audit/packs/${encodeURIComponent(pack.id)}/brief">brief (markdown)</a> · <a href="/ui/packs">board</a>`;
+  renderEvidence();
   const rows = [...(pack.history || [])].reverse();
   document.querySelector("#history tbody").innerHTML = rows.length ? rows.map((h) =>
     `<tr><td title="${esc(h.at || "")}">${UI.ago(h.at)}</td><td>${esc(String(h.status || "").replace("_", " "))}</td><td>${esc(h.note || "")}</td></tr>`).join("")
     : `<tr><td colspan="3" class="muted">No changes yet.</td></tr>`;
+}
+
+// What validate_patch saw when it last judged this pack (#58): why it resolved, or what's missing.
+function renderEvidence() {
+  const ev = pack.evidence;
+  document.getElementById("evidence-card").hidden = !ev;
+  if (!ev) return;
+  const r = ev.repro || {};
+  const ids = (xs) => xs.map((t) => `<li class="mono">${esc(t)}</li>`).join("");
+  const kindLabel = { repro: "fails on dev, passes with the fix", tests: "tests ran", test_only: "test-only change",
+    non_code: "docs/config only", waiver: "waived", none: "missing" }[ev.kind] || ev.kind;
+  const repro = r.repro || [];
+  const notProven = Object.entries(r.patched || {}).filter(([t]) => !repro.includes(t))
+    .map(([t, s]) => `${t} (patched ${s}, dev ${(r.base || {})[t] || "not run"})`);
+  document.getElementById("evidence").innerHTML =
+    `<p><span class="status ${ev.kind === "none" ? "warn" : "ok"}">${esc(kindLabel)}</span> ${UI.ago(ev.at)}</p>` +
+    `<p class="hint">${esc(ev.reason || "")}</p>` +
+    (ev.waiver ? `<p><b>Waiver:</b> ${esc(ev.waiver)}</p>` : "") +
+    (repro.length ? `<p><b>Reproducing tests</b></p><ul>${ids(repro)}</ul>` : "") +
+    (notProven.length ? `<details><summary>Other tests in the patch</summary><ul>${ids(notProven)}</ul></details>` : "") +
+    ((r.notes || []).length ? `<details><summary>Notes</summary><ul>${(r.notes).map((n) => `<li>${esc(n)}</li>`).join("")}</ul></details>` : "") +
+    `<p class="muted">tool <span class="mono">${esc(ev.tool || "")}</span>${ev.base_sha ? ` · dev <span class="mono">${esc(ev.base_sha.slice(0, 10))}</span>` : ""}</p>`;
 }
 
 document.getElementById("status-form").addEventListener("submit", async (e) => {
@@ -71,6 +99,7 @@ document.getElementById("status-form").addEventListener("submit", async (e) => {
       { status: document.getElementById("status").value, note: document.getElementById("note").value.trim() });
     pack.history = [...(pack.history || []), { status: out.status, note: out.status_note, at: out.status_updated_at }];
     pack.status = out.status;
+    pack.evidence = (out.verification || {}).evidence || pack.evidence;
     pack.draft_pr_url = out.draft_pr_url || pack.draft_pr_url;
     document.getElementById("note").value = "";
     flash.innerHTML = `<span class="status ok">Saved</span>`;

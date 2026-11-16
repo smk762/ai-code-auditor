@@ -29,6 +29,7 @@ reports/*.html
 reports/mithrandir/
 reports/agent_packs/
 reports/conductor/
+reports/_validate_*/
 reports/security-out/
 reports/model_eval/
 reports/wiki_eval/

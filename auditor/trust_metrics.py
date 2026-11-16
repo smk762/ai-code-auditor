@@ -65,6 +65,7 @@ REVERT_WINDOW_DAYS = 14
 NON_FINDING_KINDS = frozenset({"world_model", "architecture", "extraction", "invariants"})
 REOPEN_STATUSES = frozenset({"open", "claimed", "in_progress"})
 _TOOL_RE = re.compile(r"\btool=([a-z_+]+)")
+_EVIDENCE_RE = re.compile(r"\bevidence=([a-z_]+)")
 PACK_ID_RE = re.compile(r"\bpack-[a-z0-9][a-z0-9-]*-[0-9a-f]{10}\b")
 _AGENT_PR_RE = re.compile(r"ai-code-auditor\b.*\b(findings?|packs?|nightly)\b", re.IGNORECASE | re.DOTALL)
 
@@ -246,9 +247,12 @@ def resolution_events(packs: Iterable[PackView]) -> list[dict[str, Any]]:
             if st == "resolved" and prev != "resolved":
                 note = str(h.get("note") or "")
                 m = _TOOL_RE.search(note) if note.startswith("validate_patch passed") else None
+                ev = _EVIDENCE_RE.search(note) if m else None
                 events.append({
                     "pack_id": p.id, "repo": p.repo, "kind": p.kind, "at": h.get("at"),
                     "method": f"validator:{m.group(1)}" if m else "manual",
+                    # evidence kind under the #58 bar; "" for resolutions from before it
+                    "evidence": ev.group(1) if ev else "",
                 })
             prev = st
     return events
@@ -267,6 +271,10 @@ def false_resolve_metric(events: list[dict[str, Any]]) -> dict[str, Any]:
         "lint_only": len(lint),
         "manual": len(events) - len(validator),
         "methods": dict(Counter(e["method"] for e in events)),
+        # resolutions under the evidence bar (#58), by evidence kind; a rising waiver share is a smell
+        "by_evidence": dict(Counter(e["evidence"] for e in events if e["evidence"])),
+        "waiver_rate": _rate(sum(e["evidence"] == "waiver" for e in events),
+                             sum(1 for e in events if e["evidence"])),
         "rate": _rate(len(lint), len(validator)),
         "by_repo": {r: {**c, "rate": _rate(c["lint_only"], c["validator"])} for r, c in sorted(by_repo.items())},
     }
@@ -655,6 +663,8 @@ def headline(report: dict[str, Any]) -> dict[str, Any]:
         "recurrence_rate": report["recurrence"]["rate"],
         "recurrence_observed": report["recurrence"]["observed"],
         "dispute_rate": report["recurrence"]["dispute_rate"],
+        "waiver_rate": report["false_resolve"]["waiver_rate"],
+        "unverified_packs": report["inputs"]["status_counts"].get("unverified", 0),
         "scan_persistence": report["scan_persistence"]["rate"],
         "revert_rate": prs.get("rate"),
         "agent_prs": prs.get("merged"),

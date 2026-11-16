@@ -69,7 +69,7 @@ function card(r) {
   const active = pk.claimed + pk.in_progress;
   const packs = `<a href="/ui/packs?repo=${repoQ}">${int(pk.open)} open</a>` +
     (pk.open_high ? ` · <a class="hot" href="/ui/packs?repo=${repoQ}&severity=CRITICAL,HIGH">${int(pk.open_high)} high+</a>` : "") +
-    (active ? ` · ${int(active)} in flight` : "") + (pk.resolved ? ` <span class="muted">· ${int(pk.resolved)} resolved</span>` : "");
+    (active ? ` · ${int(active)} in flight` : "") + (pk.unverified ? ` · ${int(pk.unverified)} unverified` : "") + (pk.resolved ? ` <span class="muted">· ${int(pk.resolved)} resolved</span>` : "");
   const viol = r.violations == null ? `<span class="muted">—</span>` : r.violations ? `<a href="/ui/reports/architecture_violations.md">${int(r.violations)}</a>` : "0";
   return `<article class="card repo-card span-4">
     <h2>${esc(r.name)}<span>${r.wiki ? `<a class="gh" href="/ui/wiki/${encodeURIComponent(r.name)}">Wiki</a> ` : ""}${r.github_url ? `<a class="gh" href="${esc(r.github_url)}">GitHub</a>` : ""}</span></h2>

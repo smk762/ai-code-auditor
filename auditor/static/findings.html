@@ -123,8 +123,8 @@ const p = UI.params();
 const state = { run_id: p.run_id || "", repo: p.repo || "", severity: p.severity || "", source: p.source || "",
                 type: p.type || "", q: p.q || "", change: p.change || "all", pack_status: p.pack_status || "" };
 const els = { repo: "f-repo", severity: "f-severity", source: "f-source", type: "f-type", q: "f-q", pack_status: "f-pack_status" };
-const PACK_STATUSES = ["open", "claimed", "in_progress", "resolved", "wontfix", "none"];
-const PACK_CLASS = { claimed: "warn", in_progress: "warn", resolved: "ok", wontfix: "muted" };
+const PACK_STATUSES = ["open", "claimed", "in_progress", "unverified", "resolved", "wontfix", "none"];
+const PACK_CLASS = { claimed: "warn", in_progress: "warn", unverified: "warn", resolved: "ok", wontfix: "muted" };
 let openPacks = { list: [], total: 0 };
 const rowPacks = new Map();
 for (const k in els) els[k] = document.getElementById(els[k]);
@@ -237,6 +237,7 @@ function trend(d) {
   document.getElementById("trend-work").innerHTML = d.pack_matrix
     ? [ws.resolved ? `<b>${int(ws.resolved)}</b> resolved by agents, waiting for a rescan` : "",
        active ? `<b>${int(active)}</b> open or being worked on${inHand ? ` (${int(inHand)} claimed or in progress)` : ""}` : "",
+       ws.unverified ? `${int(ws.unverified)} fixed but unverified (no test proves the fix)` : "",
        ws.wontfix ? `${int(ws.wontfix)} wontfix` : ""].filter(Boolean).join(" · ")
     : "";
   document.getElementById("trend-legend").innerHTML += ws.resolved ? `<span><i class="hatch"></i>resolved, waiting for rescan</span>` : "";

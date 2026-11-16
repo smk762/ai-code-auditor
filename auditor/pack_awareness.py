@@ -43,7 +43,10 @@ The audit API base URL is `$AI_AUDIT_PUBLIC_BASE_URL`. The real host/IP is in th
    HTTP: `POST http://127.0.0.1:9150/api/repair/run` `{{"pack_id":"<id>","mode":"review"}}`),
    or read `GET {base}/audit/packs/<id>` / `.../brief` and implement it yourself.
 4. **Close:** `POST {base}/audit/validate_patch` `{{"repo":"{repo}","patch":"<diff>","pack_id":"<id>"}}`
-   — a passing run marks the pack `resolved`.
+   — a pass resolves the pack only with evidence: for a bug or security pack, include a test that
+   **fails on `dev` and passes with your fix** (validate_patch runs it on both trees). Otherwise
+   the pack becomes `unverified` and the response's `pack.reason` says what's missing. If no test
+   can exercise it, add `"evidence_waiver":"<why>"` (recorded and counted).
 
 **Search** before crawling: `GET {base}/audit/search?q=<question>&repo={repo}&kind=wiki`
 (wiki sections and packs with links; CLI `ai-audit search "<question>" --repo {repo}`).
