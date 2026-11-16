@@ -282,7 +282,7 @@ def test_api_dashboard_and_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     client = TestClient(app)
     assert client.get("/audit/prs.json").status_code == 404
     page = client.get("/audit/prs")
-    assert page.status_code == 200 and "Suggested resolution path" in page.text
+    assert page.status_code == 200 and "Suggested resolution path" in page.text and "Linchpins (P0)" in page.text
     (tmp_path / pr_intel.REPORT_NAME).write_text(json.dumps({"counts": {"open": 0}, "prs": [], "plan": []}))
     r = client.get("/audit/prs.json")
     assert r.status_code == 200 and r.json()["counts"] == {"open": 0}

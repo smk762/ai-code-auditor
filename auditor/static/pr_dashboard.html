@@ -63,6 +63,11 @@
   .chip.wait { background: var(--wait-bg); color: var(--wait); }
   .chip.ok { background: var(--ok-bg); color: var(--ok); }
   .chip.rel { background: var(--surface-2); color: var(--text-primary); font-weight: 600; }
+  .chip.p0 { background: var(--critical); color: var(--surface-1); font-weight: 700; }
+  .kpi.p0 .value { color: var(--critical); }
+  .chain { font-size: 13px; color: var(--text-secondary); margin-top: 2px; overflow-wrap: anywhere; }
+  .chain .arrow { color: var(--text-muted); padding: 0 4px; }
+  .cycle { border-left: 3px solid var(--critical); padding-left: 10px; }
   .pr { padding: 10px 0; border-bottom: 1px solid var(--border); }
   .pr:last-child { border-bottom: 0; }
   .pr .title { font-weight: 600; overflow-wrap: anywhere; }
@@ -86,6 +91,14 @@
   </header>
 
   <section class="grid kpis" id="kpis" aria-label="Headline numbers"></section>
+
+  <section class="grid" style="margin-top:12px" id="linchpins-wrap" hidden>
+    <div class="card span-12">
+      <h2>Linchpins (P0)</h2>
+      <p class="hint">Open PRs and issues that hold up work in another repo, or that sit in a dependency cycle. Clear these first.</p>
+      <div id="linchpins"></div>
+    </div>
+  </section>
 
   <section class="grid" style="margin-top:12px">
     <div class="card span-12">
@@ -126,6 +139,8 @@ const KIND = {
   stacked: ["stacked", "wait"], depends_on: ["depends on", "wait"], review_required: ["needs review", ""],
   checks_pending: ["checks running", ""], draft: ["draft", ""],
 };
+const P0 = `<span class="chip p0">P0</span>`;
+const chainHtml = (refs) => refs.map(esc).join(`<span class="arrow">→</span>`);
 const chip = (kind) => { const [label, cls] = KIND[kind] || [kind, ""]; return `<span class="chip ${cls}">${esc(label)}</span>`; };
 const ago = (iso) => {
   const m = Math.round((Date.now() - new Date(iso)) / 60000);
@@ -143,11 +158,32 @@ function render() {
   const prs = DATA.prs.filter((p) => !repo || p.repo === repo);
   const count = (s) => prs.filter((p) => p.state === s).length;
   const stale = prs.filter((p) => p.idle_days >= DATA.stale_days).length;
-  const tiles = [["Open", prs.length, ""], ["Blocked", count("blocked"), "blocked"], ["Waiting", count("waiting"), "waiting"],
-    ["Ready", count("ready"), "ready"], ["Drafts", count("draft"), ""], [`Idle ≥ ${DATA.stale_days}d`, stale, ""]];
+  const lps = (DATA.linchpins || []).filter((l) => !repo || l.repo === repo || (l.repos_held || []).includes(repo));
+  const tiles = [["Open", prs.length, ""], ["P0 linchpins", lps.length, "p0"], ["Blocked", count("blocked"), "blocked"],
+    ["Waiting", count("waiting"), "waiting"], ["Ready", count("ready"), "ready"], [`Idle ≥ ${DATA.stale_days}d`, stale, ""]];
   document.getElementById("kpis").innerHTML = tiles.map(([l, v, c]) =>
     `<div class="card kpi span-2 ${c}"><div class="label">${esc(l)}</div><div class="value">${v}</div></div>`).join("");
   document.getElementById("spoken").textContent = DATA.spoken || "No open pull requests.";
+
+  const cycles = (DATA.cycles || []).filter((c) => !repo || c.repos.includes(repo));
+  const roots = lps.filter((l) => !l.reasons.includes("cycle"));
+  const lpRows = cycles.map((c) => `
+    <div class="pr cycle">
+      <div class="title">${P0} Dependency cycle${c.cross_repo ? " across " + c.repos.map(esc).join(", ") : ""}</div>
+      <div class="chain">${chainHtml(c.loop)}</div>
+      <div class="next"><b>Cut:</b> ${esc(c.cut.suggestion)}</div>
+    </div>`).concat(roots.map((l) => `
+    <div class="pr">
+      <div class="title">${P0} ${link(l.ref, l.url)} ${esc(l.title)}</div>
+      <div class="chips"><span class="chip">${esc(l.kind === "pr" ? "PR" : "issue")}</span>
+        <span class="chip critical">holds ${l.repos_held.map(esc).join(", ")}</span>
+        ${l.draft ? `<span class="chip">draft</span>` : ""}
+        ${(l.labels || []).includes((DATA.labels || {}).label || "P0") ? `<span class="chip">labelled</span>` : ""}</div>
+      ${l.chains.map((ch) => `<div class="chain">${chainHtml(ch)}</div>`).join("")}
+      <div class="next"><b>Next:</b> ${esc(l.next_action)}</div>
+    </div>`));
+  document.getElementById("linchpins-wrap").hidden = !lpRows.length;
+  document.getElementById("linchpins").innerHTML = lpRows.join("");
 
   // Resolution path: notable steps in full; runs of plain merges collapse into one row.
   const steps = DATA.plan.filter((s) => keep(s.ref));
@@ -161,10 +197,11 @@ function render() {
   };
   steps.forEach((s, idx) => {
     const i = idx + 1;
-    const plain = s.action === "Merge" && !s.release && !s.unblocks.length && !s.after.length;
+    const plain = s.action === "Merge" && !s.release && !s.p0 && !s.unblocks.length && !s.after.length;
     if (plain) { run.push({...s, i}); return; }
     flush();
     const extra = [];
+    if (s.p0) extra.push(P0);
     if (s.release) extra.push(`<span class="chip rel">release</span>`);
     if (s.unblocks.length) extra.push(`<span class="chip ok">unblocks ${s.unblocks.map(esc).join(", ")}</span>`);
     if (s.after.length) extra.push(`<span class="chip wait">after ${s.after.map(esc).join(", ")}</span>`);
@@ -178,7 +215,7 @@ function render() {
   const stuck = prs.filter((p) => p.state === "blocked" || p.state === "waiting" || p.state === "pending");
   document.getElementById("stuck").innerHTML = stuck.length ? stuck.map((p) => `
     <div class="pr">
-      <div class="title">${link(p.ref, p.url)} ${esc(p.title)}</div>
+      <div class="title">${p.p0 ? P0 + " " : ""}${link(p.ref, p.url)} ${esc(p.title)}</div>
       <div class="chips">${p.blockers.filter((b) => b.kind !== "review_required").map((b) => chip(b.kind)).join("")}
         ${p.release ? `<span class="chip rel">release</span>` : ""}
         <span class="chip">${esc(days(p.idle_days))}</span></div>

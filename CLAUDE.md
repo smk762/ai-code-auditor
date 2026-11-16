@@ -30,6 +30,7 @@ ai-audit packs --id pack-… --brief
 ai-audit packs --dedupe --dry-run              # list duplicate packs (same file, reworded title); drop --dry-run to close them as wontfix
 ai-audit merge-poll --schedule               # hourly GitHub API → pack/RAG on dev tip moves (+ PR intel refresh)
 ai-audit pr-intel                            # blocked PRs, why, suggested resolution path (read-only; --json, --cached)
+ai-audit pr-intel --label-p0 [--dry-run]     # also label linchpins P0 on GitHub (opt-in; AI_AUDIT_LINCHPIN_LABELS=1 for the hourly run)
 ai-audit merge-refresh --repo argus-cortex --schedule  # one-repo pack/RAG (or --now)
 ai-audit repair --pack-id pack-… --mode review   # agent-composer repair loop driven by a pack (fetches pack, no diff needed)
 ai-audit repair --pack-id pack-… --audit-api-base "$AI_AUDIT_PUBLIC_BASE_URL"   # real URL in local .env (see .env.example); rag-chat must allow it (its AUDIT_API_URL / AI_AUDIT_PUBLIC_BASE_URL, or AUDIT_API_ALLOWED_HOSTS), else 422
@@ -188,6 +189,18 @@ Refresh (`wiki/refresh.py`, `ai-audit wiki refresh [--dry-run] [--force]`; weekl
 - **Concurrency:** one run at a time (lock file). The last run is recorded in `reports/wiki/_refresh.json`.
 - **API:** `POST /audit/wiki/{repo}/regenerate[?force=1]` (auth; the button on wiki pages) and `GET /audit/wiki/refresh`.
 
+## Linchpin scan (`auditor/linchpin.py`)
+
+Part of PR intel, so it runs hourly after merge-poll. It builds one graph of open PRs and open issues across all mirrors, where an edge means "A waits on B". Edges come from:
+- **Stacking:** a PR's base is another PR's head, or its body says "Stacked on".
+- **Body text:** "Depends on / Blocked by / Merge after X", or the reverse, "Blocks / Unblocks / Required by X".
+- **GitHub links:** native issue `blockedBy`/`blocking`.
+- **Closing PRs:** an issue waits on the open PR that closes it.
+
+Refs that aren't open are resolved once; merged or closed ones add no edge, and open ones outside the mirrors appear as `external`. A node is **P0** when it is the root of a chain (nothing open holds it up) that reaches another repo (`cross_repo`), or when it sits in a dependency cycle (`cycle`, found as Tarjan SCCs; every member is P0). Links in the middle of a chain are not P0; they appear in the root's `chains`. Each cycle gets a suggested cut: the softest edge (body text before native, closes, then stacked). P0 PRs get +3 score, so they lead the plan, and the spoken brief names cycles and linchpins first. `pr_intel.json` gains `linchpins`, `cycles`, `issues` (connected ones only), `edges`, `counts.p0`/`counts.cycles`, and `p0`/`linchpin` on each PR and plan step. The `/audit/prs` dashboard shows them in a "Linchpins (P0)" card.
+
+Labelling is the only GitHub write, and it is opt-in: `ai-audit pr-intel --label-p0 [--dry-run]`, or `AI_AUDIT_LINCHPIN_LABELS=1` for every refresh. The label is `AI_AUDIT_LINCHPIN_LABEL`, default `P0`. It goes on mirrored linchpins only, never external ones. `reports/linchpin_labels.json` records what this tool labelled, and only those labels come off once an item stops being P0. A label put on by hand is never removed, and one this tool added and someone then took off is not re-added.
+
 ## RAG ingest integration
 
 `config/ecosystem.yaml` → `rag_ingest_url` points to the rag-ingest service in agent-composer. On this host that is `http://127.0.0.1:9050/ingest` (or the LAN IP if running from Docker). Ingest is triggered via `POST /audit/ingest` on the audit API or `scripts/ingest_ecosystem_to_rag.py` directly.
@@ -207,7 +220,7 @@ Wiki ingest (`wiki/rag.py`, `ai-audit wiki ingest`) sends one doc per `##` secti
 
 ## Generated artifacts
 
-All written to `reports/` (overwritten each run): `pr_intel.json` (blocked-PR intel, hourly; UI at `GET /audit/prs`, data `GET /audit/prs.json`, also spoken in the morning briefing), `nightly_repo_report.md`, `security_report.md`, `ecosystem_report.md`, `architecture_violations.md`, `pattern_proposals.md`, `extraction_candidates.yaml/md`. `pack_savings.json` + `pack_savings_history.jsonl` (estimated token savings from packs, chars/4, re-measured after each pack emit; `GET /audit/pack-savings.json[?history=1]`; the history file is appended, never overwritten). Agent coding packs: `reports/agent_packs/` (+ `INDEX.json`; discover via `GET /audit/packs`). Graph: `graph/ecosystem_graph.db`. Embeddings: `index/code_embeddings.faiss`.
+All written to `reports/` (overwritten each run): `pr_intel.json` (blocked-PR intel, hourly; UI at `GET /audit/prs`, data `GET /audit/prs.json`, also spoken in the morning briefing; includes the linchpin scan, see below), `nightly_repo_report.md`, `security_report.md`, `ecosystem_report.md`, `architecture_violations.md`, `pattern_proposals.md`, `extraction_candidates.yaml/md`. `pack_savings.json` + `pack_savings_history.jsonl` (estimated token savings from packs, chars/4, re-measured after each pack emit; `GET /audit/pack-savings.json[?history=1]`; the history file is appended, never overwritten). Agent coding packs: `reports/agent_packs/` (+ `INDEX.json`; discover via `GET /audit/packs`). Graph: `graph/ecosystem_graph.db`. Embeddings: `index/code_embeddings.faiss`.
 
 ## Branches
 

@@ -10,9 +10,12 @@ then a deterministic classifier and planner:
 * **graph**: which PRs each PR holds up, across repos.
 * **plan**: the suggested resolution path — dependencies first, then whatever unblocks
   the most, release PRs before the rest, oldest first — as ordered steps.
+* **linchpins** (``auditor/linchpin.py``): open PRs *and issues* that hold up work in
+  another repo, or sit in a dependency cycle, marked P0 and ranked first.
 * **spoken**: a TTS-safe sentence or three for the morning briefing.
 
-Nothing here comments on, pushes to or merges a PR.
+Nothing here comments on, pushes to or merges a PR. The one write is opt-in: with
+``--label-p0`` (or ``AI_AUDIT_LINCHPIN_LABELS=1``) linchpins get a ``P0`` label.
 """
 from __future__ import annotations
 
@@ -54,6 +57,7 @@ query($owner: String!, $name: String!) {
         mergeable mergeStateStatus reviewDecision
         author { login }
         labels(first: 10) { nodes { name } }
+        closingIssuesReferences(first: 10) { nodes { number repository { nameWithOwner } } }
         commits(last: 1) { nodes { commit { statusCheckRollup { state
           contexts(first: 50) { nodes {
             __typename
@@ -61,6 +65,14 @@ query($owner: String!, $name: String!) {
             ... on StatusContext { context state targetUrl }
           } }
         } } } }
+      }
+    }
+    issues(states: OPEN, first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      nodes {
+        number title url body createdAt updatedAt
+        labels(first: 10) { nodes { name } }
+        blockedBy(first: 20) { nodes { number title url state repository { nameWithOwner } } }
+        blocking(first: 20) { nodes { number title url state repository { nameWithOwner } } }
       }
     }
   }
@@ -99,21 +111,44 @@ def parse_dependencies(body: str, *, owner: str, repo: str) -> list[dict[str, An
     out: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
     for m in _DEP_RE.finditer(body or ""):
-        g = m.groupdict()
-        if g["u_n"]:
-            slug, n = f"{g['u_owner']}/{g['u_repo']}", g["u_n"]
-        elif g["o_n"]:
-            slug, n = f"{g['o_owner']}/{g['o_repo']}", g["o_n"]
-        elif g["r_n"]:
-            slug, n = f"{owner}/{g['r_repo']}", g["r_n"]
-        else:
-            slug, n = f"{owner}/{repo}", g["h_n"]
-        key = (slug.lower(), int(n))
+        slug, n = _ref_from_match(m.groupdict(), owner, repo)
+        key = (slug.lower(), n)
         if key in seen:
             continue
         seen.add(key)
         verb = m.group("verb").lower()
         out.append({"slug": slug, "number": int(n), "verb": "stacked" if verb.startswith("stacked") else "depends"})
+    return out
+
+
+# The reverse direction: "Blocks argus-lens#96" means argus-lens#96 waits on this one.
+_DEPENDANT_RE = re.compile(
+    r"(?<![\w-])(?P<verb>blocks|blocking|unblocks|required by|needed by|prerequisite (?:of|for))\s+"
+    r"(?:PR\s+|pull request\s+|issue\s+)?[\[`(]*" + _REF,
+    re.I,
+)
+
+
+def _ref_from_match(g: dict[str, Any], owner: str, repo: str) -> tuple[str, int]:
+    if g["u_n"]:
+        return f"{g['u_owner']}/{g['u_repo']}", int(g["u_n"])
+    if g["o_n"]:
+        return f"{g['o_owner']}/{g['o_repo']}", int(g["o_n"])
+    if g["r_n"]:
+        return f"{owner}/{g['r_repo']}", int(g["r_n"])
+    return f"{owner}/{repo}", int(g["h_n"])
+
+
+def parse_dependants(body: str, *, owner: str, repo: str) -> list[dict[str, Any]]:
+    """Return ``[{"slug", "number"}]`` that the body says wait on this PR/issue."""
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for m in _DEPENDANT_RE.finditer(body or ""):
+        slug, n = _ref_from_match(m.groupdict(), owner, repo)
+        if (slug.lower(), n) in seen:
+            continue
+        seen.add((slug.lower(), n))
+        out.append({"slug": slug, "number": n})
     return out
 
 
@@ -150,11 +185,15 @@ class PrIntel:
     labels: list[str] = field(default_factory=list)
     release: bool = False
     deps: list[dict[str, Any]] = field(default_factory=list)
+    dependants: list[dict[str, Any]] = field(default_factory=list)  # body says these wait on it
+    closes: list[dict[str, Any]] = field(default_factory=list)  # issues it closes on merge
     blockers: list[Blocker] = field(default_factory=list)
     blocks: list[str] = field(default_factory=list)  # refs this PR holds up (transitively)
     state: str = "ready"  # blocked | waiting | ready | draft | pending
     next_action: str = ""
     score: float = 0.0
+    p0: bool = False
+    linchpin: list[str] = field(default_factory=list)  # why it is P0: cross_repo, cycle
 
     @property
     def ref(self) -> str:
@@ -236,6 +275,7 @@ def _node_to_intel(repo: str, slug: str, default_branch: str, n: dict[str, Any])
     failed, pending = _checks(n)
     owner, name = slug.split("/", 1)
     title = str(n.get("title") or "")
+    body = str(n.get("body") or "")
     head, base = str(n.get("headRefName") or ""), str(n.get("baseRefName") or "")
     return PrIntel(
         repo=repo,
@@ -257,17 +297,25 @@ def _node_to_intel(repo: str, slug: str, default_branch: str, n: dict[str, Any])
         pending_checks=pending,
         labels=[str(x.get("name")) for x in ((n.get("labels") or {}).get("nodes") or [])],
         release=_is_release(title, head, base),
-        deps=parse_dependencies(str(n.get("body") or ""), owner=owner, repo=name),
+        deps=parse_dependencies(body, owner=owner, repo=name),
+        dependants=parse_dependants(body, owner=owner, repo=name),
+        closes=[
+            {"slug": str((c.get("repository") or {}).get("nameWithOwner") or slug), "number": int(c.get("number") or 0)}
+            for c in ((n.get("closingIssuesReferences") or {}).get("nodes") or [])
+        ],
     )
 
 
-def fetch_repo_prs(
+def fetch_repo(
     gql: GraphQL, repo: str, slug: str, *, retries: int = 2, retry_wait_s: float = 3.0
-) -> list[PrIntel]:
-    """Open PRs for one repo. GitHub computes ``mergeable`` lazily and answers UNKNOWN on
-    the first ask, so re-query while any PR is still UNKNOWN."""
+) -> tuple[list[PrIntel], list[Any]]:
+    """Open PRs and open issues for one repo. GitHub computes ``mergeable`` lazily and
+    answers UNKNOWN on the first ask, so re-query while any PR is still UNKNOWN."""
+    from auditor.linchpin import issue_from_node
+
     owner, name = slug.split("/", 1)
     prs: list[PrIntel] = []
+    repo_data: dict[str, Any] = {}
     for attempt in range(retries + 1):
         data = gql(_PR_QUERY, {"owner": owner, "name": name})
         repo_data = data.get("repository") or {}
@@ -277,7 +325,14 @@ def fetch_repo_prs(
         if attempt == retries or not any(p.mergeable == "UNKNOWN" for p in prs):
             break
         time.sleep(retry_wait_s)
-    return prs
+    issues = [issue_from_node(repo, slug, n) for n in ((repo_data.get("issues") or {}).get("nodes") or [])]
+    return prs, issues
+
+
+def fetch_repo_prs(
+    gql: GraphQL, repo: str, slug: str, *, retries: int = 2, retry_wait_s: float = 3.0
+) -> list[PrIntel]:
+    return fetch_repo(gql, repo, slug, retries=retries, retry_wait_s=retry_wait_s)[0]
 
 
 # ── classification ────────────────────────────────────────────────────────────
@@ -473,6 +528,7 @@ def resolution_plan(prs: list[PrIntel]) -> list[dict[str, Any]]:
                 "after": sorted(prereq[p.ref]) + ext_waits[p.ref],
                 "unblocks": p.blocks,
                 "release": p.release,
+                "p0": p.p0,
                 "score": p.score,
             }
         )
@@ -495,7 +551,7 @@ def spoken_summary(report: dict[str, Any], *, max_items: int = 2) -> str:
     """Two or three TTS-safe sentences: counts, then the top actionable blockers."""
     c = report.get("counts") or {}
     total = int(c.get("open") or 0)
-    if not total:
+    if not total and not report.get("linchpins"):
         return ""
     blocked = int(c.get("blocked") or 0)
     waiting = int(c.get("waiting") or 0)
@@ -504,6 +560,11 @@ def spoken_summary(report: dict[str, Any], *, max_items: int = 2) -> str:
         f"Pull requests: {total} open, {blocked} blocked, {waiting} waiting on another, "
         f"{ready} ready to merge."
     ]
+    from auditor.linchpin import spoken_linchpins
+
+    lp = spoken_linchpins(report)
+    if lp:
+        parts.append(lp)
     top = [p for p in report.get("prs") or [] if p.get("state") == "blocked"][:max_items]
     bits = []
     for p in top:
@@ -536,11 +597,16 @@ def build_report(
     retry_wait_s: float = 3.0,
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
+    from auditor import linchpin
+
     prs: list[PrIntel] = []
+    issues: list[Any] = []
     errors: list[dict[str, str]] = []
     for name, slug in targets:
         try:
-            prs.extend(fetch_repo_prs(gql, name, slug, retry_wait_s=retry_wait_s))
+            got_prs, got_issues = fetch_repo(gql, name, slug, retry_wait_s=retry_wait_s)
+            prs.extend(got_prs)
+            issues.extend(got_issues)
         except (urllib.error.URLError, RuntimeError, ValueError, OSError) as exc:
             logger.warning("pr intel failed for %s: %s", slug, exc)
             errors.append({"repo": name, "error": str(exc)[:300]})
@@ -560,11 +626,14 @@ def build_report(
         return cache[key]
 
     classify(prs, resolve_ref=resolve, now=now)
+    scan = linchpin.analyse(prs, issues, resolve_ref=resolve, mirrored={s.lower() for _, s in targets}, now=now)
     state_rank = {"blocked": 0, "waiting": 1, "pending": 2, "ready": 3, "draft": 4}
     prs.sort(key=lambda p: (state_rank.get(p.state, 9), -p.score, p.ref))
     counts = {"open": len(prs)}
     for s in state_rank:
         counts[s] = sum(1 for p in prs if p.state == s)
+    counts["p0"] = len(scan["linchpins"])
+    counts["cycles"] = len(scan["cycles"])
     report: dict[str, Any] = {
         "generated_at": now.isoformat(),
         "repos_checked": len(targets),
@@ -573,6 +642,10 @@ def build_report(
         "stale": sum(1 for p in prs if p.age_days(now) >= STALE_DAYS),
         "prs": [p.to_dict(now) for p in prs],
         "plan": resolution_plan(prs),
+        "linchpins": scan["linchpins"],
+        "cycles": scan["cycles"],
+        "issues": scan["issues"],
+        "edges": scan["edges"],
         "errors": errors,
     }
     report["spoken"] = spoken_summary(report)
@@ -588,14 +661,25 @@ def refresh(
     output_dir: str | Path | None = None,
     mirrors_path: str | Path = "config/repo_mirrors.yaml",
     token: str | None = None,
+    label: bool | None = None,
+    label_dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Build the report from GitHub and write ``reports/pr_intel.json`` atomically."""
+    """Build the report from GitHub and write ``reports/pr_intel.json`` atomically.
+
+    *label* (default ``AI_AUDIT_LINCHPIN_LABELS``) puts the P0 label on linchpins in
+    mirrored repos and takes it off the ones this tool labelled that are no longer P0."""
+    from auditor.linchpin import apply_labels, labels_enabled
     from auditor.merge_poll import github_token, list_poll_targets
 
     tok = token if token is not None else github_token()
     if not tok:
         raise RuntimeError("pr intel needs GITHUB_TOKEN (GraphQL has no anonymous access)")
-    report = build_report(list_poll_targets(mirrors_path), github_graphql(tok))
+    targets = list_poll_targets(mirrors_path)
+    report = build_report(targets, github_graphql(tok))
+    if label if label is not None else labels_enabled():
+        report["labels"] = apply_labels(
+            report, token=tok, output_dir=output_dir, dry_run=label_dry_run,
+        )
     path = report_path(output_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
