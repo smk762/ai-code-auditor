@@ -141,7 +141,7 @@ def run_diff_audit(
         for p in impact.directly_changed
         if (repo_path / p).is_file()
     ]
-    findings.extend(run_static_checks_on_files(repo.name, changed_abs))
+    findings.extend(run_static_checks_on_files(repo.name, changed_abs, root=str(repo_path)))
 
     return DiffAuditResult(
         repo=repo.name,

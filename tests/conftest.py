@@ -37,6 +37,12 @@ def _isolated_eval_dir(tmp_path_factory: pytest.TempPathFactory, monkeypatch: py
 
 
 @pytest.fixture(autouse=True)
+def _isolated_suite_rules(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never run the real argus-ci catalogue from tests (it shells out to ruff and semgrep)."""
+    monkeypatch.setenv("AI_AUDIT_SUITE_RULES_DIR", str(tmp_path_factory.mktemp("no-suite-rules")))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """auditor.env_loader pulls the developer's real .env into os.environ; tests must
     see built-in defaults, not whichever provider/model is configured locally."""

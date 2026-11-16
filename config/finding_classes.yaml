@@ -264,6 +264,13 @@ classes:
 
 # Static tools' rule ids, mapped directly (no title guessing).
 static_rules:
+  # argus-ci suite rules (#55): guard rules only; convention rules are not findings.
+  suite:
+    missing-timeout: missing_timeout
+    predictable-tmp: path_traversal
+    request-path-to-fs: path_traversal
+    request-url-outbound: ssrf
+    token-compare: secret_exposure
   bandit:
     B113: missing_timeout
     B108: path_traversal

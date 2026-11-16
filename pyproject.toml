@@ -27,6 +27,10 @@ semantic = [
 conductor = [
   "litellm>=1.55.0",
 ]
+# argus-ci suite rules (#55): the semgrep pin matches argus-ci suite-rules/catalogue.toml.
+rules = [
+  "semgrep==1.180.0",
+]
 dev = [
   "pytest>=8.0.0",
   "httpx>=0.27.0",

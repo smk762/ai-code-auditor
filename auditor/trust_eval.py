@@ -66,7 +66,8 @@ def _since_bar(report: dict[str, Any]) -> tuple[int, int, int]:
 
 
 def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
-                classes: dict[str, Any] | None = None, class_lifecycle: dict[str, Any] | None = None) -> list[Gate]:
+                classes: dict[str, Any] | None = None, class_lifecycle: dict[str, Any] | None = None,
+                rules_fixtures: dict[str, Any] | None = None) -> list[Gate]:
     t = trust or {}
     gates: list[Gate] = []
 
@@ -129,9 +130,15 @@ def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
                       "Findings a proven class guard closed that stayed closed (no reopen, no recurrence)", ">=", 0.95, 10)
                  .judge(cl.get("rate"), int(cl.get("n") or 0)))
 
+    # ── #55 suite rules ──
+    rf = rules_fixtures or {}
+    gates.append(Gate("rules.fixtures", "suite rules", 55,
+                      "Every suite rule fires on its positive fixture and not its negative", ">=", 1.0, 5)
+                 .judge(rf.get("rate"), int(rf.get("n") or 0),
+                        "" if rules_fixtures else "no suite-rules catalogue (argus-ci suite-rules/ on dev)"))
+
     # ── not built yet: visible, never counted as passing ──
     for gid, comp, issue, desc in (
-        ("rules.fixtures", "suite rules", 55, "Every suite rule fires on its positive fixture and not its negative"),
         ("arch.contracts", "architecture contracts", 57, "Every architecture contract fires on a seeded violation"),
     ):
         gates.append(Gate(gid, comp, issue, desc, ">=", 1.0, 1, note="not built yet"))
@@ -258,8 +265,10 @@ def evaluate(output_dir: str | Path | None = None, *, record: bool = True,
     from auditor.trust_metrics import HISTORY_NAME as TRUST_HISTORY
     from auditor.trust_metrics import REPORT_NAME as TRUST_REPORT
 
+    from auditor.suite_rules import fixtures as rules_fixtures
+
     gates = build_gates(_read_json(out / TRUST_REPORT), _read_json(out / SEEDED_NAME), classes_eval(out),
-                        class_lifecycle_eval(out))
+                        class_lifecycle_eval(out), rules_fixtures(out))
     at = (now or datetime.now(UTC)).isoformat()
     statuses = {g.id: g.status for g in gates}
     history = [*_read_jsonl(out / HISTORY_NAME), {"at": at, "statuses": statuses}]

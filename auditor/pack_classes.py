@@ -74,18 +74,34 @@ def decide(votes: dict[str, str]) -> str:
     return cls if c and c.guard != "none" else UNCLASSIFIED
 
 
+def static_class(pack: dict[str, Any]) -> str:
+    """A static tool's rule names the class outright (suite rules, #55): no model needed."""
+    from auditor.finding_class import classify, static_rule_id
+
+    prov = pack.get("provenance") or {}
+    source = str(prov.get("source") or "")
+    rid = static_rule_id(str(prov.get("finding_id") or ""), source)
+    if not rid:
+        return UNCLASSIFIED
+    m = classify("", source=source, rule_id=rid)
+    return m.cls if m.rule.startswith("static:") else UNCLASSIFIED
+
+
 def run(output_dir: str | Path, *, dry_run: bool = False, mode: str = "batch", runner_factory: Any = None,
         public_base_url: str = "") -> dict[str, Any]:
     from auditor.agent_pack import AgentCodingPack, rebuild_index, write_pack
 
     out = Path(output_dir)
     system = llm.frozen_system(out)
-    if system is None:
-        return {"skipped": "no frozen prompt (run `ai-audit eval classes --llm` once where the gold set is)"}
     packs = finding_packs(out)
+    static = {d["work_item_id"]: static_class(d) for d in packs}
+    if system is None and not any(static.values()):
+        return {"skipped": "no frozen prompt (run `ai-audit eval classes --llm` once where the gold set is)"}
     cache = _load_cache(out)
     rows = [_row(p) for p in packs]
-    todo = sorted((r for r in rows if (cache.get(r["id"]) or {}).get("sha") != r["sha"]), key=lambda r: r["id"])
+    todo = [] if system is None else sorted(
+        (r for r in rows if not static[r["id"]] and (cache.get(r["id"]) or {}).get("sha") != r["sha"]),
+        key=lambda r: r["id"])
     priced = [llm.classify_rows(todo, m, out, system=system, mode=mode, dry_run=True) for m in llm.MODELS] if todo else []
     est = round(sum(p["est_usd"] for p in priced), 4)
     if dry_run:
@@ -109,10 +125,14 @@ def run(output_dir: str | Path, *, dry_run: bool = False, mode: str = "batch", r
     by_class: dict[str, int] = {}
     for data, r in zip(packs, rows, strict=True):
         hit = cache.get(r["id"]) or {}
-        cls = hit.get("class") if hit.get("sha") == r["sha"] else UNCLASSIFIED
+        by = BY
+        if static[r["id"]]:
+            cls, by = static[r["id"]], f"static:{(data.get('provenance') or {}).get('source', '')}"
+        else:
+            cls = hit.get("class") if hit.get("sha") == r["sha"] else UNCLASSIFIED
         cur = ((data.get("governance") or {}).get("finding_class") or {})
-        want = ({"id": cls, "guard": tax.get(cls).guard, "by": BY, "text_sha": r["sha"]}  # type: ignore[union-attr]
-                if cls else None)
+        want = ({"id": cls, "guard": tax.get(cls).guard, "by": by, "text_sha": r["sha"]}  # type: ignore[union-attr]
+                if cls and tax.get(cls) else None)
         if cls:
             by_class[cls] = by_class.get(cls, 0) + 1
         if (cur or None) == want:
