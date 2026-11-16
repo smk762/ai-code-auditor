@@ -190,6 +190,9 @@ def main() -> None:
         result = ingest_packs_to_rag(_load_packs(out), output_dir=out, full=True)
         print(f"  RAG ingest: {result}")
 
+    from auditor.class_packs import emit as emit_class_packs
+
+    print(f"Class packs: {emit_class_packs(out, public_base_url=base)}")
     idx = rebuild_index(out, public_base_url=base)
     print(
         f"\nDone. total={idx['count']} "

@@ -282,6 +282,16 @@ Pack GC (`auditor/pack_gc.py`, #67): the only thing that closes finding packs ot
 - **Reopening:** a re-found issue reopens the same pack (exact id or reworded match, `_carry_over_lifecycle`). The trust metrics' `gc` section counts those reopenings as the false-close rate.
 - **When it runs:** after each nightly repo audit, before the trust metrics (`AI_AUDIT_PACK_GC=0` turns it off). It writes `reports/pack_gc.json`. Also `ai-audit packs --gc [--dry-run] [--force] [--repo]` and `POST /audit/packs/gc` (auth, dry run unless `?dry_run=0`).
 
+Class packs (`auditor/class_packs.py`, #54): one `class_guard` pack per guardable finding class (`pack-class-<class>`). It is emitted once the class has at least 5 open packs (`AI_AUDIT_CLASS_PACK_MIN`) or open packs in at least 2 repos (`AI_AUDIT_CLASS_PACK_MIN_REPOS`).
+- **Children:** the class's open packs, linked by `governance.class_parent`. The class pack leads every bundle it covers, and its children rank a little lower.
+- **Recording a guard:** a guard is per repo, recorded with `POST /audit/packs/{id}/guard {repo, commit, proof_test, fixtures}` (auth) or `ai-audit packs --guard`.
+- **Proof:** nightly, the guard commit must be on the mirror's `origin/dev`. The proof test plus fixtures must pass on `dev` and must not pass when copied onto the tree at `<commit>^`. That's the evidence repro rule applied to the guard.
+- **Closing children:** a child in that repo closes as `resolved` (note `class_guard`, `verification.evidence.kind: class_guard`) only when no nightly scan since the merge reports it. A diff_audit child also needs its cited lines gone from `dev`. A child still reported gets `governance.class_exception` and stays open.
+- **The class pack itself** resolves once no children are open and a guard is proven.
+- **When it runs:** nightly after pack classes (`AI_AUDIT_CLASS_PACKS=0` turns it off), via `ai-audit packs --classes [--dry-run]`, and at the end of `scripts/emit_agent_packs.py`. Class packs are not findings: GC, the classifier and dedupe skip them.
+- **Gate:** `class_packs.lifecycle` is the share of class-guard closures that stayed closed (≥ 95%, n ≥ 10).
+- **UI:** `/ui/packs` has a Class filter (`cls=`) and a class line on each card, and a class pack's page lists its guards and children.
+
 Also on lifecycle: opt-in `semantic_check` / `AI_AUDIT_VALIDATE_SEMANTIC=1` runs `auditor/equivalence.py` first (a "trust me" change with a counterexample keeps the pack open), and conductor draft PRs set `in_progress`. Pack RAG ingest is on by default (`AI_AUDIT_PACK_RAG_INGEST=0` to disable).
 
 Consuming-agent flow: `bundle?repo=` → `POST /audit/packs/{id}/status {"status":"claimed"}` → `ai-audit repair --pack-id <id>` (or implement from the brief) → `POST /audit/validate_patch` with `pack_id` (pass with evidence ⇒ `resolved`, pass without ⇒ `unverified`). Full detail in `AGENTS.md`.

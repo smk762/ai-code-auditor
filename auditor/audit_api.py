@@ -2097,13 +2097,14 @@ def get_packs_board_json(
     kind: str = Query(default=""),
     severity: str = Query(default="", description="comma-separated, e.g. CRITICAL,HIGH"),
     q: str = Query(default="", description="substring of id, title, file or repo"),
+    cls: str = Query(default="", description="finding class (#53): its packs and its class pack"),
     per_column: int = Query(default=50, ge=1, le=500),
 ) -> JSONResponse:
     """Packs grouped by lifecycle status for the board (filtered totals, top cards per column)."""
     from auditor.ui_repos import packs_board
 
     return JSONResponse(packs_board(_output_dir(), repo=repo, layer=layer, kind=kind,
-                                    severity=severity, q=q, per_column=per_column))
+                                    severity=severity, q=q, cls=cls, per_column=per_column))
 
 
 @app.get("/audit/packs/bundle")
@@ -2145,6 +2146,31 @@ def get_agent_pack_bundle(
 class _PackStatusRequest(BaseModel):
     status: Literal["open", "claimed", "in_progress", "unverified", "resolved", "wontfix", "obsolete"]
     note: str = ""
+
+
+class _ClassGuardRequest(BaseModel):
+    repo: str
+    commit: str
+    proof_test: str
+    fixtures: list[str] = []
+    note: str = ""
+
+
+@app.post("/audit/packs/{pack_id}/guard", dependencies=[Depends(_require_mutating_auth)])
+def record_class_guard(pack_id: str, request: _ClassGuardRequest) -> JSONResponse:
+    """Record a merged guard on a class pack (#54). The nightly run proves it and closes children."""
+    from auditor.class_packs import record_guard
+    from conductor.publish import public_base_url
+
+    try:
+        rec = record_guard(_output_dir(), pack_id, repo=request.repo, commit=request.commit,
+                           proof_test=request.proof_test, fixtures=request.fixtures, note=request.note,
+                           public_base_url=public_base_url())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse({"id": pack_id, "repo": request.repo, "guard": rec})
 
 
 @app.post("/audit/packs/{pack_id}/status", dependencies=[Depends(_require_mutating_auth)])

@@ -224,6 +224,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Close open finding packs no scan reports any more as obsolete (file gone, missed by the last nightly "
              "scans, changed and unreported, diff_audit TTL); they reopen if found again",
     )
+    packs.add_argument("--classes", action="store_true",
+                       help="Emit class guard packs, prove recorded guards and close their children (#54)")
+    packs.add_argument("--guard", action="store_true",
+                       help="Record a merged guard on a class pack: --id --repo --commit --proof-test [--fixture ...]")
+    packs.add_argument("--commit", default="", help="With --guard: the guard's merge commit on dev")
+    packs.add_argument("--proof-test", default="", help="With --guard: test that shows the guard firing on fixtures")
+    packs.add_argument("--fixture", action="append", default=[], help="With --guard: a fixture path (repeatable)")
     packs.add_argument("--classify", action="store_true",
                        help="Write finding classes onto packs where Haiku, Sonnet and Opus agree on a guardable "
                             "class (Batch API, classes lane; --dry-run prices it)")
@@ -1266,6 +1273,34 @@ def main() -> None:
                     f"~{bundle['approx_tokens']}/{bundle['token_budget']} tokens "
                     f"truncated={bundle['truncated']} — GET {bundle['discovery']['bundle']}"
                 )
+        elif args.guard:
+            from auditor import class_packs
+
+            if not (args.pack_id and args.repo):
+                raise SystemExit("--guard needs --id <class pack> and --repo")
+            rec = class_packs.record_guard(out, args.pack_id, repo=args.repo, commit=args.commit,
+                                           proof_test=args.proof_test, fixtures=args.fixture,
+                                           public_base_url=public_base_url())
+            print(json.dumps(rec, indent=2))
+        elif args.classes:
+            from auditor import class_packs
+
+            rep = class_packs.run(out, dry_run=args.dry_run, public_base_url=public_base_url())
+            if args.json:
+                print(json.dumps(rep, indent=2))
+            else:
+                if rep.get("emit"):
+                    e = rep["emit"]
+                    print(f"class packs: {', '.join(e['class_packs']) or 'none'} "
+                          f"({e['linked']} children linked, {e['unlinked']} unlinked)")
+                for p in rep["proofs"]:
+                    print(f"proof {p['pack']} {p['repo']}: {p['status']} ({p['note']})")
+                verb = "would close" if args.dry_run else "closed"
+                for c in rep["closed"]:
+                    print(f"{verb} {c['pack']} ({c['repo']}): {c['reason']}")
+                for c in rep["exceptions"]:
+                    print(f"exception {c['pack']} ({c['repo']}): {c['reason']}")
+                print(f"{len(rep['closed'])} {verb}, {len(rep['exceptions'])} exceptions, {rep['waiting']} waiting")
         elif args.classify:
             from auditor import pack_classes
 

@@ -207,6 +207,7 @@ def packs_board(
     kind: str = "",
     severity: str = "",
     q: str = "",
+    cls: str = "",
     per_column: int = BOARD_PER_COLUMN,
 ) -> dict[str, Any]:
     """Packs grouped by lifecycle status, most severe then highest score first.
@@ -219,6 +220,7 @@ def packs_board(
         "repos": sorted({e.get("repo", "") for e in entries if e.get("repo")}),
         "kinds": sorted({e.get("kind", "") for e in entries if e.get("kind")}),
         "layers": sorted({e.get("layer", "") for e in entries if e.get("layer")}),
+        "classes": sorted({e.get("finding_class", "") for e in entries if e.get("finding_class")}),
     }
     sev_set = {x.strip().upper() for x in severity.split(",") if x.strip()}
     ql = q.strip().lower()
@@ -227,6 +229,7 @@ def packs_board(
         if (not repo or e.get("repo") == repo)
         and (not layer or e.get("layer") == layer)
         and (not kind or e.get("kind") == kind)
+        and (not cls or e.get("finding_class") == cls or e.get("id") == f"pack-class-{cls.replace('_', '-')}")
         and (not sev_set or str(e.get("severity", "")).upper() in sev_set)
         and (not ql or any(ql in str(e.get(k, "")).lower() for k in ("id", "title", "file_path", "repo")))
     ]
@@ -239,7 +242,8 @@ def packs_board(
         from auditor.ui_runs import _display_path
 
         return {k: e.get(k) for k in ("id", "title", "repo", "kind", "layer", "severity", "score",
-                                      "status_updated_at", "draft_pr_url", "detected_at")} | {
+                                      "status_updated_at", "draft_pr_url", "detected_at",
+                                      "finding_class", "class_parent", "class_exception")} | {
             "path": _display_path(e.get("repo", ""), e.get("file_path", "")) if e.get("file_path") else ""}
 
     statuses = PACK_STATUSES + sorted(set(grouped) - set(PACK_STATUSES))
@@ -248,9 +252,30 @@ def packs_board(
                      "packs": [_card(e) for e in grouped.get(st, [])[:per_column]]} for st in statuses],
         "total": len(rows),
         "facets": facets,
-        "filters": {"repo": repo, "layer": layer, "kind": kind, "severity": severity, "q": q,
+        "filters": {"repo": repo, "layer": layer, "kind": kind, "severity": severity, "q": q, "cls": cls,
                     "per_column": per_column},
     }
+
+
+def _class_meta(output_dir: str | Path, pack: Any) -> dict[str, Any]:
+    """Class pack links for the page (#54): a class pack's children and guards, a child's parent."""
+    gov = pack.governance or {}
+    out: dict[str, Any] = {"finding_class": (gov.get("finding_class") or {}).get("id") or "",
+                           "class_parent": gov.get("class_parent") or "",
+                           "class_exception": gov.get("class_exception") or None}
+    if pack.kind != "class_guard":
+        return out
+    by_id = {e.get("id"): e for e in _pack_entries(output_dir)}
+    kids = []
+    for cid in gov.get("children") or []:
+        e = by_id.get(cid) or {}
+        kids.append({"id": cid, "title": e.get("title", ""), "repo": e.get("repo", ""), "path": e.get("file_path", ""),
+                     "line": e.get("line", 0), "status": e.get("status", ""), "severity": e.get("severity", ""),
+                     "exception": bool(e.get("class_exception"))})
+    guards = [{"repo": r, "commit": g.get("commit", ""), "proof_test": g.get("proof_test", ""),
+               "proof": g.get("proof") or {}} for r, g in sorted((gov.get("class_guard") or {}).items())]
+    return {**out, "class_id": gov.get("class_id", ""), "guard_type": gov.get("guard_type", ""),
+            "children": kids, "guards": guards}
 
 
 def render_pack_page(output_dir: str | Path, pack_id: str) -> str | None:
@@ -270,6 +295,7 @@ def render_pack_page(output_dir: str | Path, pack_id: str) -> str | None:
         "draft_pr_url": (pack.repair or {}).get("draft_pr_url") or "",
         "history": pack.status_history,
         "evidence": (pack.verification or {}).get("evidence") or None,
+        **_class_meta(output_dir, pack),
     }
     title = (pack.narrative or {}).get("title") or pack.work_item_id
     return ui.render_page("pack.html", "/ui/packs", {

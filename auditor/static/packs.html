@@ -53,6 +53,7 @@
         <option value="LOW">low</option><option value="INFO">info</option></select></label>
       <label>Layer <select id="f-layer"><option value="">all</option></select></label>
       <label>Kind <select id="f-kind"><option value="">all</option></select></label>
+      <label>Class <select id="f-cls"><option value="">all</option></select></label>
       <span class="flash" id="flash" role="status"></span>
     </div>
     <div class="cols" id="cols" role="group" aria-label="Columns to show"></div>
@@ -76,8 +77,8 @@ function initialCols() {
 }
 const shown = initialCols();
 let last = null;
-const state = { repo: p.repo || "", severity: p.severity || "", layer: p.layer || "", kind: p.kind || "", q: p.q || "" };
-const els = { repo: "f-repo", severity: "f-severity", layer: "f-layer", kind: "f-kind", q: "f-q" };
+const state = { repo: p.repo || "", severity: p.severity || "", layer: p.layer || "", kind: p.kind || "", cls: p.cls || "", q: p.q || "" };
+const els = { repo: "f-repo", severity: "f-severity", layer: "f-layer", kind: "f-kind", cls: "f-cls", q: "f-q" };
 for (const k in els) els[k] = document.getElementById(els[k]);
 els.q.value = state.q;
 els.severity.value = state.severity;
@@ -92,6 +93,9 @@ function card(pk) {
     ${UI.sevBadge(pk.severity)} <span class="meta">${esc(pk.kind)} · score ${Number(pk.score || 0).toFixed(2)}</span>
     <a class="t" href="/ui/packs/${encodeURIComponent(pk.id)}">${esc(pk.title || pk.id)}</a>
     <div class="meta">${esc(pk.repo)}${pk.path ? ` · ${esc(pk.path)}` : ""}</div>
+    ${pk.finding_class ? `<div class="meta">class ${pk.class_parent
+      ? `<a href="/ui/packs/${encodeURIComponent(pk.class_parent)}">${esc(pk.finding_class.replace(/_/g, " "))}</a>`
+      : esc(pk.finding_class.replace(/_/g, " "))}${pk.class_exception ? " · guard can't express it" : ""}</div>` : ""}
     <div class="foot">
       <span class="meta">${pk.draft_pr_url ? `<a href="${esc(pk.draft_pr_url)}">draft PR</a>` : pk.status_updated_at ? `moved ${UI.ago(pk.status_updated_at)}` : `found ${UI.ago(pk.detected_at)}`}</span>
       <select data-id="${esc(pk.id)}" data-was="${esc(pk.status)}" aria-label="Move ${esc(pk.title || pk.id)}">${opts}</select>
@@ -117,6 +121,7 @@ function render(d) {
   fill(els.repo, d.facets.repos, state.repo);
   fill(els.layer, d.facets.layers, state.layer);
   fill(els.kind, d.facets.kinds, state.kind);
+  fill(els.cls, d.facets.classes || [], state.cls);
   renderChips(d);
   const cols = d.columns.filter((c) => shown.has(c.status));
   const board = document.getElementById("board");
@@ -168,7 +173,7 @@ document.getElementById("cols").addEventListener("click", (e) => {
   UI.setParams({ ...state, cols: colsParam() });
   if (last) render(last);  // showing/hiding needs no refetch
 });
-for (const k of ["repo", "severity", "layer", "kind"]) els[k].addEventListener("change", () => { state[k] = els[k].value; load(); });
+for (const k of ["repo", "severity", "layer", "kind", "cls"]) els[k].addEventListener("change", () => { state[k] = els[k].value; load(); });
 let typing = null;
 els.q.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => { state.q = els.q.value.trim(); load(); }, 250); });
 load();

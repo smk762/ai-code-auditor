@@ -42,7 +42,7 @@ _STATUS_HISTORY_MAX = 20
 # (architecture titles are "repo: path:line") dedupe on exact id only.
 # obsolete (closed by pack GC, #67) is a target so a re-found issue reopens its own pack instead of a twin.
 _MERGE_INTO_STATUSES = ("in_progress", "claimed", "unverified", "wontfix", "open", "obsolete")  # keeper preference order
-_NO_TITLE_MATCH_KINDS = frozenset({"architecture", "extraction", "world_model", "invariants"})
+_NO_TITLE_MATCH_KINDS = frozenset({"architecture", "extraction", "world_model", "invariants", "class_guard"})
 
 # Bundle sizing: token_budget is approximated as chars / CHARS_PER_TOKEN.
 CHARS_PER_TOKEN = 4
@@ -150,6 +150,8 @@ class AgentCodingPack:
             "duplicate_of": (self.governance or {}).get("duplicate_of") or "",
             "recurrence_of": (self.governance or {}).get("recurrence_of") or "",
             "finding_class": ((self.governance or {}).get("finding_class") or {}).get("id") or "",
+            "class_parent": (self.governance or {}).get("class_parent") or "",
+            "class_exception": bool((self.governance or {}).get("class_exception")),
             "run_id": (self.provenance or {}).get("run_id", ""),
             "path": path,
             "url": url,
@@ -171,6 +173,9 @@ class AgentCodingPack:
             f"- **severity:** {sev}",
             f"- **status:** {self.status or DEFAULT_PACK_STATUS}",
             f"- **repo:** {repo}",
+            *([f"- **class:** `{fc_}` (guard task: `{(self.governance or {}).get('class_parent')}`)"]
+              if (fc_ := ((self.governance or {}).get("finding_class") or {}).get("id"))
+              and (self.governance or {}).get("class_parent") else []),
             f"- **location:** `{loc.get('file_path', '')}`:{loc.get('line', 0)}"
             + (f" (`{loc.get('symbol')}`)" if loc.get("symbol") else ""),
             "",
@@ -504,6 +509,9 @@ def _carry_over_lifecycle(pack: AgentCodingPack, existing: dict[str, Any]) -> No
     if prev.governance.get("finding_class") and not pack.governance.get("finding_class"):
         # The nightly classify step re-checks it against the text hash (#53)
         pack.governance["finding_class"] = prev.governance["finding_class"]
+    for key in ("class_parent", "class_exception"):  # #54; the class step re-checks them nightly
+        if prev.governance.get(key) and not pack.governance.get(key):
+            pack.governance[key] = prev.governance[key]
     if prev.status == DEFAULT_PACK_STATUS and not prev.status_history:
         return
     if pack.status != DEFAULT_PACK_STATUS:
@@ -807,6 +815,9 @@ def _specialist_rank(entry: dict[str, Any], *, repo: str, q: str) -> float | Non
     impacted = repo in (entry.get("impacted_repos") or [])
     if not (primary or impacted):
         return None
+    if entry.get("kind") == "class_guard":
+        # One guard closes many findings here, so it leads the bundle for every repo it covers (#54).
+        primary = True
     sev = _SEVERITY_SCORE.get(str(entry.get("severity") or "MEDIUM").upper(), 0.3)
     score = 0.5 * sev + 0.5 * float(entry.get("score") or 0.0)
     score += 1.0 if primary else 0.3
@@ -824,6 +835,10 @@ def _specialist_rank(entry: dict[str, Any], *, repo: str, q: str) -> float | Non
         score -= 0.3
     elif status == "unverified":
         score -= 0.2  # a fix exists; what's missing is the proof
+    if entry.get("kind") == "class_guard":
+        score += 1.0
+    elif entry.get("class_parent") and not entry.get("class_exception"):
+        score -= 0.1  # its guard task covers it
     return score
 
 

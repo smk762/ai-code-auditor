@@ -40,11 +40,11 @@ def seeded(fix=(True,) * 5, control=(False,) * 5, age_days=1) -> dict:
 # ── gates ────────────────────────────────────────────────────────────────────
 
 def test_all_built_gates_pass_on_good_numbers() -> None:
-    g = by_id(build_gates(trust(), seeded()))
+    g = by_id(build_gates(trust(), seeded(), None, {"n": 12, "held": 12, "rate": 1.0}))
     live = {k: v.status for k, v in g.items() if v.status != "pending" and not k.startswith("classes.")}
     assert set(live.values()) == {"pass"}, live
     assert g["evidence.lint_only"].value == pytest.approx(1 / 24)
-    assert {k for k, v in g.items() if v.status == "pending"} == {"class_packs.lifecycle", "rules.fixtures", "arch.contracts"}
+    assert {k for k, v in g.items() if v.status == "pending"} == {"rules.fixtures", "arch.contracts"}
     assert g["classes.precision"].status == "insufficient"  # no gold set in tests
 
 
@@ -97,7 +97,7 @@ def test_evaluate_writes_report_and_history(tmp_path: Path) -> None:
     (tmp_path / trust_eval.SEEDED_NAME).write_text(json.dumps(seeded()))
     r1 = trust_eval.evaluate(tmp_path)
     trust_eval.evaluate(tmp_path)
-    assert r1["summary"]["fail"] == 0 and r1["summary"]["pending"] == 3
+    assert r1["summary"]["fail"] == 0 and r1["summary"]["pending"] == 2
     assert r1["exit"]["met"] is False  # pending components and no four-week history
     assert len((tmp_path / trust_eval.HISTORY_NAME).read_text().splitlines()) == 2
     assert json.loads((tmp_path / trust_eval.REPORT_NAME).read_text())["at"]

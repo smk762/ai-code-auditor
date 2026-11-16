@@ -79,6 +79,23 @@ changes, nothing extra for docs/config-only patches, or an `evidence_waiver`); a
 `repair.draft_pr_url`. Status survives re-emits. Pack docs are slim-ingested to RAG by default
 (`AI_AUDIT_PACK_RAG_INGEST=0` / `--no-rag` to disable).
 
+### Class packs (guard tasks)
+
+A `class_guard` pack (`pack-class-<class>`) is one task that eliminates a whole class of finding
+(SSRF, path traversal, fail-open…) with a guard: a ruff or semgrep rule, or a shared helper plus a
+rule that forces its use. Its children are the open findings of that class
+(`governance.class_parent`), and it ranks first in a repo's bundle. Prefer it over fixing those
+children one by one.
+
+1. Land the guard in one repo with a **proof test** and two fixtures: the test asserts the guard
+   fires on the positive fixture and is silent on the negative one.
+2. Once it is merged to `dev`, record it:
+   `POST /audit/packs/pack-class-<class>/guard {"repo","commit","proof_test","fixtures":[...]}`
+   (mutating auth), or `ai-audit packs --guard --id … --repo … --commit … --proof-test … --fixture …`.
+3. The nightly run proves it: the proof test must pass on `dev` and must **not** pass on the tree
+   just before the guard commit. Then it closes that repo's children that the next scan no longer
+   reports. Any still reported are marked `class_exception` and stay open as ordinary work.
+
 ### Manual path
 
 Fetch packs in this order:
