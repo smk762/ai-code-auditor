@@ -13,6 +13,7 @@ from auditor.contracts import CodeUnit, Finding
 from auditor.llm_cache import ReviewCache, review_key
 from auditor.retry import with_retries
 from auditor.ecosystem_briefing import build_ecosystem_overview, build_file_briefing
+from auditor.spend_ledger import get_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,31 @@ def _safe_line(value: Any, default: int) -> int:
         return default
 
 
+def prompt_blocks(segments: list[tuple[str, bool]], *, ttl: str | None = None) -> list[dict[str, Any]]:
+    """Text blocks from ``(text, cache)`` segments; ``cache`` puts a cache breakpoint at the end
+    of that segment. The API rejects whitespace-only blocks, so one is folded into the block
+    before it (or, first in line, the block after); the joined text never changes.
+    """
+    control: dict[str, Any] = {"type": "ephemeral", **({"ttl": ttl} if ttl else {})}
+    blocks: list[dict[str, Any]] = []
+    carry = ""
+    for text, cache in segments:
+        if not text.strip():
+            if blocks:
+                blocks[-1]["text"] += text
+            else:
+                carry += text
+            continue
+        block: dict[str, Any] = {"type": "text", "text": carry + text}
+        carry = ""
+        if cache:
+            block["cache_control"] = dict(control)
+        blocks.append(block)
+    if carry:
+        blocks.append({"type": "text", "text": carry})
+    return blocks
+
+
 class LLMClient:
     def __init__(
         self,
@@ -121,12 +147,19 @@ class LLMClient:
         # Pre-built ecosystem context injected into every audit prompt
         self._ecosystem_overview = build_ecosystem_overview()
         self._repo_briefing = repo_briefing
+        self._anthropic: Any = None  # SDK client, built on first Anthropic call
 
-    def generate(self, prompt: str) -> str:
-        """Return the model's text, or "" on failure (logged — callers fall back to heuristics)."""
+    def generate(self, prompt: str | list[dict[str, Any]]) -> str:
+        """Return the model's text, or "" on failure (logged — callers fall back to heuristics).
+
+        *prompt* may be Anthropic text blocks (build_prompt_blocks); other providers get the
+        blocks joined into one string.
+        """
         try:
             if self.provider == "anthropic":
                 return self._anthropic_generate(prompt)
+            if not isinstance(prompt, str):
+                prompt = "".join(b["text"] for b in prompt)
             if self.provider in OPENAI_CHAT_PROVIDERS:
                 payload: dict[str, Any] = {
                     "model": self.model,
@@ -161,22 +194,33 @@ class LLMClient:
                 )
             return ""
 
-    def _anthropic_generate(self, prompt: str) -> str:
-        # Shared multi-provider path (conductor/llm.py). Claude 5.x models reject
-        # `temperature`, so it is not sent; effort=low keeps thinking spend small for
-        # this per-unit classification-style task.
-        from conductor.llm import completion
+    def _anthropic_generate(self, prompt: str | list[dict[str, Any]]) -> str:
+        # Called directly rather than through conductor/llm.py so the cache_control blocks reach
+        # the API as they are and the cache usage lands in the ledger. Claude 5.x models reject
+        # `temperature`, so it is not sent; effort=low keeps thinking spend small for this
+        # per-unit classification-style task.
+        lane = self.lane or os.getenv("AI_AUDIT_SPEND_LANE", "audit")
+        ledger = get_ledger()
+        ledger.check(lane)
+        if self._anthropic is None:
+            import anthropic
 
-        return completion(
-            [{"role": "user", "content": prompt}],
-            model=f"anthropic/{self.model}",
-            temperature=None,
-            max_tokens=8192,
-            effort=self.effort or None,
-            use_fallbacks=False,
-            lane=self.lane or os.getenv("AI_AUDIT_SPEND_LANE", "audit"),
-            note=self._note,
-        )
+            self._anthropic = anthropic.Anthropic(max_retries=4, timeout=float(self.timeout_s or 600))
+        params: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": 8192,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if self.effort:
+            params["output_config"] = {"effort": self.effort}
+        msg = self._anthropic.messages.create(**params)
+        try:
+            ledger.record_usage(lane, self.model, msg.usage, note=self._note)
+        except Exception:  # never fail a paid call over bookkeeping
+            logger.exception("spend ledger record failed")
+        if msg.stop_reason == "refusal":
+            raise RuntimeError(f"Anthropic refusal: {getattr(msg, 'stop_details', None)}")
+        return "".join(b.text for b in msg.content if b.type == "text")
 
     def _do_generate(self, payload: dict[str, Any], headers: dict[str, str]) -> str:
         resp = requests.post(self.endpoint, json=payload, headers=headers, timeout=self.timeout_s)
@@ -217,20 +261,37 @@ class LLMClient:
 
     def build_prompt(self, unit: CodeUnit, repo_path: str = "", instructions: str | None = None) -> str:
         """The per-unit audit prompt (shared by sync, batch, and model-eval paths)."""
+        return "".join(b["text"] for b in self.build_prompt_blocks(unit, repo_path, instructions))
+
+    def build_prompt_blocks(self, unit: CodeUnit, repo_path: str = "", instructions: str | None = None,
+                            *, ttl: str | None = None) -> list[dict[str, Any]]:
+        """build_prompt() as Anthropic text blocks, with prompt-cache breakpoints after the
+        ecosystem overview (same for every unit) and the repo briefing (same for every unit of
+        a repo). Joined, the blocks are exactly build_prompt(). *ttl* "1h" for batches, whose
+        requests run in no particular order; None is the 5-minute default.
+        """
         instructions = self.instructions if instructions is None else instructions
         file_ctx = build_file_briefing(
             repo_name=unit.repo,
             file_path=__import__("pathlib").Path(unit.file_path),
             repo_path=__import__("pathlib").Path(repo_path or unit.file_path).parent,
         )
-        return (
-            f"{self._ecosystem_overview}\n\n"
-            f"{self._repo_briefing}\n\n"
-            f"---\n{file_ctx}\n"
-            f"File: {unit.file_path}\n"
-            f"Symbol: {unit.symbol}\n\n"
-            f"{instructions}\n\n"
-            f"```\n{unit.raw_text}\n```"
+        return prompt_blocks(
+            [
+                (f"{self._ecosystem_overview}\n\n", True),
+                (f"{self._repo_briefing}\n\n", True),
+                (
+                    (
+                        f"---\n{file_ctx}\n"
+                        f"File: {unit.file_path}\n"
+                        f"Symbol: {unit.symbol}\n\n"
+                        f"{instructions}\n\n"
+                        f"```\n{unit.raw_text}\n```"
+                    ),
+                    False,
+                ),
+            ],
+            ttl=ttl,
         )
 
     def cache_key(self, unit: CodeUnit) -> str:
@@ -252,7 +313,7 @@ class LLMClient:
             self.cache_misses += 1
             return []
         self._note = unit.repo
-        response = self.generate(self.build_prompt(unit, repo_path))
+        response = self.generate(self.build_prompt_blocks(unit, repo_path))
         if self.cache and response and _parse_findings_json(response, unit) is not None:
             self.cache.put(key, self.model, response)
         return self.findings_from_response(response, unit)
