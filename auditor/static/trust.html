@@ -110,6 +110,10 @@ function render() {
   document.getElementById("sub").innerHTML =
     `Measured ${UI.ago(report.generated_at)} · ${int(inp.finding_packs)} finding packs (${int(report.headline.open_finding_packs)} open) · ${UI.plural(inp.runs, "scan run")} since ${inp.first_scan ? esc(new Date(inp.first_scan).toLocaleDateString()) : "—"} · <a href="/audit/trust.json">JSON</a> · epic <a href="https://github.com/smk762/ai-code-auditor/issues/64">#64</a>`;
   document.getElementById("kpis").innerHTML = [
+    // Since the evidence bar (#58), as its gate judges it; the all-time rate keeps pre-bar resolutions for good.
+    fr.since_bar != null
+      ? tile("Resolved on lint alone", pct(fr.rate_since_bar), `${int(fr.lint_only_since_bar)} of ${int(fr.since_bar)} resolutions under the evidence bar ran no tests · all-time ${pct(fr.rate)} (${int(fr.lint_only)} of ${int(fr.validator)}, mostly from before the bar) · ${int(fr.manual)} closed by hand` +
+        ` · ${int(report.headline.unverified_packs || 0)} unverified now` + (fr.waiver_rate != null ? ` · waived ${pct(fr.waiver_rate)}` : ""), "<b>goal</b> ≤ 5% (#58)") :
     tile("Resolved on lint alone", pct(fr.rate), `${int(fr.lint_only)} of ${int(fr.validator)} validator resolutions ran no tests · ${int(fr.manual)} closed by hand` +
       ` · ${int(report.headline.unverified_packs || 0)} unverified now` + (fr.waiver_rate != null ? ` · waived ${pct(fr.waiver_rate)} under the evidence bar` : ""), "<b>goal</b> ≤ 5% (#58)"),
     tile("Regressed after a fix", pct(rc.rate), `${int(rc.regressed)} of ${int(rc.observed)} resolved packs came back · ${int(rc.disputed)} disputed · ${int(rc.pending)} awaiting a rescan`, "<b>goal</b> ≤ 5%"),
