@@ -121,7 +121,7 @@ function render() {
         ` · ${int(report.headline.unverified_packs || 0)} unverified now` + (fr.waiver_rate != null ? ` · waived ${pct(fr.waiver_rate)}` : ""), "<b>goal</b> ≤ 5% (#58)") :
     tile("Resolved on lint alone", pct(fr.rate), `${int(fr.lint_only)} of ${int(fr.validator)} validator resolutions ran no tests · ${int(fr.manual)} closed by hand` +
       ` · ${int(report.headline.unverified_packs || 0)} unverified now` + (fr.waiver_rate != null ? ` · waived ${pct(fr.waiver_rate)} under the evidence bar` : ""), "<b>goal</b> ≤ 5% (#58)"),
-    tile("Regressed after a fix", pct(rc.rate), `${int(rc.regressed)} of ${int(rc.observed)} resolved packs came back · ${int(rc.disputed)} disputed · ${int(rc.pending)} awaiting a rescan`, "<b>goal</b> ≤ 5%"),
+    tile("Regressed after a fix", pct(rc.rate), `${int(rc.regressed)} of ${int(rc.observed)} resolved packs came back · ${int(rc.disputed)} disputed · ${int(rc.pending)} awaiting a rescan${rc.unlanded ? ` · ${int(rc.unlanded)} fixes not yet on the scanned dev` : ""}`, "<b>goal</b> ≤ 5%"),
     tile("Agent PRs reverted", prs ? pct(prs.rate) : "—", prs ? `${int(prs.reverted)} of ${int(prs.observed)} merged fix PRs · ${int(prs.fixed_forward)} fixed forward · ${int(prs.mature)} past ${prs.window_days} days` : "No PR list yet: run <code>ai-audit trust --github</code>", "<b>goal</b> ≤ 2%"),
     tile("Scan persistence", pct(sp.rate), `${int(sp.refound)} of ${int(sp.findings)} findings re-reported by the next scan · reopened packs ${pct(ro.rate)}` +
       (report.gc && report.gc.closed ? ` · pack GC closed ${int(report.gc.closed)}, ${pct(report.gc.rate)} came back` : ""), "the scanner's stability, read recurrence against it"),

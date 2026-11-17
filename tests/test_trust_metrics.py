@@ -115,6 +115,59 @@ def test_recurrence_from_later_scan_reworded_and_moved_line() -> None:
     assert r["examples"][0]["evidence"].startswith("scan s2")
 
 
+def test_a_patched_fix_is_judged_from_when_it_landed_on_dev() -> None:
+    """validate_patch passing is not the fix shipping: scans of dev before the merge still read the
+    unfixed code, so they can't show the fix failed to hold."""
+    issue = ("app.py", "Missing timeout on HTTP call", 10)
+    p = pack("a", title="Missing timeout on HTTP call", status="resolved", history=[("resolved", 5, PYTEST)])
+    before_merge = scan("s2", 6, [issue])
+    # not landed: neither observed nor regressed, counted apart
+    r = tm.recurrence_metric([p], [before_merge], {"a": None})
+    assert (r["observed"], r["regressed"], r["pending"], r["unlanded"]) == (0, 0, 0, 1)
+    assert r["unlanded_by_repo"] == {"x": 1}
+    # landed at 8: the scan at 6 read code without the fix, the one at 9 is the real test
+    landed = {"a": T0 + timedelta(hours=8)}
+    r = tm.recurrence_metric([p], [before_merge], landed)
+    assert (r["observed"], r["pending"]) == (0, 1)
+    r = tm.recurrence_metric([p], [before_merge, scan("s3", 9, [])], landed)
+    assert (r["observed"], r["regressed"]) == (1, 0)
+    r = tm.recurrence_metric([p], [before_merge, scan("s3", 9, [issue])], landed)
+    assert (r["observed"], r["regressed"]) == (1, 1)
+    # a scan of the landing commit itself reads the fix
+    r = tm.recurrence_metric([p], [scan("s3", 8, [issue])], landed)
+    assert r["regressed"] == 1
+    # the old behaviour without landing data
+    assert tm.recurrence_metric([p], [before_merge])["regressed"] == 1
+
+
+def test_fix_landings_from_a_naming_pr_else_the_first_change_to_the_file() -> None:
+    def resolved(pid: str, note: str = PYTEST, hours: float = 5, path: str = "/m/x/app.py") -> tm.PackView:
+        return pack(pid, path=path, status="resolved", history=[("resolved", hours, note)])
+
+    packs = [resolved("named"), resolved("file"), resolved("waiting", path="/m/x/other.py"),
+             resolved("manual", note="Already fixed on dev by #9"), resolved("old", hours=-50),
+             pack("open"), resolved("elsewhere", path="/m/y/app.py")]
+    packs[-1].repo = "y"
+    changes = {"x": [(T0 + timedelta(hours=3), {"app.py", "other.py"}),   # before the resolutions
+                     (T0 + timedelta(hours=7), {"app.py", "README.md"})]}
+    prs = [{"merged_at": at(9), "pack_ids": ["named"]}]
+    got = tm.fix_landings(packs, changes, prs, since=T0 - timedelta(hours=24))
+    assert got == {"named": T0 + timedelta(hours=9), "file": T0 + timedelta(hours=7), "waiting": None}
+
+
+def test_path_changes_reads_first_parent_merges(tmp_path: Path) -> None:
+    def git(*a: str) -> str:
+        return subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
+
+    git("init", "-q", "-b", "dev")
+    git("config", "user.email", "t@t"); git("config", "user.name", "t")
+    (tmp_path / "a.py").write_text("1\n"); git("add", "."); git("commit", "-qm", "base")
+    git("checkout", "-qb", "fix"); (tmp_path / "b.py").write_text("2\n"); git("add", "."); git("commit", "-qm", "fix")
+    git("checkout", "-q", "dev"); git("merge", "-q", "--no-ff", "-m", "merge fix", "fix")
+    changes = tm.MirrorCommits(tmp_path).path_changes("2000-01-01")
+    assert [paths for _, paths in changes] == [{"a.py"}, {"b.py"}]  # the merge, not the branch commit
+
+
 def test_finding_moved_to_another_file_is_not_a_recurrence() -> None:
     p = pack("a", title="Missing timeout on HTTP call", status="resolved", history=[("resolved", 5, PYTEST)])
     r = tm.recurrence_metric([p], [scan("s2", 6, [("other.py", "Missing timeout on HTTP call", 10)])])
