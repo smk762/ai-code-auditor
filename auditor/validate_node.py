@@ -29,6 +29,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -109,9 +110,16 @@ def _node_version() -> str:
         return ""
 
 
-def _env() -> dict[str, str]:
-    return {**os.environ, "CI": "1", "NO_COLOR": "1", "FORCE_COLOR": "0", "NEXT_TELEMETRY_DISABLED": "1",
-            "VITE_CONFIG_NATIVE_IGNORE_WARNING": "true", "npm_config_update_notifier": "false"}
+def _env(npm_cache: Path | None = None) -> dict[str, str]:
+    """Child env. npm's cache must be writable: in the container the API runs as a uid with no
+    passwd entry, so HOME is ``/`` and npm's default ``/.npm`` fails every install with EACCES."""
+    env = {**os.environ, "CI": "1", "NO_COLOR": "1", "FORCE_COLOR": "0", "NEXT_TELEMETRY_DISABLED": "1",
+           "VITE_CONFIG_NATIVE_IGNORE_WARNING": "true", "npm_config_update_notifier": "false"}
+    if npm_cache is not None:
+        env["npm_config_cache"] = str(npm_cache)
+    elif not env.get("npm_config_cache"):
+        env["npm_config_cache"] = str(Path(tempfile.gettempdir()) / "ai-audit-npm-cache")
+    return env
 
 
 def ensure_node_modules(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
@@ -138,7 +146,8 @@ def ensure_node_modules(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
         for f in (root / "package.json", lock):
             shutil.copyfile(f, entry / f.name)
         try:
-            subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=entry, env=_env(),
+            subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=entry,
+                           env=_env(cache_dir / ".npm-cache"),
                            check=True, capture_output=True, text=True, timeout=INSTALL_TIMEOUT_S)
         except subprocess.CalledProcessError as exc:
             shutil.rmtree(entry, ignore_errors=True)

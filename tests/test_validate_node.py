@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -197,6 +198,27 @@ def test_node_modules_install_once_per_lockfile(tmp_path: Path, monkeypatch) -> 
         validate_patch_tree(_Repo(), tmp_path / name, ["web/src/a.ts"], cache_dir=tmp_path / "v",
                             node_cache_dir=tmp_path / "node")
     assert sum(1 for c in calls if c[:2] == ["npm", "ci"]) == 1
+
+
+def test_npm_never_uses_an_unwritable_home_cache(tmp_path: Path, monkeypatch) -> None:
+    """In the container HOME is ``/``, so npm's default cache ``/.npm`` fails every install (EACCES)."""
+    monkeypatch.setenv("HOME", "/")
+    monkeypatch.delenv("npm_config_cache", raising=False)
+    envs: list[dict] = []
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:2] == ["npm", "ci"]:
+            envs.append(kw.get("env") or {})
+        raise subprocess.CalledProcessError(1, cmd, "", "stop")
+
+    monkeypatch.setattr(validate_node.subprocess, "run", fake_run)
+    root = tmp_path / "web"
+    root.mkdir()
+    (root / "package.json").write_text("{}")
+    (root / "package-lock.json").write_text("{}")
+    validate_node.ensure_node_modules(root, tmp_path / "cache")
+    assert envs[0]["npm_config_cache"] == str((tmp_path / "cache" / ".npm-cache").resolve())
+    assert validate_node._env()["npm_config_cache"] != "/.npm"
 
 
 @needs_npm
