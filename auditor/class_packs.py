@@ -230,11 +230,8 @@ def _material(d: dict[str, Any]) -> Any:
 def record_guard(output_dir: str | Path, pack_id: str, *, repo: str, commit: str, proof_test: str,
                  fixtures: list[str], note: str = "", public_base_url: str = "") -> dict[str, Any]:
     """Record a merged guard for one repo. Proof and closure happen in the nightly step."""
-    from auditor.agent_pack import AgentCodingPack, load_pack, rebuild_index, write_pack
+    from auditor.agent_pack import AgentCodingPack, load_pack, pack_lock, upsert_index_entries, write_pack
 
-    data = load_pack(output_dir, pack_id)
-    if data is None or data.get("kind") != KIND:
-        raise LookupError(f"no class pack {pack_id}")
     for name, v in (("repo", repo), ("commit", commit), ("proof_test", proof_test)):
         if not v or not str(v).strip():
             raise ValueError(f"{name} is required")
@@ -243,7 +240,18 @@ def record_guard(output_dir: str | Path, pack_id: str, *, repo: str, commit: str
         raise ValueError("proof_test and fixtures must be paths inside the repo")
     if len(commit) < 7 or not all(ch in "0123456789abcdef" for ch in commit.lower()):
         raise ValueError("commit must be a hex sha (7+ chars)")
-    pack = AgentCodingPack.from_dict(data, fallback_id=pack_id)
+    with pack_lock(output_dir):  # load → change → write as one step, so a concurrent status change survives
+        data = load_pack(output_dir, pack_id)
+        if data is None or data.get("kind") != KIND:
+            raise LookupError(f"no class pack {pack_id}")
+        pack = AgentCodingPack.from_dict(data, fallback_id=pack_id)
+        guards = _record(pack, repo, commit, proof_test, fixtures, note)
+        write_pack(pack, output_dir, preserve_status=False)
+        upsert_index_entries(output_dir, [pack], public_base_url=public_base_url)
+    return guards[repo]
+
+
+def _record(pack: Any, repo: str, commit: str, proof_test: str, fixtures: list[str], note: str) -> dict[str, Any]:
     guards = dict(pack.governance.get("class_guard") or {})
     guards[repo] = {"commit": commit.lower(), "proof_test": proof_test, "fixtures": list(fixtures),
                     "note": note[:500], "recorded_at": datetime.now(UTC).isoformat(),
@@ -251,9 +259,7 @@ def record_guard(output_dir: str | Path, pack_id: str, *, repo: str, commit: str
     pack.governance["class_guard"] = guards
     if pack.status == "open":
         pack.apply_status("in_progress", f"guard recorded for {repo} at {commit[:12]}")
-    write_pack(pack, output_dir, preserve_status=False)
-    rebuild_index(output_dir, public_base_url=public_base_url)
-    return guards[repo]
+    return guards
 
 
 def _git(mirror: Path, *args: str) -> subprocess.CompletedProcess[str]:

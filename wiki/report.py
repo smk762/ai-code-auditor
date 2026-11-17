@@ -55,15 +55,17 @@ def build_report_pack(repo: str, *, question: str, answer_md: str, note: str = "
 def report(output_dir: str | Path, repo: str, **kw: Any) -> dict[str, Any]:
     """Write the pack, refresh INDEX and its RAG doc. Returns {id, status, created}."""
     from auditor.agent_pack import (
-        AgentCodingPack, ingest_packs_to_rag, load_pack, pack_rag_ingest_enabled, rebuild_index, write_pack,
+        AgentCodingPack, ingest_packs_to_rag, load_pack, pack_lock, pack_rag_ingest_enabled, upsert_index_entries,
+        write_pack,
     )
 
     base = kw.get("public_base_url", "")
     pack = build_report_pack(repo, **kw)
-    existing = load_pack(output_dir, pack.work_item_id)
-    write_pack(pack, output_dir)  # keeps the lifecycle of an existing pack with the same id
-    rebuild_index(output_dir, public_base_url=base)
-    data = load_pack(output_dir, pack.work_item_id) or pack.to_dict()
+    with pack_lock(output_dir):  # write_pack reads the existing lifecycle; a claim mid-way must survive
+        existing = load_pack(output_dir, pack.work_item_id)
+        write_pack(pack, output_dir)  # keeps the lifecycle of an existing pack with the same id
+        upsert_index_entries(output_dir, [pack], public_base_url=base)
+        data = load_pack(output_dir, pack.work_item_id) or pack.to_dict()
     if pack_rag_ingest_enabled():
         try:
             ingest_packs_to_rag([AgentCodingPack.from_dict(data)], output_dir=output_dir)

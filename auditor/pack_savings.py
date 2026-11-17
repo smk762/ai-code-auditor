@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from auditor.fsutil import atomic_write_text
 from auditor.agent_pack import (
     CHARS_PER_TOKEN,
     DEFAULT_BUNDLE_TOKEN_BUDGET,
@@ -259,7 +260,7 @@ def refresh(
         ecosystem_md = default if default.is_file() else None
     report = build_report(out, repos if repos is not None else _ecosystem_repos(), ecosystem_md=ecosystem_md)
     out.mkdir(parents=True, exist_ok=True)
-    report_path(out).write_text(json.dumps(report, indent=2))
+    atomic_write_text(report_path(out), json.dumps(report, indent=2))
     line = {
         "generated_at": report["generated_at"],
         "packs_updated_at": report["packs_updated_at"],
