@@ -2216,6 +2216,10 @@ def get_agent_pack_bundle(
 class _PackStatusRequest(BaseModel):
     status: Literal["open", "claimed", "in_progress", "unverified", "resolved", "wontfix", "obsolete"]
     note: str = ""
+    # Compare-and-set: apply only if the pack is currently in one of these (else 409).
+    expect_status: list[str] | None = None
+    # A claim fails with 409 when the pack is already claimed or in progress; force takes it over.
+    force: bool = False
 
 
 class _ClassGuardRequest(BaseModel):
@@ -2247,16 +2251,26 @@ def record_class_guard(pack_id: str, request: _ClassGuardRequest) -> JSONRespons
 def set_agent_pack_status(pack_id: str, request: _PackStatusRequest,
                           background_tasks: BackgroundTasks) -> JSONResponse:
     """Update a pack's lifecycle status (persisted in YAML and reflected in INDEX.json)."""
-    from auditor.agent_pack import refresh_pack_rag, update_pack_status
+    from auditor.agent_pack import CLAIMABLE_STATUSES, PackStatusConflict, refresh_pack_rag, update_pack_status
     from conductor.publish import public_base_url
 
-    updated = update_pack_status(
-        _output_dir(),
-        pack_id,
-        request.status,
-        request.note,
-        public_base_url=public_base_url(),
-    )
+    expect = request.expect_status
+    if expect is None and request.status == "claimed" and not request.force:
+        expect = CLAIMABLE_STATUSES
+    try:
+        updated = update_pack_status(
+            _output_dir(),
+            pack_id,
+            request.status,
+            request.note,
+            public_base_url=public_base_url(),
+            expect=expect,
+        )
+    except PackStatusConflict as exc:
+        raise HTTPException(status_code=409, detail={
+            "error": f"pack {pack_id} is already {exc.current}; pick another pack",
+            "status": exc.current, "status_note": exc.note, "status_updated_at": exc.at,
+        }) from exc
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Pack {pack_id!r} not found.")
     # Retrieval reflects the new status (best-effort), sent after the response so a slow RAG

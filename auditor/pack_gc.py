@@ -46,6 +46,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from auditor.fsutil import atomic_write_text
 from auditor.trust_metrics import PackView, Scan, _same_issue, load_packs, load_scans
 
 logger = logging.getLogger(__name__)
@@ -248,28 +249,32 @@ def apply(output_dir: str | Path, closures: list[Closure], *, public_base_url: s
     from auditor.agent_pack import (
         AgentCodingPack,
         load_pack,
-        rebuild_index,
+        pack_lock,
         refresh_pack_rag,
+        upsert_index_entries,
         write_pack,
     )
 
     now = datetime.now(UTC).isoformat()
-    done = 0
-    for c in closures:
-        data = load_pack(output_dir, c.pack_id)
-        if data is None:
-            continue
-        pack = AgentCodingPack.from_dict(data, fallback_id=c.pack_id)
-        if pack.status != "open":  # changed since planning
-            continue
-        pack.apply_status("obsolete", f"gc ({c.rule}): {c.reason}"[:2000])
-        pack.governance["gc"] = {"rule": c.rule, "reason": c.reason, "at": now}
-        write_pack(pack, output_dir, preserve_status=False)
+    closed: list[AgentCodingPack] = []
+    # Check and write under the pack lock: an agent's claim landing between "it is open" and the
+    # write would otherwise be overwritten with obsolete (CLAUDE.md: GC never closes a claimed pack).
+    with pack_lock(output_dir):
+        for c in closures:
+            data = load_pack(output_dir, c.pack_id)
+            if data is None:
+                continue
+            pack = AgentCodingPack.from_dict(data, fallback_id=c.pack_id)
+            if pack.status != "open":  # changed since planning
+                continue
+            pack.apply_status("obsolete", f"gc ({c.rule}): {c.reason}"[:2000])
+            pack.governance["gc"] = {"rule": c.rule, "reason": c.reason, "at": now}
+            write_pack(pack, output_dir, preserve_status=False)
+            closed.append(pack)
+        upsert_index_entries(output_dir, closed, public_base_url=public_base_url)
+    for pack in closed:  # network calls, outside the lock
         refresh_pack_rag(output_dir, pack.to_dict())  # closed packs leave the RAG collection
-        done += 1
-    if done:
-        rebuild_index(output_dir, public_base_url=public_base_url)
-    return done
+    return len(closed)
 
 
 def run(output_dir: str | Path | None = None, *, dry_run: bool = False, force: bool = False, repo: str = "",
@@ -304,7 +309,7 @@ def run(output_dir: str | Path | None = None, *, dry_run: bool = False, force: b
         "closures": [asdict(c) for c in p["closures"]],
     }
     if not dry_run:
-        (out / REPORT_NAME).write_text(json.dumps(report, indent=1))
+        atomic_write_text(out / REPORT_NAME, json.dumps(report, indent=1))
     return report
 
 

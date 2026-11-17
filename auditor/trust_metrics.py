@@ -53,6 +53,7 @@ from typing import Any
 import yaml
 
 from auditor.finding_match import reworded_score
+from auditor.fsutil import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -826,7 +827,7 @@ def refresh_prs(output_dir: str | Path, *, owner: str = "smk762", token: str = "
     repos = set(_mirror_paths(mirrors_path)) or None
     prs = fetch_agent_prs(github_graphql(tok), owner, repos=repos)
     path = Path(output_dir) / PRS_CACHE_NAME
-    path.write_text(json.dumps({"fetched_at": datetime.now(UTC).isoformat(), "prs": prs}, indent=1))
+    atomic_write_text(path, json.dumps({"fetched_at": datetime.now(UTC).isoformat(), "prs": prs}, indent=1))
     return prs
 
 
@@ -866,7 +867,7 @@ def refresh(output_dir: str | Path | None = None, **kw: Any) -> dict[str, Any]:
     """Compute, write ``trust.json`` and append the headline to ``trust_history.jsonl``."""
     out = Path(output_dir or os.getenv("AI_AUDIT_OUTPUT_DIR") or "reports")
     report = build(out, **kw)
-    (out / REPORT_NAME).write_text(json.dumps(report, indent=1, default=str))
+    atomic_write_text(out / REPORT_NAME, json.dumps(report, indent=1, default=str))
     with (out / HISTORY_NAME).open("a") as fh:
         fh.write(json.dumps(report["headline"], default=str) + "\n")
     return report

@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover — PyYAML built without libyaml
     from yaml import SafeLoader as _YamlLoader
 
 from auditor.contracts import Finding, RuleViolation, utc_now_iso
+from auditor.fsutil import atomic_write_text
 from auditor.finding_match import reworded_score
 from auditor.validator import suggest_test_commands
 
@@ -558,13 +559,10 @@ def write_pack(
             _carry_over_lifecycle(pack, existing)
     if not pack.repair.get("intent_markdown"):
         pack.repair["intent_markdown"] = pack.to_brief_md()
-    path.write_text(
-        yaml.safe_dump(pack.to_dict(), sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
+    # Atomic: a concurrent load_pack must never read half a YAML (it would 404 a real pack).
+    atomic_write_text(path, yaml.safe_dump(pack.to_dict(), sort_keys=False, allow_unicode=True))
     # Sidecar brief for agents that prefer markdown
-    brief = path.with_suffix(".md")
-    brief.write_text(pack.to_brief_md(), encoding="utf-8")
+    atomic_write_text(path.with_suffix(".md"), pack.to_brief_md())
     return path
 
 
@@ -573,8 +571,11 @@ _index_lock_depth = threading.local()
 
 
 @contextmanager
-def _index_lock(output_dir: str | Path):
-    """Serialise INDEX.json read-modify-writes across API threads and other processes (CLI, emits).
+def pack_lock(output_dir: str | Path):
+    """Serialise pack and INDEX.json read-modify-writes across API threads and other processes.
+
+    Every writer that loads a pack, decides on its state and writes it back holds this for the whole
+    load → check → write → index step, or a concurrent claim can be overwritten (GC, guards, emits).
 
     Re-entrant within a thread; the file lock is taken only at the outermost level."""
     with _INDEX_THREAD_LOCK:
@@ -643,10 +644,7 @@ def _write_index(output_dir: str | Path, entries: list[dict[str, Any]]) -> dict[
         "discovery": dict(PACK_DISCOVERY),
         "packs": entries,
     }
-    path = index_path(output_dir)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    atomic_write_text(index_path(output_dir), json.dumps(payload, indent=2))
     return payload
 
 
@@ -654,7 +652,7 @@ def rebuild_index(output_dir: str | Path, *, public_base_url: str = "") -> dict[
     """Re-read every pack YAML and rewrite INDEX.json (emits and repairs; seconds on thousands of packs)."""
     root = packs_dir(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    with _index_lock(output_dir):
+    with pack_lock(output_dir):
         entries: list[dict[str, Any]] = []
         for yaml_path in sorted(root.glob("*.yaml")):
             try:
@@ -668,17 +666,27 @@ def rebuild_index(output_dir: str | Path, *, public_base_url: str = "") -> dict[
         return _write_index(output_dir, entries)
 
 
-def _upsert_index_entry(output_dir: str | Path, pack: AgentCodingPack, *, public_base_url: str = "") -> None:
-    """Replace one pack's INDEX.json entry in place (a status change), rebuilding only when the
-    index is missing or unreadable. The caller holds ``_index_lock``."""
+def upsert_index_entries(output_dir: str | Path, packs: list[AgentCodingPack], *,
+                         public_base_url: str = "") -> None:
+    """Replace these packs' INDEX.json entries in place (a status change, a GC pass, an emit),
+    rebuilding only when the index is missing or unreadable. The caller holds ``pack_lock``.
+
+    Cost is one read and one write of INDEX.json however many packs exist; a full rebuild re-parses
+    every pack (seconds of GIL-bound work at thousands of packs, tests/test_hot_paths.py)."""
+    if not packs:
+        return
     try:
         entries = list(json.loads(index_path(output_dir).read_text(encoding="utf-8")).get("packs") or [])
     except (OSError, ValueError):
         rebuild_index(output_dir, public_base_url=public_base_url)
         return
-    entry = _index_entry(pack, output_dir, pack_file_path(output_dir, pack.work_item_id), public_base_url)
-    entries = [e for e in entries if e.get("id") != pack.work_item_id] + [entry]
-    _write_index(output_dir, entries)
+    fresh = {p.work_item_id: _index_entry(p, output_dir, pack_file_path(output_dir, p.work_item_id), public_base_url)
+             for p in packs}
+    _write_index(output_dir, [e for e in entries if e.get("id") not in fresh] + list(fresh.values()))
+
+
+def _upsert_index_entry(output_dir: str | Path, pack: AgentCodingPack, *, public_base_url: str = "") -> None:
+    upsert_index_entries(output_dir, [pack], public_base_url=public_base_url)
 
 
 def load_pack(output_dir: str | Path, pack_id: str) -> dict[str, Any] | None:
@@ -767,6 +775,19 @@ def list_packs(
     return out
 
 
+class PackStatusConflict(Exception):
+    """The pack's status is not one the caller expected (someone else changed it first)."""
+
+    def __init__(self, pack_id: str, current: str, note: str, holder_at: str) -> None:
+        super().__init__(f"pack {pack_id} is {current}")
+        self.pack_id, self.current, self.note, self.at = pack_id, current, note, holder_at
+
+
+# A claim succeeds only from these: claiming a claimed or in-progress pack would let two agents
+# fix the same thing, each believing it owns it.
+CLAIMABLE_STATUSES = frozenset({"open", "unverified", "obsolete", "wontfix", "resolved"})
+
+
 def update_pack_status(
     output_dir: str | Path,
     pack_id: str,
@@ -776,21 +797,27 @@ def update_pack_status(
     public_base_url: str = "",
     repair_updates: dict[str, Any] | None = None,
     verification_updates: dict[str, Any] | None = None,
+    expect: Any = None,
 ) -> dict[str, Any] | None:
     """Persist a lifecycle status on the pack YAML and refresh INDEX.json.
 
-    Returns the updated pack dict, or ``None`` when the pack does not exist.
-    Raises ``ValueError`` for an unknown status.
+    With *expect* (a collection of statuses) the change is compare-and-set: if the pack's current
+    status is not in it, nothing is written and ``PackStatusConflict`` is raised. Returns the
+    updated pack dict, or ``None`` when the pack does not exist. Raises ``ValueError`` for an
+    unknown status.
     """
     if status not in PACK_STATUSES:
         raise ValueError(f"invalid pack status {status!r}; expected one of {PACK_STATUSES}")
     # Locked end to end so two writers on one pack can't interleave, and the index is patched in
     # place: a full rebuild per claim took ~12 s of GIL-bound parsing and queued every other agent.
-    with _index_lock(output_dir):
+    with pack_lock(output_dir):
         data = load_pack(output_dir, pack_id)
         if data is None:
             return None
         pack = AgentCodingPack.from_dict(data, fallback_id=pack_id)
+        current = pack.status or DEFAULT_PACK_STATUS
+        if expect is not None and current not in expect:
+            raise PackStatusConflict(pack_id, current, pack.status_note, pack.status_updated_at)
         pack.apply_status(status, (note or "")[:2000])
         if repair_updates:
             pack.repair.update(repair_updates)
@@ -1271,9 +1298,12 @@ def emit_packs_from_findings(
     recurred = link_recurrences([p for p in packs if p.work_item_id not in merged.values()], output_dir)
     if recurred:
         logger.info("%d %s packs repeat a resolved pack (recurrence_of)", len(recurred), kind)
-    for pack in packs:
-        write_pack(pack, output_dir)
-    rebuild_index(output_dir, public_base_url=public_base_url)
+    # write_pack carries an existing pack's lifecycle over: read and write under the lock, or an
+    # agent's claim landing in between is overwritten. The index is patched, not rebuilt.
+    with pack_lock(output_dir):
+        for pack in packs:
+            write_pack(pack, output_dir)
+        upsert_index_entries(output_dir, packs, public_base_url=public_base_url)
     if ingest_rag and packs:
         ingest_packs_to_rag(packs, output_dir=output_dir)
     return packs
@@ -1678,6 +1708,9 @@ def ingest_packs_to_rag(packs: list[AgentCodingPack], *, output_dir: str | Path 
 
     by_repo: dict[str, list[dict[str, Any]]] = {}
     closed: set[str] = set()
+    # Two findings merged into one pack share its id; rag-ingest rejects a request that names a doc
+    # twice (the whole repo's batch failed). The last one wins, as it did on disk.
+    packs = list({p.work_item_id: p for p in packs}.values())
     for pack in packs:
         doc_id = f"agent-pack::{pack.work_item_id}"
         if (pack.status or DEFAULT_PACK_STATUS) not in ACTIVE_PACK_STATUSES:
