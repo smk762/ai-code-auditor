@@ -15,6 +15,11 @@ error is reported.
 A request may pin an older base (``base_ref``, #91) when its fix has already merged and no longer
 applies to the tip: :func:`pin_base` resolves it and refuses anything that isn't an ancestor of the ``dev`` tip, so evidence can't come
 from an unrelated branch.
+
+The exported tree is its own git checkout (#97): :func:`attach_head` gives it a ``HEAD`` at the
+base commit, borrowing objects through alternates, and the tags on its history, because tests
+that read git (``rev-parse HEAD``, ``describe --tags``) otherwise error on both trees and are
+dropped as known failures. The patch then shows as working-tree changes.
 """
 
 from __future__ import annotations
@@ -148,8 +153,10 @@ def resolve_base(repo_path: Path, *, branch: str = "dev", output_dir: str | Path
                 return BaseRef(git_dir=cache, ref=f"origin/{branch}", sha=sha, prefix=prefix, source="cached")
 
             try:
+                # tags too: tests may `git describe` the tree (attach_head copies those on the base)
                 r = _git("fetch", "--quiet", "--no-tags", "--no-write-fetch-head", url,
-                         f"+refs/heads/{branch}:{remote_ref}", git_dir=cache, timeout=timeout)
+                         f"+refs/heads/{branch}:{remote_ref}", "+refs/tags/*:refs/tags/*",
+                         git_dir=cache, timeout=timeout)
                 err = "" if r.returncode == 0 else (r.stderr.strip() or f"git fetch exited {r.returncode}")[:300]
             except subprocess.TimeoutExpired:
                 err = f"git fetch timed out after {timeout:g}s"
@@ -236,6 +243,72 @@ def export_tree(base: BaseRef, repo_path: Path, dest: Path) -> None:
         tar.extractall(dest, filter="data")  # "data" refuses absolute paths, .. and links out of dest
     if proc.wait() != 0:
         raise RuntimeError(f"git archive {base.ref} failed: {proc.stderr.read().decode(errors='replace')[:300]}")
+    attach_head(base, dest)
 
 
-__all__ = ["BaseRef", "BaseRefError", "cache_root", "export_tree", "pin_base", "resolve_base", "staleness"]
+_HEAD_COMMIT_ENV = {"GIT_AUTHOR_NAME": "validate_patch", "GIT_AUTHOR_EMAIL": "validate_patch@invalid",
+                    "GIT_COMMITTER_NAME": "validate_patch", "GIT_COMMITTER_EMAIL": "validate_patch@invalid",
+                    "GIT_AUTHOR_DATE": "@0 +0000", "GIT_COMMITTER_DATE": "@0 +0000"}
+
+
+def _copy_tags(base: BaseRef, dest: Path) -> None:
+    """Give *dest* the tags of *base*'s repository that point into ``base.sha``'s history, so
+    ``git describe`` there sees what a CI checkout would. Best effort: a tree without tags is
+    still a usable tree."""
+    r = _git("for-each-ref", "--merged", base.sha, "--format=%(objectname) %(refname)", "refs/tags",
+             git_dir=base.git_dir)
+    lines = [ln for ln in r.stdout.splitlines() if ln.count(" ") == 1] if r.returncode == 0 else []
+    if not lines:
+        return
+    stdin = "".join(f"create {ref} {sha}\n" for sha, ref in (ln.split(" ") for ln in lines))
+    w = subprocess.run(["git", "-C", str(dest), "update-ref", "--stdin"], input=stdin, capture_output=True,
+                       text=True, timeout=30, env={**os.environ, **_GIT_ENV}, check=False)
+    if w.returncode != 0:
+        logger.warning("validate_patch: tags not copied into %s: %s", dest, w.stderr.strip()[:200])
+
+
+def attach_head(base: BaseRef, dest: Path) -> str:
+    """Make the exported *dest* a git checkout whose ``HEAD`` is *base*'s commit (#97).
+
+    Tests that read history (``git rev-parse HEAD``, a docs build stamping pages with their
+    commit) error in a bare ``git archive`` export. *dest* gets its own repository that borrows
+    *base*'s objects through ``objects/info/alternates``, so nothing is copied and *base*'s
+    repository is only read. The index is filled from ``HEAD``, so ``git status`` shows the patch,
+    and the tags in ``HEAD``'s history are copied, so ``git describe`` works.
+
+    For a subtree export (a repo inside a monorepo), ``HEAD`` is a commit on top of ``base.sha``
+    whose tree is that subtree, so the layout matches and the history is still reachable.
+    Returns the ``HEAD`` sha, or "" when git couldn't set it up (the tree is still usable)."""
+    if base.git_dir is None or not base.sha:
+        return ""
+    try:
+        objects = _git("rev-parse", "--git-path", "objects", git_dir=base.git_dir).stdout.strip()
+        objects_dir = Path(objects) if Path(objects).is_absolute() else (base.git_dir / objects)
+        r = _git("init", "-q", "-b", "dev", str(dest))
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip()[:200])
+        (dest / ".git" / "objects" / "info" / "alternates").write_text(f"{objects_dir.resolve()}\n", encoding="utf-8")
+        head = base.sha
+        if base.prefix:
+            env = {**os.environ, **_GIT_ENV, **_HEAD_COMMIT_ENV}
+            c = subprocess.run(["git", "-C", str(dest), "commit-tree", base.treeish, "-p", base.sha, "-m",
+                                f"validate_patch: {base.prefix.rstrip('/')} of {base.sha[:12]}"],
+                               capture_output=True, text=True, timeout=30, env=env, check=False)
+            if c.returncode != 0:
+                raise RuntimeError(c.stderr.strip()[:200])
+            head = c.stdout.strip()
+        for args in (("update-ref", "refs/heads/dev", head), ("read-tree", head)):
+            r = _git(*args, cwd=dest)
+            if r.returncode != 0:
+                raise RuntimeError(f"git {args[0]}: {r.stderr.strip()[:200]}")
+        _copy_tags(base, dest)
+        return head
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        import shutil
+
+        logger.warning("validate_patch: %s has no git HEAD, tests that read history will error: %s", dest, exc)
+        shutil.rmtree(dest / ".git", ignore_errors=True)
+        return ""
+
+
+__all__ = ["BaseRef", "BaseRefError", "attach_head", "cache_root", "export_tree", "pin_base", "resolve_base", "staleness"]
