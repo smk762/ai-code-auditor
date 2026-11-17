@@ -28,7 +28,7 @@ here and in code. Don't add a rule to remember.
 | Spend past a lane budget | `test_spend_ledger::test_lane_and_total_caps`, `::test_batch_prefetch_trims_to_budget` |
 | Suite-rule findings that disagree with argus-ci's CI (a different catalogue or checker) | `test_suite_rules::test_catalogue_is_read_from_dev_not_the_checkout`; the scanner runs argus-ci's own `check.py` |
 | Serve a brand SVG with scripts or event handlers | `test_ui_topology::test_mark_rejects_active_content` |
-| A mutating endpoint without `_require_mutating_auth` | Per endpoint (`test_code_review_high_fixes::test_mutating_api_requires_token_when_configured` and others). **UNENFORCED** for a new endpoint: no test sweeps the routes |
+| A non-GET endpoint without `_require_mutating_auth`, or a request value spliced into git as an option | `test_api_auth_sweep::test_every_non_get_route_requires_the_token` (exemptions listed with a reason in `OWN_AUTH`), `::test_refs_that_could_become_git_options_are_refused` |
 | Work pushed to `main`, a PR into `main` other than the release, or `main` ahead of `dev` except the release merge commit | **UNENFORCED** (see Branches) |
 | Deploy hooks in dragonhound-site, or docs committed into it | **UNENFORCED** here (another repo). Docs go live only by a `docs.lock.json` pin bump on its `dev` |
 

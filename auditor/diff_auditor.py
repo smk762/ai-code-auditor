@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from pathlib import Path
 
@@ -18,6 +19,20 @@ from auditor.static_tools import run_static_checks_on_files
 logger = logging.getLogger(__name__)
 
 
+_BAD_REF = re.compile(r"^-|[\x00-\x20\x7f]|\.\.")
+
+
+def git_ref_arg(ref: str) -> str:
+    """*ref* if it is safe to splice into a git argument, else RuntimeError.
+
+    A ref from a request must never become a git option: ``--output=/some/path`` given as a
+    branch writes a file. Also refused: whitespace, control characters and ``..`` (the caller
+    builds the range itself)."""
+    if not ref or _BAD_REF.search(ref):
+        raise RuntimeError(f"invalid git ref {ref!r}")
+    return ref
+
+
 def get_diff_from_branch(repo_path: Path, compare_branch: str) -> str:
     """Generate a unified diff using three-dot semantics: ``git diff <branch>...HEAD``.
 
@@ -26,7 +41,7 @@ def get_diff_from_branch(repo_path: Path, compare_branch: str) -> str:
     """
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo_path), "diff", f"{compare_branch}...HEAD"],
+            ["git", "-C", str(repo_path), "diff", f"{git_ref_arg(compare_branch)}...HEAD"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -57,7 +72,7 @@ def get_diff_between_refs(repo_path: Path, before: str, after: str = "HEAD") -> 
         before_ref = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo_path), "diff", f"{before_ref}..{after_ref}"],
+            ["git", "-C", str(repo_path), "diff", f"{git_ref_arg(before_ref)}..{git_ref_arg(after_ref)}"],
             capture_output=True,
             text=True,
             timeout=60,

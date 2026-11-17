@@ -146,7 +146,7 @@ Output when git ops succeed:
 ```bash
 # Returns the raw unified diff between a branch and HEAD
 curl -s -X POST http://127.0.0.1:8765/audit/git/diff \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "X-API-Token: $AI_AUDIT_API_TOKEN" \
   -d '{"repo": "kimini-api", "compare_branch": "main"}' \
   | python3 -c "
 import json, sys
