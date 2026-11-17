@@ -61,6 +61,10 @@ REPORT_NAME = "trust.json"
 HISTORY_NAME = "trust_history.jsonl"
 PRS_CACHE_NAME = "trust_prs.json"
 REVERT_WINDOW_DAYS = 14
+# The evidence-bar gates judge resolutions from this many days back, so they measure how fixes are
+# proven now. Two weeks matches the exit criteria's two green weeks; older resolutions stay in the
+# all-time and since-bar numbers.
+GATE_WINDOW_DAYS = 14
 
 # Pack kinds that describe one finding. The others describe topology or proposals, not a bug.
 NON_FINDING_KINDS = frozenset({"world_model", "architecture", "extraction", "invariants", "class_guard"})
@@ -280,24 +284,36 @@ def resolution_events(packs: Iterable[PackView]) -> list[dict[str, Any]]:
 
     ``method`` is ``validator:<tool>`` when validate_patch closed it (tool from its note),
     otherwise ``manual``. Repeated ``resolved`` entries without a status in between are one
-    resolution."""
+    resolution, dated by the first. A later validator entry in that run (``ai-audit revalidate``
+    recording stronger evidence for a waived fix) replaces how it was justified."""
     events = []
     for p in packs:
         prev = None
         for h in p.history:
             st = h.get("status")
-            if st == "resolved" and prev != "resolved":
+            if st == "resolved":
                 note = str(h.get("note") or "")
                 m = _TOOL_RE.search(note) if note.startswith("validate_patch passed") else None
                 ev = _EVIDENCE_RE.search(note) if m else None
-                events.append({
-                    "pack_id": p.id, "repo": p.repo, "kind": p.kind, "at": h.get("at"),
-                    "method": f"validator:{m.group(1)}" if m else "manual",
-                    # evidence kind under the #58 bar; "" for resolutions from before it
-                    "evidence": ev.group(1) if ev else "",
-                })
+                how = {"method": f"validator:{m.group(1)}" if m else "manual",
+                       # evidence kind under the #58 bar; "" for resolutions from before it
+                       "evidence": ev.group(1) if ev else ""}
+                if prev != "resolved":
+                    events.append({"pack_id": p.id, "repo": p.repo, "kind": p.kind, "at": h.get("at"), **how})
+                elif m and ev:
+                    events[-1].update(how)
             prev = st
     return events
+
+
+def _bar_window(bar: list[dict[str, Any]], now: datetime, days: int) -> dict[str, Any]:
+    """Resolutions under the evidence bar in the last *days*: what the evidence gates judge."""
+    since = now - timedelta(days=days)
+    recent = [e for e in bar if (t := _parse_ts(e["at"])) and t >= since]
+    lint = sum(_no_tests(e) for e in recent)
+    waived = sum(e["evidence"] == "waiver" for e in recent)
+    return {"days": days, "since": since.isoformat(), "resolutions": len(recent), "lint_only": lint,
+            "waived": waived, "rate": _rate(lint, len(recent)), "waiver_rate": _rate(waived, len(recent))}
 
 
 def _no_tests(e: dict[str, Any]) -> bool:
@@ -307,7 +323,8 @@ def _no_tests(e: dict[str, Any]) -> bool:
     return e["method"] == "validator:lint_only" and e["evidence"] != "repro"
 
 
-def false_resolve_metric(events: list[dict[str, Any]]) -> dict[str, Any]:
+def false_resolve_metric(events: list[dict[str, Any]], *, now: datetime | None = None,
+                         window_days: int = GATE_WINDOW_DAYS) -> dict[str, Any]:
     validator = [e for e in events if e["method"].startswith("validator:")]
     lint = [e for e in validator if _no_tests(e)]
     bar = [e for e in events if e["evidence"]]
@@ -329,6 +346,7 @@ def false_resolve_metric(events: list[dict[str, Any]]) -> dict[str, Any]:
         # the share the evidence.lint_only gate judges; ``rate`` keeps every resolution, so
         # pre-bar ones (before 2026-11-16, mostly lint-only) weigh on it for good
         "rate_since_bar": _rate(bar_lint, len(bar)),
+        "window": _bar_window(bar, now or datetime.now(UTC), window_days),
         "waiver_rate": _rate(sum(e["evidence"] == "waiver" for e in events),
                              sum(1 for e in events if e["evidence"])),
         "rate": _rate(len(lint), len(validator)),
@@ -812,7 +830,7 @@ def compute(packs: list[PackView], scans: list[Scan], prs: list[dict[str, Any]] 
     events = resolution_events(packs)
     report = {
         "generated_at": now.isoformat(),
-        "false_resolve": false_resolve_metric(events),
+        "false_resolve": false_resolve_metric(events, now=now),
         "reopen": reopen_metric(packs),
         "recurrence": recurrence_metric(packs, scans),
         "scan_persistence": scan_persistence_metric(scans, packs),
@@ -840,6 +858,7 @@ def headline(report: dict[str, Any]) -> dict[str, Any]:
         "at": report["generated_at"],
         "false_resolve_rate": report["false_resolve"]["rate"],
         "false_resolve_rate_since_bar": report["false_resolve"].get("rate_since_bar"),
+        "false_resolve_rate_window": (report["false_resolve"].get("window") or {}).get("rate"),
         "reopen_rate": report["reopen"]["rate"],
         "recurrence_rate": report["recurrence"]["rate"],
         "recurrence_observed": report["recurrence"]["observed"],

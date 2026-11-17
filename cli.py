@@ -308,6 +308,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sav.add_argument("--cached", action="store_true", help="Show the last report instead of re-measuring")
     sav.add_argument("--history", action="store_true", help="Show the recorded trend instead")
 
+    rv = sub.add_parser(
+        "revalidate",
+        help="Re-check merged fixes resolved on a waiver or left unverified; records stronger evidence, never demotes",
+    )
+    rv.add_argument("--repo", default="", help="Only this repo's packs")
+    rv.add_argument("--limit", type=int, default=0, help="At most this many packs (0: all)")
+    rv.add_argument("--dry-run", action="store_true", help="Find each pack's fix and base, send nothing")
+    rv.add_argument("--refresh-prs", action="store_true", help="Re-list agent PRs from GitHub first")
+    rv.add_argument("--timeout", type=int, default=300, help="validate_patch timeout per pack, seconds")
+    rv.add_argument("--json", action="store_true", help="Print the full report as JSON")
+
     ev = sub.add_parser("eval", help="Reliability evals (#63)")
     ev_sub = ev.add_subparsers(dest="eval_command", required=True)
     evt = ev_sub.add_parser("trust", help="Gates for the trust upgrade: what passes, fails, lacks data, or isn't built")
@@ -704,6 +715,20 @@ def _run_trust(*, as_json: bool, cached: bool, history: bool, github: bool) -> N
 
 def _output_dir_default() -> str:
     return os.getenv("AI_AUDIT_OUTPUT_DIR") or "reports"
+
+
+def _run_revalidate(args: argparse.Namespace) -> None:
+    from auditor import revalidate
+
+    out = os.getenv("AI_AUDIT_OUTPUT_DIR") or "reports"
+    rep = revalidate.run(out, repo=args.repo, limit=args.limit, dry_run=args.dry_run,
+                         refresh_prs=args.refresh_prs, timeout_s=args.timeout)
+    if args.json:
+        print(json.dumps(rep, indent=2))
+        return
+    print(f"{rep['candidates']} candidate packs: " + ", ".join(f"{n} {k}" for k, n in sorted(rep["counts"].items())))
+    for o in rep["outcomes"]:
+        print(f"  {o['result']:9s} {o['pack_id']}  {o['detail'][:140]}")
 
 
 def _run_pack_savings(*, as_json: bool, cached: bool, history: bool) -> None:
@@ -1570,6 +1595,8 @@ def main() -> None:
             print(trailers.summary_markdown(_output_dir_default(), ids, public_base_url=public_base_url()))
     elif args.command == "trust":
         _run_trust(as_json=args.json, cached=args.cached, history=args.history, github=args.github)
+    elif args.command == "revalidate":
+        _run_revalidate(args)
     elif args.command == "pack-savings":
         _run_pack_savings(as_json=args.json, cached=args.cached, history=args.history)
     elif args.command == "wiki":

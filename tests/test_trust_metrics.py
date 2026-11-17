@@ -435,3 +435,13 @@ def test_refresh_quietly_respects_toggle_and_swallows_errors(tmp_path: Path, mon
     monkeypatch.setenv("AI_AUDIT_TRUST_METRICS", "1")
     monkeypatch.setattr(tm, "refresh", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     assert tm.refresh_quietly(tmp_path) == {"error": "boom"}
+
+
+def test_evidence_window_counts_only_recent_resolutions() -> None:
+    bar = "validate_patch passed (repo=x, tool={}, evidence={})"
+    old = [pack(c, status="resolved", history=[("resolved", -24 * 30, bar.format("lint_only", "waiver"))]) for c in "ab"]
+    new = [pack("c", status="resolved", history=[("resolved", 0, bar.format("pytest", "repro"))])]
+    m = tm.false_resolve_metric(tm.resolution_events(old + new), now=T0 + timedelta(hours=1))
+    assert m["rate_since_bar"] == pytest.approx(2 / 3, abs=1e-4)
+    w = m["window"]
+    assert (w["days"], w["resolutions"], w["lint_only"], w["waived"], w["rate"]) == (tm.GATE_WINDOW_DAYS, 1, 0, 0, 0.0)

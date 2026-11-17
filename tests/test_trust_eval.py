@@ -198,3 +198,12 @@ def test_seeded_run_end_to_end(tmp_path: Path, monkeypatch) -> None:
     assert (out / eval_seeded.SEEDED_NAME).exists()
     g = by_id(build_gates(trust(), json.loads((out / eval_seeded.SEEDED_NAME).read_text())))
     assert g["evidence.seeded_recall"].value == 1.0 and g["evidence.seeded_recall"].status == "insufficient"  # n=1 < 5
+
+
+def test_evidence_gates_judge_the_rolling_window_when_the_report_has_one() -> None:
+    fr = {"by_evidence": {"repro": 10, "waiver": 90}, "lint_only_since_bar": 80,
+          "window": {"days": 14, "resolutions": 40, "lint_only": 1, "waived": 4}}
+    g = by_id(build_gates(trust(false_resolve=fr), seeded()))
+    assert g["evidence.lint_only"].value == pytest.approx(1 / 40) and g["evidence.lint_only"].n == 40
+    assert g["evidence.waiver_rate"].value == pytest.approx(4 / 40)
+    assert "last 14 days" in g["evidence.lint_only"].description

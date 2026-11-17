@@ -124,6 +124,11 @@ def run() -> None:
     from auditor.class_packs import run_quietly as class_packs
 
     logger.info("class packs: %s", class_packs(cfg.output_dir))
+    # Re-check merged fixes that were waived or left unverified, now the test envs may run them (#58).
+    # Bounded per night; it only ever records stronger evidence. Before the metrics, which read it.
+    from auditor.revalidate import run_quietly as revalidate
+
+    logger.info("revalidate: %s", revalidate(cfg.output_dir))
     logger.info("trust metrics: %s", refresh_trust(cfg.output_dir))
     # Gates last: they read the fresh metrics. The seeded-defect eval re-runs when it's a week old (#63).
     from auditor.trust_eval import evaluate_quietly

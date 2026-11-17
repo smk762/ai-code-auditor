@@ -20,6 +20,7 @@ here and in code. Don't add a rule to remember.
 | Keep a wiki claim whose citation is missing, out of range, or names nothing in the cited lines | `test_wiki::test_drop_failed_claims` |
 | Commit the opsec deny-list, the classes gold set, or anything quoting real findings | Location only: they live under `~/.config/ai-code-auditor/`, and `reports/_classes/` is gitignored. **UNENFORCED** for a copy placed elsewhere |
 | Pack GC closing a claimed, in-progress or unverified pack, or a mass close without `--force` | `test_pack_gc::test_only_open_finding_packs_are_considered`, `::test_mass_closure_is_held_unless_forced`, `::test_broken_latest_scan_skips_the_repo_but_not_file_gone`, `test_pack_write_integrity::test_gc_never_overwrites_a_claim_that_lands_mid_apply` |
+| Revalidation demoting a pack, or touching one not resolved on a waiver or unverified | `test_evidence::test_revalidate_never_demotes`, `::test_revalidate_leaves_a_proven_resolution_alone`, `::test_revalidate_does_nothing_with_the_bar_off` |
 | Two agents holding the same pack, or a pack writer overwriting another's change | `test_pack_write_integrity::test_concurrent_claims_have_exactly_one_winner`, `::test_a_second_claim_gets_409_unless_forced`. Writers that load, check and write a pack hold `pack_lock` for the whole step |
 | Write a finding class onto a pack without all three models agreeing, or with an unmeasured prompt | `test_pack_classes::test_consensus_needs_every_model`, `::test_no_frozen_prompt_skips` |
 | A gate passing below its minimum sample | `test_trust_eval::test_failing_and_insufficient`, `::test_stale_or_missing_seeded_eval_is_insufficient` |
@@ -94,7 +95,8 @@ change is judged against it. `auditor/trust_eval.py` defines the gates: below it
 `insufficient`, never a pass. The exit criteria are every non-pending gate passing in each of the last two ISO weeks,
 with headline metrics not worse over 4 weekly snapshots. `auditor/eval_seeded.py` tests the evidence bar against
 planted bugs in real mirrors. These run nightly after the repo audit, in this order: pack GC, pack classes, class
-packs, trust metrics, gates.
+packs, revalidation, trust metrics, gates. The evidence gates judge the last 14 days of resolutions
+(`GATE_WINDOW_DAYS`).
 
 **Finding classes** (#53, `auditor/finding_class.py`, `config/finding_classes.yaml`). The gold set quotes real
 findings, so it lives outside the repo in `~/.config/ai-code-auditor/eval/` (`AI_AUDIT_EVAL_DIR`), and tests point that
@@ -111,8 +113,10 @@ CI. Guard-rule hits become findings (source `suite`) whose class comes from `con
 call. Convention rules such as `silent-except` are not findings. The `rules.fixtures` gate needs at least 5 rules, all
 passing their fixtures. In CI, a repo's `.suite-rules-baseline.json` may only shrink.
 
-**Pack GC** (`auditor/pack_gc.py`) is the only thing besides an agent or a person that closes finding packs. It only
-closes `open` packs, as `obsolete`, which means "no longer reported", not a fix. A re-found issue reopens the same pack.
+**Pack GC** (`auditor/pack_gc.py`) and revalidation are the only things besides an agent or a person that close finding
+packs. GC only closes `open` packs, as `obsolete`, which means "no longer reported", not a fix. A re-found issue reopens
+the same pack. Revalidation (`auditor/revalidate.py`, `ai-audit revalidate`) re-sends a merged fix for a waived or
+unverified pack through `validate_patch` with `revalidate=true` and only ever records stronger evidence.
 
 **Night page.** Mission outcomes come from the mission files, because mithrandir's worker stats don't count `PARTIAL`.
 Spend comes from the ledger's `conductor` lane, because `cost_usd_est` is not filled in.

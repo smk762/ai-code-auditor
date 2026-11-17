@@ -57,12 +57,17 @@ class Gate:
         return self
 
 
-def _since_bar(report: dict[str, Any]) -> tuple[int, int, int]:
-    """(resolutions under the evidence bar, of them lint-only, of them waived)."""
+def _since_bar(report: dict[str, Any]) -> tuple[int, int, int, str]:
+    """(resolutions the evidence gates judge, of them lint-only, of them waived, scope note).
+
+    The trust report's rolling window when it has one, else every resolution under the bar."""
     fr = report.get("false_resolve") or {}
+    w = fr.get("window")
+    if w:
+        return int(w.get("resolutions") or 0), int(w.get("lint_only") or 0), int(w.get("waived") or 0), \
+            f"last {w.get('days')} days"
     by = fr.get("by_evidence") or {}
-    n = sum(by.values())
-    return n, int(fr.get("lint_only_since_bar") or 0), int(by.get("waiver") or 0)
+    return sum(by.values()), int(fr.get("lint_only_since_bar") or 0), int(by.get("waiver") or 0), "since the bar"
 
 
 def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
@@ -72,12 +77,12 @@ def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
     gates: list[Gate] = []
 
     # ── #58 evidence bar ──
-    n, lint, waived = _since_bar(t)
+    n, lint, waived, scope = _since_bar(t)
     gates.append(Gate("evidence.lint_only", "evidence bar", 58,
-                      "Resolutions under the evidence bar where no tests ran", "<=", 0.05, 20)
+                      f"Resolutions under the evidence bar where no tests ran ({scope})", "<=", 0.05, 20)
                  .judge(lint / n if n else None, n))
     gates.append(Gate("evidence.waiver_rate", "evidence bar", 58,
-                      "Resolutions under the evidence bar that were waived, not proven", "<=", 0.20, 20)
+                      f"Resolutions under the evidence bar that were waived, not proven ({scope})", "<=", 0.20, 20)
                  .judge(waived / n if n else None, n))
     s = seeded or {}
     fresh = bool(s) and _age(s.get("at")) <= SEEDED_MAX_AGE
