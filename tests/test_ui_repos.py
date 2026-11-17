@@ -228,3 +228,28 @@ def test_status_change_accepts_the_headers_the_ui_sends(client: TestClient, pack
     assert client.post(url, json={"status": "claimed"}, headers={"X-API-Token": "nope", "X-Auth-Code": "nope"}).status_code == 401
     r = client.post(url, json={"status": "claimed", "note": "board"}, headers={"X-API-Token": "s3cret", "X-Auth-Code": "s3cret"})
     assert r.status_code == 200 and r.json()["status"] == "claimed"
+
+
+def test_github_work_counts_open_and_blocked_prs_and_issues(tmp_path: Path) -> None:
+    import json
+
+    from auditor.ui_repos import _github_work
+
+    assert _github_work(tmp_path) is None  # PR intel hasn't run: unknown, not zero
+    (tmp_path / "pr_intel.json").write_text(json.dumps({
+        "generated_at": "2026-11-17T09:00:00Z",
+        "prs": [
+            {"repo": "a", "ref": "a#1", "state": "blocked", "closes": []},
+            {"repo": "a", "ref": "a#2", "state": "ready", "closes": [{"slug": "o/a", "number": 10}]},
+        ],
+        "issues": [
+            {"repo": "a", "ref": "a#10", "waits_on": ["a#2"]},   # waits on the PR that fixes it: progress
+            {"repo": "a", "ref": "a#11", "waits_on": ["a#10"]},  # waits on another issue: blocked
+            {"repo": "b", "ref": "b#1", "waits_on": []},
+        ],
+        "errors": [{"repo": "c", "error": "timeout"}],
+    }))
+    w = _github_work(tmp_path)
+    assert w["by_repo"]["a"] == {"prs": {"open": 2, "blocked": 1}, "issues": {"open": 2, "blocked": 1}}
+    assert w["by_repo"]["b"]["issues"] == {"open": 1, "blocked": 0}
+    assert w["failed"] == {"c"}

@@ -15,6 +15,7 @@
   .repo-card .sevbar { height: 6px; margin: 4px 0 0; max-width: 220px; }
   .repo-card .links { margin-top: 10px; font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
   .hot { color: var(--critical); font-weight: 600; }
+  a.blocked { color: var(--critical); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -70,6 +71,13 @@ function card(r) {
   const packs = `<a href="/ui/packs?repo=${repoQ}">${int(pk.open)} open</a>` +
     (pk.open_high ? ` · <a class="hot" href="/ui/packs?repo=${repoQ}&severity=CRITICAL,HIGH">${int(pk.open_high)} high+</a>` : "") +
     (active ? ` · ${int(active)} in flight` : "") + (pk.unverified ? ` · ${int(pk.unverified)} unverified` : "") + (pk.resolved ? ` <span class="muted">· ${int(pk.resolved)} resolved</span>` : "");
+  // Open PRs / issues from PR intel (hourly); "(n blocked)" in red links to why, on the PR page.
+  const gh = (kind, path) => {
+    if (!r.github) return `<span class="muted" title="PR intel has not run for this repo yet">—</span>`;
+    const w = r.github[kind];
+    const open = r.github_url ? `<a href="${esc(r.github_url)}/${path}">${int(w.open)} open</a>` : `${int(w.open)} open`;
+    return open + (w.blocked ? ` <a class="blocked" href="/audit/prs" title="Why: the PR intel page">(${int(w.blocked)} blocked)</a>` : "");
+  };
   const viol = r.violations == null ? `<span class="muted">—</span>` : r.violations ? `<a href="/ui/reports/architecture_violations.md">${int(r.violations)}</a>` : "0";
   return `<article class="card repo-card span-4">
     <h2>${esc(r.name)}<span>${r.wiki ? `<a class="gh" href="/ui/wiki/${encodeURIComponent(r.name)}">Wiki</a> ` : ""}${r.github_url ? `<a class="gh" href="${esc(r.github_url)}">GitHub</a>` : ""}</span></h2>
@@ -78,6 +86,8 @@ function card(r) {
       <dt>Last audit</dt><dd>${audit}</dd>
       <dt>Findings</dt><dd>${findings}</dd>
       <dt>Packs</dt><dd>${packs}</dd>
+      <dt>Pull requests</dt><dd>${gh("prs", "pulls")}</dd>
+      <dt>Issues</dt><dd>${gh("issues", "issues")}</dd>
       <dt>Arch. violations</dt><dd>${viol}</dd>
     </dl>
   </article>`;
@@ -100,7 +110,8 @@ function render() {
   const fr = data.findings_run;
   let sub = `${UI.plural(data.repos.length, "repo")}` +
     (fr ? ` · findings from <a class="mono" href="/ui/runs/${encodeURIComponent(fr.run_id)}">${esc(fr.run_id)}</a> (${UI.ago(fr.started_at)})${data.findings_has_baseline ? "" : ", no baseline for “new”"}` : "") +
-    (data.poll_updated_at ? ` · dev tips polled ${UI.ago(data.poll_updated_at)}` : "");
+    (data.poll_updated_at ? ` · dev tips polled ${UI.ago(data.poll_updated_at)}` : "") +
+    (data.pr_intel_at ? ` · PRs and issues as of ${UI.ago(data.pr_intel_at)}` : "");
   if (data.errors.length) sub += ` · <span class="err">partial data: ${esc(data.errors.join("; "))}</span>`;
   document.getElementById("sub").innerHTML = sub;
 }

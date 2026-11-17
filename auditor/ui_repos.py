@@ -128,6 +128,49 @@ def _last_audits() -> dict[str, dict[str, Any]]:
     return out
 
 
+def _github_work(output_dir: Path) -> dict[str, Any] | None:
+    """Open PRs and issues per repo from ``pr_intel.json`` (hourly), with how many are blocked.
+
+    A PR is blocked when PR intel says so (conflicts, failing checks, waiting on review or on
+    another PR). An issue is blocked when it waits on another open item, other than a PR that
+    will close it (that is progress, not a block). ``None`` when PR intel hasn't run."""
+    try:
+        intel = json.loads((output_dir / "pr_intel.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    by_repo: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"prs": {"open": 0, "blocked": 0}, "issues": {"open": 0, "blocked": 0}})
+    fixes: dict[str, set[str]] = defaultdict(set)  # issue ref -> refs of open PRs that close it
+    for p in intel.get("prs") or []:
+        w = by_repo[p.get("repo", "")]["prs"]
+        w["open"] += 1
+        w["blocked"] += p.get("state") == "blocked"
+        for c in p.get("closes") or []:
+            fixes[f"{str(c.get('slug', '')).split('/')[-1]}#{c.get('number')}"].add(p.get("ref", ""))
+    for i in intel.get("issues") or []:
+        w = by_repo[i.get("repo", "")]["issues"]
+        w["open"] += 1
+        w["blocked"] += any(ref not in fixes[i.get("ref", "")] for ref in i.get("waits_on") or [])
+    failed = {str(e.get("repo") if isinstance(e, dict) else e).split(":")[0] for e in intel.get("errors") or []}
+    return {"generated_at": intel.get("generated_at"), "by_repo": dict(by_repo), "failed": failed}
+
+
+def _github_slugs() -> dict[str, str]:
+    """``owner/name`` per mirror, from its clone URL (so repos with nothing open still link)."""
+    import yaml
+
+    try:
+        cfg = yaml.safe_load(Path("config/repo_mirrors.yaml").read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for m in cfg.get("mirrors") or []:
+        url = str(m.get("url") or "")
+        if "github.com/" in url:
+            out[str(m.get("name"))] = url.split("github.com/", 1)[1].removesuffix(".git").strip("/")
+    return out
+
+
 def repos_data(output_dir: str | Path) -> dict[str, Any]:
     """One card per enabled repo. Each source degrades on its own (listed in ``errors``)."""
     from auditor.config import load_ecosystem_config
@@ -152,6 +195,8 @@ def repos_data(output_dir: str | Path) -> dict[str, Any]:
     findings = _try("findings", _findings_by_repo, None)
     violations = _try("violations", lambda: _violations_by_repo(out_dir, names), None)
     entries = _try("packs", lambda: _pack_entries(out_dir), [])
+    work = _try("pr intel", lambda: _github_work(out_dir), None)
+    slugs = _try("mirror slugs", _github_slugs, {})
 
     packs: dict[str, Counter] = defaultdict(Counter)
     open_high: Counter = Counter()
@@ -172,7 +217,8 @@ def repos_data(output_dir: str | Path) -> dict[str, Any]:
         mirror = _mirror_head(local) if local else None
         cards.append({
             "name": repo.name,
-            "github_url": f"https://github.com/{tip['slug']}" if tip.get("slug") else None,
+            "github_url": f"https://github.com/{tip.get('slug') or slugs.get(repo.name)}"
+                          if tip.get("slug") or slugs.get(repo.name) else None,
             "tip": {
                 "branch": tip.get("branch") or poll.get("branch"),
                 "sha": sha or None,
@@ -187,12 +233,17 @@ def repos_data(output_dir: str | Path) -> dict[str, Any]:
             "packs": {st: packs[repo.name].get(st, 0) for st in PACK_STATUSES} | {"open_high": open_high[repo.name]},
             "violations": violations.get(repo.name, 0) if violations is not None else None,
             "wiki": (out_dir / "wiki" / repo.name / "INDEX.json").is_file(),
+            # None: PR intel hasn't run, or failed for this repo (unknown, not zero)
+            "github": (None if work is None or repo.name in work["failed"] else
+                       work["by_repo"].get(repo.name) or {"prs": {"open": 0, "blocked": 0},
+                                                           "issues": {"open": 0, "blocked": 0}}),
         })
     return {
         "repos": cards,
         "findings_run": findings["run"] if findings else None,
         "findings_has_baseline": bool(findings and findings["has_baseline"]),
         "poll_updated_at": poll.get("updated_at"),
+        "pr_intel_at": work["generated_at"] if work else None,
         "errors": errors,
     }
 
