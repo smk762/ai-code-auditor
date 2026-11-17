@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
@@ -167,8 +168,14 @@ def fix_patch(git_dir: Path, pr: dict[str, Any], path: str) -> tuple[str, str, l
 Poster = Callable[[dict[str, Any]], dict[str, Any]]
 
 
-def api_poster(api_base: str = "", timeout_s: int = 900) -> Poster:
+def api_poster(api_base: str = "", timeout_s: int = 900, busy_wait_s: float | None = None,
+               sleep: Callable[[float], None] = time.sleep) -> Poster:
+    """POST to validate_patch. When every validation slot is taken (429), wait as long as the API's
+    ``Retry-After`` says and try again, for up to *busy_wait_s* in all (``AI_AUDIT_REVALIDATE_BUSY_WAIT_S``,
+    default 1800): agents' own validations come first, and a refusal says nothing about the fix."""
     from conductor.publish import public_base_url
+
+    budget = busy_wait_s if busy_wait_s is not None else float(os.getenv("AI_AUDIT_REVALIDATE_BUSY_WAIT_S", "1800"))
 
     base = (api_base or public_base_url()).rstrip("/")
     headers = {"Content-Type": "application/json"}
@@ -176,10 +183,23 @@ def api_poster(api_base: str = "", timeout_s: int = 900) -> Poster:
         headers["X-API-Token"] = tok
 
     def post(body: dict[str, Any]) -> dict[str, Any]:
-        req = urllib.request.Request(f"{base}/audit/validate_patch", data=json.dumps(body).encode(),
-                                     headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            return json.loads(resp.read().decode())
+        waited = 0.0
+        while True:
+            req = urllib.request.Request(f"{base}/audit/validate_patch", data=json.dumps(body).encode(),
+                                         headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                    return json.loads(resp.read().decode())
+            except urllib.error.HTTPError as exc:
+                if exc.code != 429 or waited >= budget:
+                    raise
+                try:
+                    pause = float(exc.headers.get("Retry-After") or 30)
+                except ValueError:
+                    pause = 30.0
+                pause = max(1.0, min(pause, budget - waited))
+                sleep(pause)
+                waited += pause
 
     return post
 
@@ -268,7 +288,7 @@ def run(output_dir: str | Path, *, repo: str = "", limit: int = 0, dry_run: bool
         counts[o.result] = counts.get(o.result, 0) + 1
     now = datetime.now(UTC).isoformat()
     for o in outcomes:
-        if o.result in ("unchanged", "error"):  # sent, or tried to: don't resend before retry_days
+        if o.result == "unchanged":  # sent and judged: don't resend before retry_days (an error retries next run)
             attempts[o.pack_id] = now
         else:
             attempts.pop(o.pack_id, None)
