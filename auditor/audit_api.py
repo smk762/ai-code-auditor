@@ -1133,7 +1133,7 @@ class _ValidateRequest(BaseModel):
     timeout_s: int = 120
 
 
-@app.post("/audit/validate")
+@app.post("/audit/validate", dependencies=[Depends(_require_mutating_auth)])
 def validate_repo(request: _ValidateRequest) -> JSONResponse:
     """Run the test/lint suite for a configured repository.
 
@@ -1279,7 +1279,7 @@ async def github_merge_webhook(
     return JSONResponse(result, status_code=202 if result.get("accepted") else 200)
 
 
-@app.post("/audit/diff")
+@app.post("/audit/diff", dependencies=[Depends(_require_mutating_auth)])
 def audit_diff(request: _DiffAuditRequest) -> JSONResponse:
     """Audit the files touched by a unified diff.
 
@@ -1778,7 +1778,7 @@ class _RawDiffRequest(BaseModel):
     compare_branch: str
 
 
-@app.post("/audit/git/diff")
+@app.post("/audit/git/diff", dependencies=[Depends(_require_mutating_auth)])
 def git_raw_diff(request: _RawDiffRequest) -> JSONResponse:
     """Return the raw unified diff for *repo* between *compare_branch* and HEAD.
 
@@ -1817,10 +1817,20 @@ def git_raw_diff(request: _RawDiffRequest) -> JSONResponse:
             "reason": "path_error",
         }, status_code=400)
 
+    from auditor.diff_auditor import git_ref_arg
+
+    try:
+        ref = git_ref_arg(request.compare_branch)
+    except RuntimeError as exc:
+        return JSONResponse({
+            "diff": "", "is_empty": True,
+            "base_branch": request.compare_branch,
+            "error": str(exc),
+            "reason": "bad_ref",
+        }, status_code=400)
     try:
         r = subprocess.run(
-            ["git", "-C", str(repo_path), "diff",
-             f"{request.compare_branch}...HEAD"],
+            ["git", "-C", str(repo_path), "diff", f"{ref}...HEAD"],
             capture_output=True, text=True, timeout=30,
         )
     except subprocess.TimeoutExpired:
