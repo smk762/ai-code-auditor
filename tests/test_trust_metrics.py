@@ -141,6 +141,76 @@ def test_non_finding_kinds_are_ignored() -> None:
     assert tm.recurrence_metric([p], [scan("s2", 6, [])])["observed"] == 0
 
 
+def test_scan_of_code_older_than_the_resolution_is_not_evidence() -> None:
+    """The mirrors lag dev until the nightly sync: a scan that ran after a fix but read older
+    code (and the packs it emitted) can't show the fix didn't hold (2026-11-17: 48 false
+    regressions, every one from a scan of code committed before the resolution)."""
+    p = pack("a", title="Missing timeout on HTTP call", status="resolved", history=[("resolved", 5, PYTEST)])
+    stale = scan("r9", 8, [("app.py", "Missing timeout on HTTP call", 10)])
+    stale.code_at = T0 + timedelta(hours=1)
+    linked = pack("n", title="Missing timeout on HTTP call", detected=8, run="r9", recurrence_of="a")
+    r = tm.recurrence_metric([p, linked], [stale])
+    assert (r["observed"], r["regressed"], r["pending"]) == (0, 0, 1)
+
+    fresh = scan("r10", 9, [("app.py", "Missing timeout on HTTP call", 10)])
+    fresh.code_at = T0 + timedelta(hours=6)
+    r = tm.recurrence_metric([p, linked], [stale, fresh])
+    assert (r["observed"], r["regressed"]) == (1, 1)
+    assert r["examples"][0]["evidence"].startswith("scan r10")
+
+
+def test_unknown_code_time_falls_back_to_the_scan_start() -> None:
+    p = pack("a", title="Missing timeout on HTTP call", status="resolved", history=[("resolved", 5, PYTEST)])
+    r = tm.recurrence_metric([p], [scan("s2", 6, [("app.py", "Missing timeout on HTTP call", 10)])])
+    assert (r["observed"], r["regressed"]) == (1, 1)
+
+
+def test_load_scans_reads_the_recorded_commit(memdb) -> None:
+    from auditor import ui
+
+    with memdb() as s:
+        s.add(AuditRun(run_id="repo-1", pipeline="repo-audit", status="success", started_at=T0 + timedelta(hours=10),
+                       metadata_json={"scanned_repos": ["x", "y"], "extra": {"scanned_code": {
+                           "x": {"sha": "abc", "committed_at": at(2)}}}}))
+        s.add(FindingRecord(run_id="repo-1", repo="x", file_path="/home/smk/x/app.py", line=3,
+                            finding_type="bug", severity="HIGH", title="t", source="llm", created_at=T0))
+    with ui._db_session() as s:
+        scans = {sc.repo: sc for sc in tm.load_scans(s, since=T0 - timedelta(days=1))}
+    assert scans["x"].code_at == T0 + timedelta(hours=2) and scans["x"].code_time == T0 + timedelta(hours=2)
+    assert scans["y"].code_at is None and scans["y"].code_time == T0 + timedelta(hours=10)
+
+
+def _git(cwd: Path, *args: str, date: str | None = None) -> str:
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@x", "HOME": str(cwd), "PATH": "/usr/bin:/bin"}
+    if date:
+        env |= {"GIT_COMMITTER_DATE": date, "GIT_AUTHOR_DATE": date}
+    return subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_code_time_comes_from_the_mirror_reflog_and_head_commit(tmp_path: Path) -> None:
+    from auditor.repo_resolver import head_commit
+
+    repo = tmp_path / "x"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "dev")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "one", date="2026-11-01T02:00:00+00:00")
+    code = head_commit(repo)
+    assert code["sha"] == _git(repo, "rev-parse", "HEAD")
+    assert tm._parse_ts(code["committed_at"]) == datetime(2026, 11, 1, 2, tzinfo=UTC)  # git may write Z or +00:00
+    assert head_commit(tmp_path / "nope") == {}
+
+    now = datetime.now(UTC)
+    later, before_reflog = scan("s", 0), scan("s0", 0)
+    later.at, before_reflog.at = now + timedelta(minutes=5), now - timedelta(days=30)
+    recorded = scan("s1", 0)
+    recorded.code_at = T0
+    tm.attach_code_times([later, before_reflog, recorded], {"x": repo})
+    assert later.code_at == datetime(2026, 11, 1, 2, tzinfo=UTC)  # the commit's time, not the scan's
+    assert before_reflog.code_at is None  # the reflog doesn't reach back: unknown, not the oldest entry
+    assert recorded.code_at == T0  # the run's own record wins
+
+
 # ── scan persistence and flow ────────────────────────────────────────────────
 
 def test_scan_persistence_excludes_findings_resolved_in_between() -> None:

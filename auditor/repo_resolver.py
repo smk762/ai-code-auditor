@@ -14,6 +14,17 @@ logger = logging.getLogger(__name__)
 BRANCH_PREFERENCE: tuple[str, ...] = ("dev", "main", "master")
 
 
+def head_commit(repo_path: Path) -> dict[str, str]:
+    """The checked-out commit a scan reads: ``{"sha", "committed_at"}``, or {} if not a git repo."""
+    try:
+        out = subprocess.run(["git", "-C", str(repo_path), "log", "-1", "--format=%H%x1f%cI"],
+                             capture_output=True, text=True, timeout=30, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    sha, _, committed_at = out.partition("\x1f")
+    return {"sha": sha, "committed_at": committed_at} if sha and committed_at else {}
+
+
 def branch_exists(repo_path: Path, branch: str) -> bool:
     """Return True if *branch* exists as a local branch in the git repo at *repo_path*."""
     result = subprocess.run(
