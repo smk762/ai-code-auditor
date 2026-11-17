@@ -43,6 +43,7 @@
   #trend text { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
   #trend text.lbl { fill: var(--text-secondary); font-weight: 600; }
   #trend tspan.up { fill: var(--critical); } #trend tspan.down { fill: var(--ok); }
+  #trend tspan.new-repos { fill: var(--text-muted); font-weight: 400; }
   #trend line.grid { stroke: var(--grid); }
   #trend line.base { stroke: var(--text-muted); }
   #tip { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
@@ -159,6 +160,12 @@ function dl(n, quiet = false) {
                : `<span class="dl down" title="${int(-n)} fewer than the previous run">−${int(-n)}</span>`;
 }
 
+// Change from q to p, without repos p counts for the first time: a run that widens the scan set
+// isn't findings appearing.
+function change(p, q) { return p.total - q.total - p.added; }
+const addedNote = (p) => p.added || p.fresh.length
+  ? `<span class="hint" style="margin:0">+${int(p.added)} from ${UI.plural(p.fresh.length, "repo")} scanned for the first time</span>` : "";
+
 function sum(o) { return Object.values(o || {}).reduce((a, b) => a + b, 0); }
 
 // Totals per history point, for one repo or (repo = "") all of them, by severity.
@@ -167,7 +174,9 @@ function historySeries(d, repo) {
     const sev = Object.fromEntries(UI.SEVERITIES.map((s) => [s, 0]));
     for (const [r, c] of Object.entries(pt.by_repo)) if (!repo || r === repo)
       for (const [s, n] of Object.entries(c)) sev[s] = (sev[s] || 0) + n;
-    return { ...pt, sev, total: sum(sev) };
+    const fresh = (pt.new_repos || []).filter((r) => !repo || r === repo);
+    const added = fresh.reduce((a, r) => a + sum(pt.by_repo[r]), 0);
+    return { ...pt, sev, total: sum(sev), fresh, added };
   });
 }
 
@@ -198,7 +207,8 @@ function matrix(d) {
   const spark = (d.history || []).length > 1;
   const head = `<thead><tr><th>Repo</th>${sevs.map((s) => `<th class="num">${UI.sevBadge(s)}</th>`).join("")}<th class="num">Total</th>${spark ? "<th>Trend</th>" : ""}</tr></thead>`;
   const totals = Object.fromEntries(sevs.map((s) => [s, 0]));
-  const change = (r, s) => prev ? (d.matrix[r]?.[s] || 0) - (prev[r]?.[s] || 0) : null;
+  const firstScan = new Set(d.delta?.first_scan_repos || []);
+  const change = (r, s) => prev && !firstScan.has(r) ? (d.matrix[r]?.[s] || 0) - (prev[r]?.[s] || 0) : null;
   const body = repos.map((r) => {
     const row = d.matrix[r];
     let rowSum = 0;
@@ -207,13 +217,14 @@ function matrix(d) {
       const on = state.repo === r && state.severity === s;
       return `<td class="cell${n ? "" : " zero"}${on ? " on" : ""}" data-repo="${esc(r)}" data-sev="${s}">${n ? int(n) : "·"}${dl(change(r, s), true)}</td>`;
     }).join("");
-    const rowChange = prev ? rowSum - sum(prev[r]) : null;
+    const rowChange = prev && !firstScan.has(r) ? rowSum - sum(prev[r]) : null;
     const trend = spark ? `<td class="spark">${sparkline(historySeries(d, r).map((p) => p.total))}</td>` : "";
-    return `<tr class="${state.repo === r ? "on" : ""}"><th data-repo="${esc(r)}">${esc(r)}</th>${cells}<td class="num"><b>${int(rowSum)}</b>${dl(rowChange, true)}${resolvedNote(packWork(d, r).by_status.resolved)}</td>${trend}</tr>`;
+    return `<tr class="${state.repo === r ? "on" : ""}"><th data-repo="${esc(r)}">${esc(r)}</th>${cells}<td class="num"><b>${int(rowSum)}</b>${dl(rowChange, true)}${firstScan.has(r) ? `<span class="dl flat" title="The previous run didn't scan this repo, so there is nothing to compare">first scan</span>` : ""}${resolvedNote(packWork(d, r).by_status.resolved)}</td>${trend}</tr>`;
   }).join("");
-  const prevSev = (s) => prev ? Object.values(prev).reduce((a, c) => a + (c[s] || 0), 0) : 0;
-  const prevAll = prev ? Object.values(prev).reduce((a, c) => a + sum(c), 0) : 0;
-  const foot = `<tr><th>All repos</th>${sevs.map((s) => `<td class="num"><b>${int(totals[s])}</b>${prev ? dl(totals[s] - prevSev(s), true) : ""}</td>`).join("")}<td class="num"><b>${int(d.total)}</b>${prev ? dl(d.total - prevAll) : ""}${resolvedNote(packWork(d, "").by_status.resolved)}</td>${spark ? `<td class="spark">${sparkline(historySeries(d, "").map((p) => p.total))}</td>` : ""}</tr>`;
+  // Footer changes leave out first-scan repos, like the rows.
+  const sevChange = (s) => repos.reduce((a, r) => a + (change(r, s) || 0), 0);
+  const allChange = sevs.reduce((a, s) => a + sevChange(s), 0);
+  const foot = `<tr><th>All repos</th>${sevs.map((s) => `<td class="num"><b>${int(totals[s])}</b>${prev ? dl(sevChange(s), true) : ""}</td>`).join("")}<td class="num"><b>${int(d.total)}</b>${prev ? dl(allChange) : ""}${firstScan.size ? `<span class="dl flat">${UI.plural(firstScan.size, "repo")} new</span>` : ""}${resolvedNote(packWork(d, "").by_status.resolved)}</td>${spark ? `<td class="spark">${sparkline(historySeries(d, "").map((p) => p.total))}</td>` : ""}</tr>`;
   return head + `<tbody>${body}${foot}</tbody>`;
 }
 
@@ -244,7 +255,8 @@ function trend(d) {
   const last = pts[cur >= 0 ? cur : pts.length - 1], before = pts[(cur >= 0 ? cur : pts.length - 1) - 1];
   document.getElementById("trend-total").textContent = last ? int(last.total) : "";
   document.getElementById("trend-change").innerHTML = last && before
-    ? `${dl(last.total - before.total)} <span class="hint" style="margin:0">since the previous run (${fmtWhen(before.started_at)})</span>` : "";
+    ? `${dl(change(last, before))} <span class="hint" style="margin:0">since the previous run (${fmtWhen(before.started_at)})${last.fresh.length ? ", in repos it also scanned" : ""}</span>` +
+      (last.fresh.length ? ` · ${addedNote(last)}` : "") : "";
   const work = packWork(d, state.repo), ws = work.by_status;
   const active = (ws.open || 0) + (ws.claimed || 0) + (ws.in_progress || 0);
   const inHand = (ws.claimed || 0) + (ws.in_progress || 0);
@@ -290,8 +302,10 @@ function trend(d) {
     }
     const prevPt = pts[i - 1];
     // Total above each column, and the change from the column before when there is room for it.
-    const ch = prevPt ? p.total - prevPt.total : 0;
-    const chTxt = prevPt && slot >= 80 ? ` <tspan class="${ch > 0 ? "up" : ch < 0 ? "down" : ""}">${ch > 0 ? "+" : ch < 0 ? "−" : "±"}${int(Math.abs(ch))}</tspan>` : "";
+    // Like-for-like: repos this run counts for the first time are marked, not added to the change.
+    const ch = prevPt ? change(p, prevPt) : 0;
+    const chTxt = prevPt && slot >= 80 ? ` <tspan class="${ch > 0 ? "up" : ch < 0 ? "down" : ""}">${ch > 0 ? "+" : ch < 0 ? "−" : "±"}${int(Math.abs(ch))}</tspan>` +
+      (p.fresh.length ? ` <tspan class="new-repos">+${UI.plural(p.fresh.length, "repo")}</tspan>` : "") : "";
     const lbl = (showLabels || i === pts.length - 1) && p.total
       ? `<text class="lbl" x="${cx}" y="${y(p.total) - 5}" text-anchor="middle">${int(p.total)}${chTxt}</text>` : "";
     const xl = (i % every === 0 || i === pts.length - 1)
@@ -307,7 +321,8 @@ function trend(d) {
     const i = +g.dataset.i, p = pts[i], q = pts[i - 1];
     tip.innerHTML = `<b>${esc(fmtWhen(p.started_at))}</b> <span class="muted mono">${esc(p.run_id)}</span>` +
       `<table>${SEV_STACK.map((s) => `<tr><td><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${sevVar(s)}"></i> ${s.toLowerCase()}</td><td class="n">${int(p.sev[s] || 0)}</td><td>${q ? dl((p.sev[s] || 0) - (q.sev[s] || 0), true) : ""}</td></tr>`).join("")}` +
-      `<tr><td><b>total</b></td><td class="n"><b>${int(p.total)}</b></td><td>${q ? dl(p.total - q.total) : ""}</td></tr></table>` +
+      `<tr><td><b>total</b></td><td class="n"><b>${int(p.total)}</b></td><td>${q ? dl(change(p, q)) : ""}</td></tr></table>` +
+      (q && p.fresh.length ? `${addedNote(p)}: ${esc(p.fresh.join(", "))}<br>` : "") +
       (i === cur && ws.resolved ? `<span class="muted">${int(ws.resolved)} resolved by agents, waiting for rescan</span><br>` : "") +
       `<span class="muted">${UI.plural(p.scanned_repos.length, "repo")} scanned in this run</span>`;
     tip.hidden = false;
@@ -326,7 +341,7 @@ function trend(d) {
   document.getElementById("trend-table").innerHTML =
     `<thead><tr><th>Run</th><th>When</th>${SEV_STACK.map((s) => `<th class="num">${s.toLowerCase()}</th>`).join("")}<th class="num">Total</th><th class="num">Change</th></tr></thead><tbody>` +
     pts.slice().reverse().map((p, j, arr) => { const q = arr[j + 1];
-      return `<tr><td class="mono"><a href="?run_id=${encodeURIComponent(p.run_id)}">${esc(p.run_id)}</a></td><td>${esc(fmtWhen(p.started_at))}</td>${SEV_STACK.map((s) => `<td class="num">${int(p.sev[s] || 0)}</td>`).join("")}<td class="num"><b>${int(p.total)}</b></td><td class="num">${q ? dl(p.total - q.total) : "—"}</td></tr>`; }).join("") + `</tbody>`;
+      return `<tr><td class="mono"><a href="?run_id=${encodeURIComponent(p.run_id)}">${esc(p.run_id)}</a></td><td>${esc(fmtWhen(p.started_at))}</td>${SEV_STACK.map((s) => `<td class="num">${int(p.sev[s] || 0)}</td>`).join("")}<td class="num"><b>${int(p.total)}</b></td><td class="num">${q ? dl(change(p, q)) + (p.fresh.length ? `<br>${addedNote(p)}` : "") : "—"}</td></tr>`; }).join("") + `</tbody>`;
 }
 
 function packCell(f) {
@@ -409,7 +424,7 @@ function render(d) {
   const r = d.run;
   document.getElementById("sub").innerHTML =
     `<a href="/ui/runs/${encodeURIComponent(r.run_id)}">${esc(r.pipeline)} <span class="mono">${esc(r.run_id)}</span></a> · ${UI.ago(r.started_at)} · ` +
-    (d.delta ? `${int(d.delta.new)} new, ${int(d.delta.fixed)} fixed${d.delta.reworded ? ` (${int(d.delta.reworded)} reworded findings count as unchanged)` : ""} vs <a class="mono" href="/ui/runs/${encodeURIComponent(d.previous.run_id)}">${esc(d.previous.run_id)}</a>`
+    (d.delta ? `${int(d.delta.new)} new${d.delta.first_scan_repos?.length ? ` (${int(d.delta.first_scan_new)} of them in ${UI.plural(d.delta.first_scan_repos.length, "repo")} scanned for the first time)` : ""}, ${int(d.delta.fixed)} fixed${d.delta.reworded ? ` (${int(d.delta.reworded)} reworded findings count as unchanged)` : ""} vs <a class="mono" href="/ui/runs/${encodeURIComponent(d.previous.run_id)}">${esc(d.previous.run_id)}</a>`
              : "no earlier run to compare");
   document.querySelectorAll("[data-change]").forEach((b) => {
     b.setAttribute("aria-pressed", String(b.dataset.change === state.change));
@@ -419,7 +434,7 @@ function render(d) {
   trend(d);
   document.getElementById("matrix").innerHTML = matrix(d);
   document.getElementById("matrix-hint").textContent = "Whole run. " +
-    (d.matrix_prev ? "The small +/− next to each count is the change since the previous run (raw counts, so reworded findings net out). " : "") +
+    (d.matrix_prev ? "The small +/− next to each count is the change since the previous run (raw counts, so reworded findings net out). A repo the previous run didn't scan is marked first scan, and the totals' change leaves it out. " : "") +
     "Click a cell to filter the table to that repo and severity; click it again to clear.";
   fill(els.repo, d.facets.repos, state.repo);
   fill(els.severity, UI.SEVERITIES, state.severity.toUpperCase(), (s) => s.toLowerCase());

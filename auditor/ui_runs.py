@@ -170,6 +170,9 @@ def _history(session, upto: AuditRun) -> list[dict[str, Any]]:
     single-repo nightly run moves only its own repo's counts and the others carry forward. A repo
     the run scanned with no findings drops to zero. Repos last audited before the window's first
     run are not counted until they are audited again inside it.
+
+    ``new_repos`` lists the repos a point counts for the first time (none on the first point), so
+    a run that widens the scan set isn't read as findings appearing.
     """
     if upto.started_at is None:
         return []
@@ -194,9 +197,12 @@ def _history(session, upto: AuditRun) -> list[dict[str, Any]]:
         counts[run_id][repo][str(sev or "INFO").upper()] += int(n)
     state: dict[str, dict[str, int]] = {}
     points = []
+    seen: set[str] = set()
     for r in runs:
         mine = counts.get(r.run_id, {})
         scanned = set((r.metadata_json or {}).get("scanned_repos") or []) | set(mine)
+        new_repos = sorted(scanned - seen) if points else []
+        seen |= scanned
         for repo in scanned:
             state[repo] = dict(mine.get(repo, {}))
         points.append({
@@ -204,6 +210,7 @@ def _history(session, upto: AuditRun) -> list[dict[str, Any]]:
             "pipeline": r.pipeline,
             "started_at": r.started_at.isoformat() if r.started_at else None,
             "scanned_repos": sorted(scanned),
+            "new_repos": new_repos,
             "by_repo": {repo: dict(c) for repo, c in sorted(state.items()) if c},
         })
     return points
@@ -368,6 +375,10 @@ def findings_data(
         previous = run_to_dict(base) if base else None
         prev_findings = _findings(s, base.run_id) if base else []
         history = _history(s, row)
+        base_repos = set((base.metadata_json or {}).get("scanned_repos") or []) if base else set()
+
+    # Repos the baseline didn't scan: their findings are all "new" only because nothing was there to compare.
+    first_scan = sorted(set(run["scanned_repos"]) - base_repos) if base_repos else []
 
     d = _delta(current, prev_findings, set(run["scanned_repos"])) if base else None
     # Baseline counts per repo and severity, over the repos this run scanned, for the matrix's +/-.
@@ -452,7 +463,9 @@ def findings_data(
         "pack_matrix": pack_matrix,
         "history": history,
         "facets": facets,
-        "delta": {"new": len(d["new"]), "fixed": len(d["fixed"]), "reworded": d["reworded"]} if d else None,
+        "delta": {"new": len(d["new"]), "fixed": len(d["fixed"]), "reworded": d["reworded"],
+                  "first_scan_repos": first_scan,
+                  "first_scan_new": sum(f["repo"] in first_scan for f in d["new"])} if d else None,
         "total": len(current),
         "filtered_total": len(rows),
         "findings": rows[:limit],

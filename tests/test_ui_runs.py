@@ -111,7 +111,7 @@ def test_findings_default_run_is_newest_finished_run_with_findings(history) -> N
     assert d["total"] == 3 and d["filtered_total"] == 3
     assert d["matrix"] == {"x": {"CRITICAL": 0, "HIGH": 2, "MEDIUM": 0, "LOW": 1, "INFO": 0}}
     assert d["facets"] == {"repos": ["x"], "sources": ["bandit", "llm"], "types": ["bug"]}
-    assert d["delta"] == {"new": 2, "fixed": 1, "reworded": 0}
+    assert d["delta"] == {"new": 2, "fixed": 1, "reworded": 0, "first_scan_repos": [], "first_scan_new": 0}
     assert {f["title"]: f["is_new"] for f in d["findings"]} == {"kept": False, "fresh": True, "fresh too": True}
 
 
@@ -143,6 +143,7 @@ def test_findings_history_carries_each_repo_forward(history) -> None:
     assert h[1]["by_repo"] == {"x": {"HIGH": 1, "CRITICAL": 1}, "y": {"HIGH": 1}}  # x carried
     assert h[2]["by_repo"] == {"x": {"HIGH": 2, "LOW": 1}, "y": {"HIGH": 1}}
     assert h[2]["scanned_repos"] == ["x"]
+    assert [p["new_repos"] for p in h] == [[], ["y"], []]  # y joins the chart at y-1
     # history stops at the run being viewed
     assert [p["run_id"] for p in ui_runs.findings_data("y-1")["history"]] == ["x-1", "y-1"]
 
@@ -156,6 +157,21 @@ def test_findings_history_drops_a_scanned_repo_with_no_findings(memdb) -> None:
         _finding(s, "r-2", "a")
     h = ui_runs.findings_data("r-2")["history"]
     assert h[-1]["by_repo"] == {"x": {"HIGH": 1}}
+
+def test_findings_delta_names_repos_the_baseline_never_scanned(memdb) -> None:
+    with memdb() as s:
+        _run(s, "r-1", hours_ago=10, repos=("x",))
+        _finding(s, "r-1", "a")
+        _run(s, "r-2", hours_ago=1, repos=("x", "z"))
+        _finding(s, "r-2", "a")
+        _finding(s, "r-2", "b")
+        _finding(s, "r-2", "c", repo="z")
+        _finding(s, "r-2", "d", repo="z")
+    d = ui_runs.findings_data("r-2")
+    assert d["delta"]["new"] == 3  # "b" in x, and both of z's
+    assert (d["delta"]["first_scan_repos"], d["delta"]["first_scan_new"]) == (["z"], 2)
+    assert d["history"][-1]["new_repos"] == ["z"]
+
 
 def test_findings_matrix_lists_a_scanned_repo_with_no_findings(memdb) -> None:
     with memdb() as s:

@@ -55,6 +55,17 @@ def test_false_resolve_counts_validator_tools_and_manual() -> None:
     assert m["rate"] == pytest.approx(1 / 3, abs=1e-4)
     assert m["methods"]["validator:pytest+npm_checks"] == 1
     assert m["by_repo"]["x"]["rate"] == 0.5 and m["by_repo"]["y"]["rate"] == 0.0
+    assert (m["since_bar"], m["rate_since_bar"]) == (0, None)
+
+
+def test_false_resolve_since_bar_leaves_out_pre_bar_resolutions() -> None:
+    bar = "validate_patch passed (repo=x, tool={}, evidence={})"
+    packs = [pack(c, status="resolved", history=[("resolved", 2, LINT)]) for c in "abc"]  # before the bar
+    packs += [pack("d", status="resolved", history=[("resolved", 3, bar.format("pytest", "repro"))]),
+              pack("e", status="resolved", history=[("resolved", 3, bar.format("lint_only", "waiver"))])]
+    m = tm.false_resolve_metric(tm.resolution_events(packs))
+    assert m["rate"] == pytest.approx(4 / 5, abs=1e-4)
+    assert (m["since_bar"], m["lint_only_since_bar"], m["rate_since_bar"]) == (2, 1, 0.5)
 
 
 def test_resolved_twice_is_two_resolutions_but_repeats_are_one() -> None:

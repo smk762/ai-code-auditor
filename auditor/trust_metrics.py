@@ -303,6 +303,8 @@ def resolution_events(packs: Iterable[PackView]) -> list[dict[str, Any]]:
 def false_resolve_metric(events: list[dict[str, Any]]) -> dict[str, Any]:
     validator = [e for e in events if e["method"].startswith("validator:")]
     lint = [e for e in validator if e["method"] == "validator:lint_only"]
+    bar = [e for e in events if e["evidence"]]
+    bar_lint = sum(e["method"] == "validator:lint_only" for e in bar)
     by_repo: dict[str, dict[str, int]] = defaultdict(lambda: {"validator": 0, "lint_only": 0})
     for e in validator:
         by_repo[e["repo"]]["validator"] += 1
@@ -315,7 +317,11 @@ def false_resolve_metric(events: list[dict[str, Any]]) -> dict[str, Any]:
         "methods": dict(Counter(e["method"] for e in events)),
         # resolutions under the evidence bar (#58), by evidence kind; a rising waiver share is a smell
         "by_evidence": dict(Counter(e["evidence"] for e in events if e["evidence"])),
-        "lint_only_since_bar": sum(1 for e in events if e["evidence"] and e["method"] == "validator:lint_only"),
+        "since_bar": len(bar),
+        "lint_only_since_bar": bar_lint,
+        # the share the evidence.lint_only gate judges; ``rate`` keeps every resolution, so
+        # pre-bar ones (before 2026-11-16, mostly lint-only) weigh on it for good
+        "rate_since_bar": _rate(bar_lint, len(bar)),
         "waiver_rate": _rate(sum(e["evidence"] == "waiver" for e in events),
                              sum(1 for e in events if e["evidence"])),
         "rate": _rate(len(lint), len(validator)),
@@ -826,6 +832,7 @@ def headline(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "at": report["generated_at"],
         "false_resolve_rate": report["false_resolve"]["rate"],
+        "false_resolve_rate_since_bar": report["false_resolve"].get("rate_since_bar"),
         "reopen_rate": report["reopen"]["rate"],
         "recurrence_rate": report["recurrence"]["rate"],
         "recurrence_observed": report["recurrence"]["observed"],
