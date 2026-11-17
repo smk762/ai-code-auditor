@@ -686,3 +686,47 @@ def test_pack_rag_ingest_enabled_and_metadata(monkeypatch):
     unsigned = agent_pack.ingest_packs_to_rag([pack])
     assert unsigned["ingested"] is False and "INGEST_SHARED_SECRET" in unsigned["error"]
     assert len(posted) == 1  # nothing sent unsigned
+
+
+def test_status_update_patches_the_index_to_what_a_full_rebuild_gives(tmp_path: Path, monkeypatch):
+    import json
+
+    from auditor import agent_pack
+    from auditor.agent_pack import index_path, update_pack_status
+
+    for i in range(3):
+        write_pack(_mk_pack(f"pack-{i}"), tmp_path)
+    rebuild_index(tmp_path)
+    calls = []
+    monkeypatch.setattr(agent_pack, "rebuild_index", lambda *a, **k: calls.append(a))
+    update_pack_status(tmp_path, "pack-1", "claimed", "agent A")
+    assert calls == []  # a status change never re-reads every pack
+    patched = json.loads(index_path(tmp_path).read_text())
+    monkeypatch.undo()
+    full = rebuild_index(tmp_path)
+    for k in ("count", "status_counts", "kind_counts", "layers", "packs"):
+        assert patched[k] == full[k], k
+
+
+def test_concurrent_status_updates_lose_nothing(tmp_path: Path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from auditor.agent_pack import update_pack_status
+
+    ids = [f"pack-{i}" for i in range(12)]
+    for pid in ids:
+        write_pack(_mk_pack(pid), tmp_path)
+    rebuild_index(tmp_path)
+    with ThreadPoolExecutor(8) as ex:
+        list(ex.map(lambda pid: update_pack_status(tmp_path, pid, "claimed", "race"), ids))
+    assert {e["id"]: e["status"] for e in list_packs(tmp_path, limit=100)} == dict.fromkeys(ids, "claimed")
+
+
+def test_status_endpoint_sends_rag_after_responding(tmp_path: Path, monkeypatch):
+    write_pack(_mk_pack("pack-one"), tmp_path)
+    rebuild_index(tmp_path)
+    client = _client(tmp_path, monkeypatch)
+    sent = []
+    monkeypatch.setattr("auditor.agent_pack.refresh_pack_rag", lambda out, upd: sent.append(upd["status"]))
+    assert client.post("/audit/packs/pack-one/status", json={"status": "claimed"}).status_code == 200
+    assert sent == ["claimed"]  # still sent, as a background task
