@@ -173,7 +173,7 @@ def _git(cwd: Path, *a: str) -> None:
 
 def test_seeded_run_end_to_end(tmp_path: Path, monkeypatch) -> None:
     """A real mirror with a real test: the bar proves the fix and rejects the cosmetic control."""
-    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache: (Path(sys.executable), ""))
+    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache, extra=None: (Path(sys.executable), ""))
     repo = tmp_path / "mirror" / "calc"
     (repo / "src/pkg").mkdir(parents=True)
     (repo / "src/pkg/__init__.py").write_text("")

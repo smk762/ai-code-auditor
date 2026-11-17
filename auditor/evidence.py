@@ -167,7 +167,13 @@ def _pytest(root: Path, python: Path, files: list[str], timeout_s: int) -> tuple
 def python_repro(tree: Path, fresh_base: Callable[[], Path | None], tests: list[str], *, cache_dir: Path,
                  timeout_s: int = 120) -> ReproResult:
     """Run the patch's Python test files on the patched tree, then on dev with those files copied in."""
-    from auditor.validator import ensure_test_venv, project_root, stub_version_files
+    from auditor.validator import (
+        _has_project,
+        ensure_test_venv,
+        loose_test_deps,
+        project_root,
+        stub_version_files,
+    )
 
     res = ReproResult(tool="pytest")
     py_tests = [t for t in tests if t.endswith(".py") and (tree / t).is_file()]
@@ -178,14 +184,25 @@ def python_repro(tree: Path, fresh_base: Callable[[], Path | None], tests: list[
     by_root: dict[Path, list[str]] = {}
     for t in py_tests:
         by_root.setdefault(project_root(tree, t), []).append(t)
-    base = None
+    groups: list[tuple[Path, list[str], bool]] = []
     for root, files in sorted(by_root.items()):
-        label = str(root.relative_to(tree_r)) if root != tree_r else "."
+        if _has_project(root):
+            groups.append((root, files, False))
+        else:  # loose tests (#102): one run per directory, so one collection error doesn't sink the rest
+            per_dir: dict[str, list[str]] = {}
+            for f in files:
+                per_dir.setdefault(str(Path(f).parent), []).append(f)
+            groups += [(root, fs, True) for _, fs in sorted(per_dir.items())]
+    base = None
+    for root, files, loose in groups:
+        label = root_label = str(root.relative_to(tree_r)) if root != tree_r else "."
         runnable = [str((tree / f).resolve().relative_to(root)) for f in files
                     if not f.endswith("conftest.py") and re.search(r"(^|/)(test_[^/]*|[^/]*_test)\.py$", f)]
         if not runnable:
             continue
-        python, err = ensure_test_venv(root, cache_dir)
+        if loose:
+            label = str(Path(runnable[0]).parent) if label == "." else f"{label}/{Path(runnable[0]).parent}"
+        python, err = ensure_test_venv(root, cache_dir, loose_test_deps(root, runnable) if loose else None)
         if python is None:
             res.notes.append(f"{label}: test env did not build: {err[:200]}")
             continue
@@ -203,7 +220,7 @@ def python_repro(tree: Path, fresh_base: Callable[[], Path | None], tests: list[
         _copy_into(tree, base, material)
         stub_version_files(base_root)
         base_out, out_b = _pytest(base_root, python, runnable, timeout_s)
-        prefix = "" if label == "." else f"{label}/"
+        prefix = "" if root_label == "." else f"{root_label}/"
         res.patched.update({prefix + k: v for k, v in patched.items()})
         res.base.update({prefix + k: v for k, v in base_out.items()})
         uncollected = sorted(set(runnable) - {k.split("::")[0] for k in base_out})

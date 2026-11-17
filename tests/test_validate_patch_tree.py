@@ -30,7 +30,7 @@ def host_python(monkeypatch):
     """Use this interpreter (it has pytest) instead of building per-project venvs."""
     built: list[Path] = []
 
-    def fake(root, cache_dir):
+    def fake(root, cache_dir, extra=None):
         built.append(root)
         return Path(sys.executable), ""
 
@@ -163,7 +163,7 @@ def test_lint_stands_when_no_tests_can_run(tmp_path: Path, host_python, files, n
 
 
 def test_env_build_failure_falls_back_to_lint(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache: (None, "No matching distribution"))
+    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache, extra=None: (None, "No matching distribution"))
     _write(tmp_path, {"svc/requirements.txt": "nope==9", "svc/app/a.py": "X = 1\n"})
     r = validate_patch_tree(_Repo(), tmp_path, ["svc/app/a.py"])
     assert r.passed and r.tool == "lint_only" and "test env did not build" in r.raw_output
@@ -179,7 +179,7 @@ def test_non_python_patch_uses_repo_validator(tmp_path: Path, monkeypatch) -> No
 
 
 def test_missing_interpreter_is_an_env_gap(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache: (Path("no/such/python"), ""))
+    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache, extra=None: (Path("no/such/python"), ""))
     _write(tmp_path, {"svc/requirements.txt": "", "svc/app/a.py": "X = 1\n", "svc/tests/test_a.py": "def test_a(): pass\n"})
     r = validate_patch_tree(_Repo(), tmp_path, ["svc/app/a.py"])
     assert r.passed and r.tool == "lint_only" and "lacks" in r.raw_output
@@ -400,3 +400,55 @@ def test_version_stub_never_escapes_the_project(tmp_path: Path) -> None:
     _write(tmp_path, {"proj/pyproject.toml": '[tool.setuptools_scm]\nwrite_to = "../outside.py"\n'})
     assert validator.stub_version_files(tmp_path / "proj") == []
     assert not (tmp_path / "outside.py").exists()
+
+
+# ── loose tests: no project marker, test_*.py beside the code (argus-ci, #102) ──
+
+LOOSE_BASE = {
+    ".git/HEAD": "",
+    "data/answer.txt": "5\n",
+    "scripts/calc.py": "def add(a, b):\n    return a - b\n",
+    "scripts/test_calc.py": ("import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\n"
+                             "from calc import add\n\n"
+                             "def test_add():  # reads a path relative to the repo top, as argus-ci's tests do\n"
+                             "    assert add(2, 3) == int(Path('data/answer.txt').read_text())\n"),
+    "other/test_broken.py": "def test_broken():\n    assert False\n",
+}
+
+
+def test_loose_tests_run_from_the_repo_top_per_directory(tmp_path: Path, host_python) -> None:
+    _write(tmp_path, {**LOOSE_BASE, "scripts/calc.py": "def add(a, b):\n    return a + b\n"})
+    r = validate_patch_tree(_Repo(), tmp_path, ["scripts/calc.py"])
+    assert r.passed and r.tool == "pytest", r.raw_output
+    assert "tests passed: scripts" in r.raw_output  # other/ isn't touched, so its failing test never ran
+    assert host_python == [tmp_path.resolve()]
+
+
+def test_loose_test_failing_on_both_trees_does_not_count(tmp_path: Path, host_python) -> None:
+    base, patched = tmp_path / "base", tmp_path / "patched"
+    _write(base, LOOSE_BASE)
+    _write(patched, {**LOOSE_BASE, "scripts/calc.py": "def add(a, b):\n    return a - b  # touched\n"})
+    r = validate_patch_tree(_Repo(), patched, ["scripts/calc.py"], base_tree=lambda: base)
+    assert r.passed and r.tool == "pytest" and "fail on the base branch too" in r.raw_output
+
+
+def test_loose_code_with_no_test_beside_it_stays_lint_only(tmp_path: Path, host_python) -> None:
+    _write(tmp_path, {"tools/gen.py": "X = 1\n", "scripts/test_calc.py": "def test_x():\n    pass\n"})
+    r = validate_patch_tree(_Repo(), tmp_path, ["tools/gen.py"])
+    assert r.passed and r.tool == "lint_only" and "no test_*.py beside tools/gen.py" in r.raw_output
+
+
+def test_loose_test_deps_come_from_ci_and_known_imports(tmp_path: Path) -> None:
+    _write(tmp_path, {
+        ".git/HEAD": "",
+        ".github/workflows/self.yml": (
+            "      - run: uv run --no-project --with pyyaml python -m unittest scripts/test_a.py\n"
+            "      - run: pip install ruff==0.5.0 -r requirements-ci.txt -e .\n"
+            "      - run: uv pip install -e \".[${{ inputs.test-extras }}]\"\n"
+            "      - run: if [ -n \"$X\" ]; then uv pip install -e \".[${X}]\"; else uv pip install -e .; fi\n"),
+        "scripts/test_a.py": "import yaml\nimport requests\nfrom json import loads\n",
+    })
+    assert validator.ci_tool_deps(tmp_path) == ["pyyaml", "ruff==0.5.0"]
+    # yaml is already covered by CI's pyyaml; requests comes from the fixed import map
+    assert validator.loose_test_deps(tmp_path, ["scripts/test_a.py"]) == ["pyyaml", "ruff==0.5.0", "requests"]
+    assert validator.loose_tests(tmp_path, ["scripts/a.py", "nowhere/b.py"]) == {"scripts": ["scripts/test_a.py"]}
