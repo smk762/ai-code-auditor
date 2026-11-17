@@ -108,3 +108,61 @@ def test_retry_days_skips_packs_sent_recently_with_nothing_to_show(tmp_path) -> 
     again = rv.run(out, retry_days=7, **kw)
     assert again["skipped_recent"] == 1 and again["candidates"] == 0 and len(calls) == 1
     assert rv.run(out, **kw)["counts"] == {"unchanged": 1} and len(calls) == 2  # by hand: no wait
+
+
+def test_poster_waits_out_busy_slots_then_gives_up(monkeypatch) -> None:
+    import io
+    import urllib.error
+
+    calls, slept = [], []
+
+    def busy(code=429):
+        return urllib.error.HTTPError("u", code, "busy", {"Retry-After": "30"}, io.BytesIO(b'{"detail":"busy"}'))
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    replies = [busy(), busy(), _Resp(b'{"passed": true}')]
+
+    def urlopen(req, timeout):
+        calls.append(req)
+        r = replies.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    monkeypatch.setattr(rv.urllib.request, "urlopen", urlopen)
+    post = rv.api_poster("http://x", busy_wait_s=100, sleep=slept.append)
+    assert post({}) == {"passed": True} and slept == [30.0, 30.0] and len(calls) == 3
+
+    replies[:] = [busy()] * 10
+    slept.clear()
+    try:
+        rv.api_poster("http://x", busy_wait_s=45, sleep=slept.append)({})
+        raise AssertionError("should give up")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 429 and sum(slept) == 45
+    replies[:] = [busy(500)]
+    try:
+        rv.api_poster("http://x", busy_wait_s=100, sleep=slept.append)({})
+        raise AssertionError("a 500 is not busy")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 500
+
+
+def test_an_error_is_not_an_attempt(tmp_path) -> None:
+    repo, pr, _ = _repo(tmp_path)
+    out = tmp_path / "reports"
+    _pack(out, "pack-a", "resolved", "waiver")
+    (out / "trust_prs.json").write_text(__import__("json").dumps({"prs": [pr]}))
+
+    def post(body):
+        raise OSError("refused")
+
+    kw = {"post": post, "git_dirs": {"r": repo / ".git"}, "retry_days": 7}
+    assert rv.run(out, **kw)["counts"] == {"error": 1}
+    assert rv.run(out, **kw)["skipped_recent"] == 0  # retried on the next run
