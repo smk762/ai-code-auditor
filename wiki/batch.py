@@ -31,9 +31,23 @@ MAX_REQUESTS_PER_BATCH = 2000
 
 
 def request_id(prefix: str, params: dict[str, Any]) -> str:
-    """Stable id for these exact params (batch custom_ids allow [a-zA-Z0-9_-]{1,64})."""
-    digest = hashlib.sha1(json.dumps(params, sort_keys=True, default=str).encode()).hexdigest()[:20]
+    """Stable id for these exact params (batch custom_ids allow [a-zA-Z0-9_-]{1,64}).
+
+    A cache_control TTL is left out: it changes the price, not the reply, so retuning it must
+    not make stored results look new and get paid for again.
+    """
+    digest = hashlib.sha1(json.dumps(_without_cache_ttl(params), sort_keys=True,
+                                     default=str).encode()).hexdigest()[:20]
     return f"{prefix[:40]}-{digest}"
+
+
+def _without_cache_ttl(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: ({"type": v.get("type")} if k == "cache_control" and isinstance(v, dict)
+                    else _without_cache_ttl(v)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_without_cache_ttl(v) for v in value]
+    return value
 
 
 def estimate_usd(params: dict[str, Any], output_tokens: int, *, batch: bool = True) -> float:
