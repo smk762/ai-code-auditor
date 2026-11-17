@@ -319,6 +319,13 @@ def _build_parser() -> argparse.ArgumentParser:
     rv.add_argument("--timeout", type=int, default=300, help="validate_patch timeout per pack, seconds")
     rv.add_argument("--json", action="store_true", help="Print the full report as JSON")
 
+    tenv = sub.add_parser("test-env", help="Can validate_patch run each project's tests? Collects tests in the "
+                          "validator's own envs, per repo (no tests run); reports missing test deps")
+    tenv.add_argument("--repo", action="append", default=[], help="Only this repo (repeatable); others keep their last result")
+    tenv.add_argument("--workers", type=int, default=3, help="Repos checked in parallel")
+    tenv.add_argument("--json", action="store_true", help="Print the full report as JSON")
+    tenv.add_argument("--cached", action="store_true", help="Show the last report instead of re-checking")
+
     ev = sub.add_parser("eval", help="Reliability evals (#63)")
     ev_sub = ev.add_subparsers(dest="eval_command", required=True)
     evt = ev_sub.add_parser("trust", help="Gates for the trust upgrade: what passes, fails, lacks data, or isn't built")
@@ -673,6 +680,27 @@ def _run_eval_trust(args) -> None:
     print(f"exit: gates green two weeks running: {ex['gates_two_weeks']['met']} · "
           f"metrics not worse over 4 weeks: {ex['metrics_four_weeks']['met']} "
           f"({ex['metrics_four_weeks'].get('note') or ex['metrics_four_weeks'].get('worse')}) · epic done: {ex['met']}")
+
+
+def _run_test_env(args) -> None:
+    from auditor import test_env_readiness as ter
+
+    out = _output_dir_default()
+    rep = ter.load_report(out) if args.cached else ter.run(out, repos=args.repo or None, workers=args.workers)
+    if rep is None:
+        raise SystemExit("No test-env report yet; run `ai-audit test-env` first.")
+    if args.json:
+        print(json.dumps(rep, indent=2, default=str))
+        return
+    print(f"python {rep.get('python')} · node {rep.get('node') or '—'} · {rep.get('generated_at', '')[:16]}")
+    for name, r in rep["repos"].items():
+        if r.get("error"):
+            print(f"{name:22} ERROR  {r['error'][:120]}")
+        for p in r.get("projects") or []:
+            detail = (", ".join(p.get("missing") or []) or ((p.get("error") or "").strip().splitlines() or [""])[-1]
+                      or (f"{p['tests']} tests" if "tests" in p else ", ".join(p.get("checks") or [])))
+            print(f"{name:22} {p['kind']:6} {p['project']:28} {p['status']:14} {detail[:110]}")
+    print(f"\n{rep['summary']['by_status']}")
 
 
 def _run_trust(*, as_json: bool, cached: bool, history: bool, github: bool) -> None:
@@ -1599,6 +1627,8 @@ def main() -> None:
         _run_revalidate(args)
     elif args.command == "pack-savings":
         _run_pack_savings(as_json=args.json, cached=args.cached, history=args.history)
+    elif args.command == "test-env":
+        _run_test_env(args)
     elif args.command == "wiki":
         _run_wiki(args)
     elif args.command == "diff-audit":

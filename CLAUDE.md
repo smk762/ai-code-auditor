@@ -77,12 +77,12 @@ the same file are paired by title word overlap (`auditor/finding_match.py`). Pac
 `AI_AUDIT_LLM_PROMPT=v3` is opt-in until measured. `repo_review` in `config/prompts.yaml` is **not** what the scan uses.
 
 **validate_patch** (`auditor/validator.py`, `validate_patch_tree`) applies the patch to a clean `git archive` of the
-`dev` tip, never the live checkout. Each changed file maps to its nearest project: for `.py`, a dir with
+`dev` tip, never the live checkout. That tree gets its own `.git` with `HEAD` at the base and the base's tags (objects borrowed through alternates), so tests that read git history run as in CI. Each changed file maps to its nearest project: for `.py`, a dir with
 `pyproject.toml`, `setup.py`, `requirements.txt` or `tests/`; for TS/JS, the nearest `package.json`
 (`auditor/validate_node.py`). That project's tests or npm checks then run in a cached env built from its declared deps.
-Failures are compared against the unpatched tree, so only failures the patch introduced count. When nothing can run,
+Failures are compared against the unpatched tree, so only failures the patch introduced count; one of those that passes on a single rerun is reported as a flake, and tests that error on both trees are reported apart from ones that fail on both. When nothing can run,
 the result is `lint_only` (Python) or skipped (TS/JS), with a note saying why. A hatch-vcs or setuptools-scm version
-module gets a stub. The response names its base (`base_source`, `base_stale`, `behind_by`). A request's `base_ref` (#91) pins an older base for a fix that has already merged; it must be an ancestor of the `dev` tip, and both the patched and the "before" runs use it.
+module gets a stub. The response names its base (`base_source`, `base_stale`, `behind_by`). A request's `base_ref` (#91) pins an older base for a fix that has already merged; it must be an ancestor of the `dev` tip, and both the patched and the "before" runs use it. One test module that imports an undeclared package stops pytest's collection, so every patch to that project validates lint-only: `ai-audit test-env` (nightly, `auditor/test_env_readiness.py`) collects each project's tests in those same envs and reports the missing modules (`/audit/test-env.json`, Repos page).
 
 **Evidence bar** (`auditor/evidence.py`, #58). A pass resolves a pack only with evidence, else it becomes
 `unverified`, which is still open work. Bug, security and untyped finding packs need a test from the patch that fails
@@ -95,7 +95,7 @@ change is judged against it. `auditor/trust_eval.py` defines the gates: below it
 `insufficient`, never a pass. The exit criteria are every non-pending gate passing in each of the last two ISO weeks,
 with headline metrics not worse over 4 weekly snapshots. `auditor/eval_seeded.py` tests the evidence bar against
 planted bugs in real mirrors. These run nightly after the repo audit, in this order: pack GC, pack classes, class
-packs, revalidation, trust metrics, gates. The evidence gates judge the last 14 days of resolutions
+packs, test-env readiness, revalidation, trust metrics, gates. The evidence gates judge the last 14 days of resolutions
 (`GATE_WINDOW_DAYS`).
 
 **Finding classes** (#53, `auditor/finding_class.py`, `config/finding_classes.yaml`). The gold set quotes real

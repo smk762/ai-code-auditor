@@ -35,6 +35,7 @@ GET  /audit/runs/{run_id}/summary.json  Run summary with findings delta vs the p
 GET  /audit/findings.json             Filtered findings + severity × repo matrix for a run
 POST /audit/packs/gc                 Close stale finding packs as obsolete (auth; dry run unless ?dry_run=0)
 GET  /audit/trust/eval.json           Reliability gates and the epic's exit criteria (#63)
+GET  /audit/test-env.json             Test-env readiness: can validate_patch collect each project's tests
 GET  /audit/trust.json                Trust metrics (?history=1 for the trend); POST /audit/trust/refresh (auth)
 GET  /reports/mithrandir/LATEST.json  Atomic rest-session status for mithrandir (Jarrah)
 GET  /reports/mithrandir/LATEST.md    TTS-safe companion briefing for Holly
@@ -1086,6 +1087,18 @@ def post_pr_intel_refresh() -> JSONResponse:
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return JSONResponse(report)
+
+
+@app.get("/audit/test-env.json")
+def get_test_env_json() -> JSONResponse:
+    """Last test-env readiness report: per project, whether validate_patch can collect its tests
+    (``ai-audit test-env``, nightly). Reads the file; the check itself never runs in the API."""
+    from auditor.test_env_readiness import load_report
+
+    rep = load_report(_output_dir())
+    if rep is None:
+        raise HTTPException(status_code=404, detail="no test-env report yet; run `ai-audit test-env`")
+    return JSONResponse(rep)
 
 
 @app.get("/audit/pack-savings.json")

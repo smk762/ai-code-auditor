@@ -124,6 +124,10 @@ def run() -> None:
     from auditor.class_packs import run_quietly as class_packs
 
     logger.info("class packs: %s", class_packs(cfg.output_dir))
+    # Which projects validate_patch can run tests for (missing test deps make every fix lint-only).
+    from auditor.test_env_readiness import run_quietly as test_env
+
+    logger.info("test env: %s", test_env(cfg.output_dir))
     # Re-check merged fixes that were waived or left unverified, now the test envs may run them (#58).
     # Bounded per night; it only ever records stronger evidence. Before the metrics, which read it.
     from auditor.revalidate import run_quietly as revalidate

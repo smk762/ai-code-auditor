@@ -98,6 +98,43 @@ def test_failures_already_on_the_base_branch_dont_count(tmp_path: Path, host_pyt
     assert "== svc\nnew failures from this patch: tests/test_calc.py::test_add\n" in r.raw_output
 
 
+def test_a_failure_only_with_the_patch_that_passes_on_a_rerun_is_a_flake(tmp_path: Path, host_python) -> None:
+    # #97: argus-mask's mtime-ordered cache test failed once on an unrelated patch, then passed
+    marker = tmp_path / "ran_once"
+    files = {
+        "svc/requirements.txt": "",
+        "svc/app/calc.py": "def add(a, b):\n    return a + b\n",
+        "svc/tests/test_flaky.py": (f"from pathlib import Path\nM = Path({str(marker)!r})\n\n"
+                                    "def test_flaky():\n    first = not M.exists()\n    M.touch()\n"
+                                    "    assert not first\n"),
+    }
+    base, patched = tmp_path / "base", tmp_path / "patched"
+    _write(base, files)
+    _write(patched, {**files, "svc/app/calc.py": "def add(a, b):\n    \"\"\"Sum.\"\"\"\n    return a + b\n"})
+    # the patched run is the first (fails), then the base run and the rerun pass
+    r = validate_patch_tree(_Repo(), patched, ["svc/app/calc.py"], base_tree=lambda: base)
+    assert r.passed, r.raw_output
+    assert "passed on a rerun (flaky)" in r.raw_output and "tests/test_flaky.py::test_flaky" in r.raw_output
+
+
+def test_errors_on_both_trees_are_reported_apart_from_known_failures(tmp_path: Path, host_python) -> None:
+    files = {
+        "svc/requirements.txt": "",
+        "svc/app/calc.py": "def add(a, b):\n    return a + b\n",
+        "svc/tests/test_env.py": ("import pytest\n\n@pytest.fixture\ndef head():\n    raise RuntimeError('no HEAD')\n\n"
+                                  "def test_needs_head(head):\n    pass\n"),
+        "svc/tests/test_broken.py": "def test_known_broken():\n    assert False\n",
+    }
+    base, patched = tmp_path / "base", tmp_path / "patched"
+    _write(base, files)
+    _write(patched, {**files, "svc/app/calc.py": "def add(a, b):\n    \"\"\"Sum.\"\"\"\n    return a + b\n"})
+    r = validate_patch_tree(_Repo(), patched, ["svc/app/calc.py"], base_tree=lambda: base)
+    assert r.passed, r.raw_output
+    assert "1 test(s) error on the base branch too (likely the test env" in r.raw_output
+    assert "test_needs_head" in r.raw_output.split("error on the base branch too")[1].split("\n")[0]
+    assert "1 test(s) fail on the base branch too, not counted: tests/test_broken.py::test_known_broken" in r.raw_output
+
+
 def test_file_outside_any_project_gets_lint_only(tmp_path: Path, host_python) -> None:
     # monorepo root without a project; the file's service dir has no marker either
     _write(tmp_path, {"svc/requirements.txt": "", "voice/server.py": "X = 1\n"})
@@ -200,6 +237,27 @@ def test_ci_test_extras_are_installed_too(tmp_path: Path) -> None:
     assert validator.ci_test_extras(bare) == []
 
 
+def test_ci_extras_from_install_steps_and_all_extras(tmp_path: Path) -> None:
+    # argus-realms installs ".[server,dev]" in a step; argus-mint syncs --all-extras. Both left
+    # the venv without what the tests import (fastapi, typer, PIL), so every patch was lint-only.
+    pyproject = ('[project]\nname = "argus-mint"\ndependencies = ["pydantic>=2.7"]\n'
+                 '[project.optional-dependencies]\n'
+                 'cli = ["typer>=0.12"]\nframes = ["pillow>=11.0"]\nserver = ["fastapi>=0.110", "argus-mint[cli,frames]"]\n'
+                 'dev = ["pytest>=8.0"]\n')
+    step = tmp_path / "step"
+    _write(step, {"pyproject.toml": pyproject,
+                  ".github/workflows/ci.yml": "steps:\n  - run: uv venv && uv pip install -e \".[server,dev]\"\n"})
+    assert validator.ci_test_extras(step) == ["server", "dev"]
+    assert validator._declared_deps(step)[1] == ["pydantic>=2.7", "pytest>=8.0", "fastapi>=0.110",
+                                                 "typer>=0.12", "pillow>=11.0"]
+    sync = tmp_path / "sync"
+    _write(sync, {"pyproject.toml": pyproject,
+                  ".github/workflows/ci.yml": "steps:\n  - run: uv sync --locked --all-extras --python 3.12\n"})
+    assert validator.ci_test_extras(sync) == [validator.ALL_EXTRAS]
+    assert set(validator._declared_deps(sync)[1]) == {"pydantic>=2.7", "pytest>=8.0", "fastapi>=0.110",
+                                                      "typer>=0.12", "pillow>=11.0"}
+
+
 def test_venv_build_uses_a_writable_pip_cache(tmp_path: Path, monkeypatch) -> None:
     envs: list[dict] = []
 
@@ -282,6 +340,45 @@ def test_endpoint_validates_the_committed_tree_not_the_live_checkout(tmp_path: P
     assert body["passed"] and body["tool"] == "pytest", body
     assert host_python == [host_python[0]] and host_python[0].name == "svc"
     assert "wip" in (repo / "svc/app/calc.py").read_text()  # live checkout untouched
+
+
+def test_endpoint_tests_run_in_a_checkout_whose_head_is_the_base(tmp_path: Path, monkeypatch, host_python) -> None:
+    # #97: argus-mask's docs tests call `git rev-parse HEAD`, which errored in a bare archive export
+    repo = tmp_path / "mono"
+    _write(repo, {"svc/requirements.txt": "", "svc/app/calc.py": "def add(a, b):\n    return a + b\n"})
+    _git(repo, "init", "-q")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "first")
+    seen = tmp_path / "seen_head"
+    _write(repo, {"svc/tests/test_git.py": (
+        "import subprocess\nfrom pathlib import Path\n\n"
+        "def git(*a):\n    return subprocess.run(['git', *a], capture_output=True, text=True, check=True).stdout\n\n"
+        "def test_head_and_history():\n"
+        f"    Path({str(seen)!r}).write_text(git('rev-parse', 'HEAD').strip())\n"
+        "    assert len(git('rev-list', 'HEAD').split()) == 2\n"
+        "    assert git('diff', '--name-only').split() == ['svc/app/calc.py']\n")})
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "second")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True,
+                          check=True).stdout.strip()
+
+    class _RepoCfg:
+        name = "mono"
+        path = str(repo)
+
+    class _Cfg:
+        output_dir = str(tmp_path / "reports")
+        auth_mode = False
+        auth_code_env = "AI_AUDIT_AUTH_CODE"
+        repos = [_RepoCfg()]
+
+    monkeypatch.setattr("auditor.audit_api.load_ecosystem_config", lambda: _Cfg())
+    monkeypatch.setattr("auditor.repo_resolver.resolve_repo_path", lambda r: Path(r.path))
+    patch = ("--- a/svc/app/calc.py\n+++ b/svc/app/calc.py\n@@ -1,2 +1,3 @@\n def add(a, b):\n"
+             "+    \"\"\"Sum.\"\"\"\n     return a + b\n")
+    body = TestClient(app).post("/audit/validate_patch", json={"repo": "mono", "patch": patch}).json()
+    assert body["passed"] and body["tool"] == "pytest", body
+    assert seen.read_text() == head == body["base_sha"]
 
 
 def test_hatch_vcs_version_file_is_stubbed(tmp_path: Path, host_python) -> None:
