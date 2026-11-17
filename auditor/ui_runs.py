@@ -383,6 +383,8 @@ def findings_data(
         f["is_new"] = bool(d) and _key(f) in new_keys
 
     matrix: dict[str, dict[str, int]] = defaultdict(lambda: {s: 0 for s in SEVERITIES})
+    for r in run["scanned_repos"]:  # a scanned repo with no findings still gets its (all-zero) row
+        matrix[r]
     for f in current:
         matrix[f["repo"]][f["severity"]] = matrix[f["repo"]].get(f["severity"], 0) + 1
     facets = {

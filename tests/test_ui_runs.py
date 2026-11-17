@@ -157,6 +157,15 @@ def test_findings_history_drops_a_scanned_repo_with_no_findings(memdb) -> None:
     h = ui_runs.findings_data("r-2")["history"]
     assert h[-1]["by_repo"] == {"x": {"HIGH": 1}}
 
+def test_findings_matrix_lists_a_scanned_repo_with_no_findings(memdb) -> None:
+    with memdb() as s:
+        _run(s, "r-1", hours_ago=1, repos=("x", "y"))
+        _finding(s, "r-1", "a")
+    d = ui_runs.findings_data("r-1")
+    assert list(d["matrix"]) == ["x", "y"] and sum(d["matrix"]["y"].values()) == 0
+    assert d["facets"]["repos"] == ["x", "y"]
+
+
 def test_findings_unknown_run_and_empty_db(history, memdb) -> None:
     assert ui_runs.findings_data("nope") is None
     assert ui_runs.findings_data("y-1", change="new")["findings"] == []  # no baseline → nothing "new"

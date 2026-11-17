@@ -1,6 +1,6 @@
 # Local git mirrors for night conductor — Argus suite + shared deps.
 # Auto-synced at the start of each `ai-audit rest-run` (checkout default_branch).
-# mithrandir omitted (HTTP status handoff only).
+# mithrandir omitted (HTTP status handoff only); argus-docs omitted (generated output).
 
 mirror_root: /home/smk/mirrors
 default_branch: dev
@@ -39,6 +39,15 @@ mirrors:
   - name: argus-halo
     url: https://github.com/smk762/argus-halo.git
     path: /home/smk/mirrors/argus-halo
+  - name: argus-handbook
+    url: https://github.com/smk762/argus-handbook.git
+    path: /home/smk/mirrors/argus-handbook
+  - name: argus-herald
+    url: https://github.com/smk762/argus-herald.git
+    path: /home/smk/mirrors/argus-herald
+  - name: argus-iris
+    url: https://github.com/smk762/argus-iris.git
+    path: /home/smk/mirrors/argus-iris
   - name: argus-lens
     url: https://github.com/smk762/argus-lens.git
     path: /home/smk/argus-lens
@@ -60,6 +69,12 @@ mirrors:
   - name: argus-quarry
     url: https://github.com/smk762/argus-quarry.git
     path: /home/smk/mirrors/argus-quarry
+  - name: argus-realms
+    url: https://github.com/smk762/argus-realms.git
+    path: /home/smk/mirrors/argus-realms
+  - name: argus-retina
+    url: https://github.com/smk762/argus-retina.git
+    path: /home/smk/mirrors/argus-retina
   - name: argus-safelight
     url: https://github.com/smk762/argus-safelight.git
     path: /home/smk/mirrors/argus-safelight
@@ -78,3 +93,6 @@ mirrors:
   - name: voluptas
     url: https://github.com/smk762/voluptas.git
     path: /home/smk/mirrors/voluptas
+  - name: ai-code-auditor
+    url: https://github.com/smk762/ai-code-auditor.git
+    path: /home/smk/mirrors/ai-code-auditor

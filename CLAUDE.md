@@ -54,7 +54,8 @@ Config lives in `config/*.yaml`. Every key in `auditor/config.py` can be overrid
 
 ## Facts the code doesn't make obvious
 
-**Mirrors.** The scan set is every `smk762/argus-*` plus `agent-composer` and `voluptas`, under `/home/smk/<name>` or
+**Mirrors.** The scan set is every `smk762/argus-*` except `argus-docs` (generated output), plus `agent-composer`,
+`voluptas` and this repo (from its own mirror, never the working checkout), under `/home/smk/<name>` or
 `/home/smk/mirrors/<name>` (`config/repo_mirrors.yaml`). `ai-audit rest-run` syncs them to `dev` first, and
 `scripts/sync_repo_mirrors.sh` does it by hand. A mirror is fast-forwarded, or reset with a backup branch after an
 upstream rewrite, and a mirror with a unique local commit is never touched (`conductor/mirrors.py`). Mirrors only sync nightly, so `validate_patch` fetches `dev` itself (`auditor/validate_base.py`). SSHFS mounts
