@@ -18,6 +18,7 @@ from auditor.llm_client import LLMClient
 from auditor.locks import pipeline_lock
 from auditor.persistence import record_run_finish, record_run_start, store_findings, upsert_repo_run, write_checkpoint
 from auditor.repo_auditor import run_repo_audit
+from auditor.repo_resolver import head_commit, resolve_scan_root
 from auditor.reporter import write_nightly_repo_report, write_security_report
 from auditor.runtime import RunMetadata, require_auth, setup_logging, write_run_metadata
 from auditor.retry import with_retries
@@ -59,6 +60,11 @@ def run() -> None:
                     attempts += 1
                     units, findings = with_retries(lambda: run_repo_audit(repo, llm=llm), retries=3, base_delay_s=1.0)
                     meta.scanned_repos.append(repo.name)
+                    # The commit the scan read, so trust metrics only count findings from code
+                    # that could contain a fix (the mirrors lag dev until the nightly sync).
+                    code = head_commit(resolve_scan_root(repo))
+                    if code:
+                        meta.extra.setdefault("scanned_code", {})[repo.name] = code
                     meta.scanned_files += len({u.file_path for u in units})
                     meta.code_units += len(units)
                     all_findings.extend(findings)

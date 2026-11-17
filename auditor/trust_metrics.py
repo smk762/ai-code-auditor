@@ -177,6 +177,13 @@ class Scan:
     repo: str
     at: datetime
     findings: list[dict[str, Any]]  # {path, line, title, type}
+    # When the code this scan read was committed: the run's record, else the mirror's reflog.
+    # None means unknown, and the scan start stands in for it.
+    code_at: datetime | None = None
+
+    @property
+    def code_time(self) -> datetime:
+        return self.code_at or self.at
 
 
 def lookback_days() -> int:
@@ -225,9 +232,41 @@ def load_scans(session, *, since: datetime | None = None) -> list[Scan]:
         at = as_utc(run.started_at) if run is not None and run.started_at else as_utc(first_seen.get(run_id))
         if at is None:
             continue
-        scans.append(Scan(run_id=run_id, repo=repo, at=at, findings=findings))
+        code = (((run.metadata_json or {}).get("extra") or {}).get("scanned_code") or {}).get(repo) if run else None
+        code_at = _parse_ts((code or {}).get("committed_at"))
+        scans.append(Scan(run_id=run_id, repo=repo, at=at, findings=findings, code_at=code_at))
     scans.sort(key=lambda s: (s.at, s.run_id, s.repo))
     return scans
+
+
+def attach_code_times(scans: list[Scan], mirror_paths: dict[str, Path]) -> None:
+    """Fill ``code_at`` for scans that didn't record their commit, from the mirror's reflog: the
+    commit HEAD pointed at when the scan started. Left None when the reflog doesn't reach back."""
+    cache: dict[tuple[str, datetime], datetime | None] = {}
+    for s in scans:
+        path = mirror_paths.get(s.repo)
+        if s.code_at is not None or path is None or not (path / ".git").exists():
+            continue
+        key = (s.repo, s.at)
+        if key not in cache:
+            cache[key] = _reflog_commit_time(path, s.at)
+        s.code_at = cache[key]
+
+
+def _reflog_commit_time(path: Path, at: datetime) -> datetime | None:
+    stamp = at.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S +0000")
+    try:
+        # Not -q: it also hides "log for 'HEAD' only goes back to ...", where git answers with
+        # the oldest entry, which postdates the scan and so proves nothing.
+        r = subprocess.run(["git", "rev-parse", "--verify", f"HEAD@{{{stamp}}}"], cwd=path,
+                           capture_output=True, text=True, timeout=30, check=False)
+        if r.returncode != 0 or "only goes back" in r.stderr:
+            return None
+        t = subprocess.run(["git", "show", "-s", "--format=%cI", r.stdout.strip()], cwd=path,
+                           capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _parse_ts(t.stdout.strip()) if t.returncode == 0 else None
 
 
 def _same_issue(a_title: str, a_line: int, b_title: str, b_line: int) -> bool:
@@ -344,7 +383,9 @@ def recurrence_metric(packs: list[PackView], scans: list[Scan]) -> dict[str, Any
     file with the same or a reworded title, or a later scan reporting it. Each piece of
     evidence explains at most one resolution, best match first, so one new finding can't
     count as the return of several resolved packs. A resolution counts once a scan of its
-    repo started after it ("observed"); before that it is pending.
+    repo read code committed after it ("observed"); before that it is pending. Scans and the
+    packs they emit are dated by the code they read, not by when they ran: the mirrors lag
+    dev until the nightly sync, and a scan of older code can't show that a fix didn't hold.
 
     A recurrence is ``disputed`` when the pack was closed without a patch as already handled
     or not a bug (the agent and the scanner disagree), else ``regressed`` (a fix that didn't
@@ -358,6 +399,11 @@ def recurrence_metric(packs: list[PackView], scans: list[Scan]) -> dict[str, Any
             by_file[(p.repo, p.path)].append(p)
     scans_by_repo: dict[str, list[Scan]] = defaultdict(list)
     found_in: dict[tuple[str, str], list[tuple[Scan, dict[str, Any]]]] = defaultdict(list)
+    code_time = {(s.run_id, s.repo): s.code_time for s in scans}
+
+    def pack_seen(q: PackView) -> datetime | None:
+        return code_time.get((q.run_id, q.repo)) or q.detected_at
+
     for s in scans:
         scans_by_repo[s.repo].append(s)
         for f in s.findings:
@@ -375,14 +421,14 @@ def recurrence_metric(packs: list[PackView], scans: list[Scan]) -> dict[str, Any
         i = len(resolved)
         resolved.append((p, t))
         for q in linked.get(p.id, []):
-            if q.detected_at and q.detected_at > t:
+            if (seen := pack_seen(q)) and seen > t:
                 cands.append((2.0, i, ("pack", q.id), f"pack {q.id} (recurrence_of)"))
         for q in by_file.get((p.repo, p.path), []):
-            if (q.id != p.id and q.detected_at and q.detected_at > t and q.run_id != p.run_id
+            if (q.id != p.id and (seen := pack_seen(q)) and seen > t and q.run_id != p.run_id
                     and (sc := _match_score(p.title, p.line, q.title, q.line)) > 0):
                 cands.append((sc, i, ("pack", q.id), f"pack {q.id}: {q.title[:80]}"))
         for s, f in found_in.get((p.repo, p.path), []):
-            if s.at > t and (sc := _match_score(p.title, p.line, f["title"], f["line"])) > 0:
+            if s.code_time > t and (sc := _match_score(p.title, p.line, f["title"], f["line"])) > 0:
                 # the same finding in several later scans is one piece of evidence
                 cands.append((sc, i, ("scan", p.repo, f["path"], f["title"]), f"scan {s.run_id}: {f['title'][:80]}"))
     assigned: dict[int, str] = {}
@@ -398,7 +444,7 @@ def recurrence_metric(packs: list[PackView], scans: list[Scan]) -> dict[str, Any
     by_repo: dict[str, dict[str, int]] = defaultdict(lambda: {"observed": 0, "regressed": 0, "disputed": 0})
     for i, (p, t) in enumerate(resolved):
         evidence = assigned.get(i, "")
-        if not evidence and not any(s.at > t for s in scans_by_repo.get(p.repo, [])):
+        if not evidence and not any(s.code_time > t for s in scans_by_repo.get(p.repo, [])):
             pending += 1
             continue
         observed += 1
@@ -849,6 +895,7 @@ def build(output_dir: str | Path, *, session=None, refresh_github: bool = False,
         except Exception as exc:  # noqa: BLE001 — keep the cached list, say why
             logger.warning("agent PR refresh failed, using cache: %s", exc)
     paths = _mirror_paths(mirrors_path)
+    attach_code_times(scans, paths)
     git_log = mirror_git_log(paths)
     now_ = now or datetime.now(UTC)
     try:
