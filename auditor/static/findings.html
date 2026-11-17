@@ -197,10 +197,8 @@ function matrix(d) {
   }).join("");
   const prevSev = (s) => prev ? Object.values(prev).reduce((a, c) => a + (c[s] || 0), 0) : 0;
   const prevAll = prev ? Object.values(prev).reduce((a, c) => a + sum(c), 0) : 0;
-  const gone = prev ? Object.keys(prev).filter((r) => !d.matrix[r]) : [];
-  const goneRows = gone.map((r) => `<tr><th class="muted">${esc(r)}</th>${sevs.map((s) => `<td class="num zero">·${dl(prev[r][s] ? -prev[r][s] : 0, true)}</td>`).join("")}<td class="num"><b>0</b>${dl(-sum(prev[r]), true)}</td>${spark ? `<td class="spark">${sparkline(historySeries(d, r).map((p) => p.total))}</td>` : ""}</tr>`).join("");
   const foot = `<tr><th>All repos</th>${sevs.map((s) => `<td class="num"><b>${int(totals[s])}</b>${prev ? dl(totals[s] - prevSev(s), true) : ""}</td>`).join("")}<td class="num"><b>${int(d.total)}</b>${prev ? dl(d.total - prevAll) : ""}${resolvedNote(packWork(d, "").by_status.resolved)}</td>${spark ? `<td class="spark">${sparkline(historySeries(d, "").map((p) => p.total))}</td>` : ""}</tr>`;
-  return head + `<tbody>${body}${goneRows}${foot}</tbody>`;
+  return head + `<tbody>${body}${foot}</tbody>`;
 }
 
 // ── trend chart: stacked columns by severity, one per run ──────────────────

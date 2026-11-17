@@ -1,6 +1,7 @@
-# Night conductor scan set: all https://github.com/smk762/argus-* repos
-# plus shared deps the suite consumes (agent-composer, voluptas).
-# mithrandir is omitted (HTTP status handoff only).
+# Night conductor scan set: all https://github.com/smk762/argus-* repos except argus-docs
+# (the generated docs bundle this tool writes), plus shared deps the suite consumes
+# (agent-composer, voluptas) and this repo. mithrandir is omitted (HTTP status handoff only).
+# Keep in step with config/repo_mirrors.yaml (tests/test_repo_sets.py).
 # Prefer local checkouts under /home/smk/<name>; otherwise /home/smk/mirrors/<name>
 # (see config/repo_mirrors.yaml + scripts/sync_repo_mirrors.sh). Scan branch: dev.
 repos:
@@ -67,6 +68,27 @@ repos:
     provider: local
     subpath: ""
 
+  - name: argus-handbook
+    path: /home/smk/mirrors/argus-handbook
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-herald
+    path: /home/smk/mirrors/argus-herald
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-iris
+    path: /home/smk/mirrors/argus-iris
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
   - name: argus-lens
     path: /home/smk/argus-lens
     branch: dev
@@ -116,6 +138,20 @@ repos:
     provider: local
     subpath: ""
 
+  - name: argus-realms
+    path: /home/smk/mirrors/argus-realms
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  - name: argus-retina
+    path: /home/smk/mirrors/argus-retina
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
   - name: argus-safelight
     path: /home/smk/mirrors/argus-safelight
     branch: dev
@@ -154,6 +190,14 @@ repos:
 
   - name: voluptas
     path: /home/smk/mirrors/voluptas
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
+  # This repo, scanned from its own mirror (never the working checkout)
+  - name: ai-code-auditor
+    path: /home/smk/mirrors/ai-code-auditor
     branch: dev
     enabled: true
     provider: local
