@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from auditor.contracts import ValidationResult
+from auditor import validate_cache
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,7 @@ def ensure_node_modules(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
     with open(cache_dir / f".{entry.name}.lock", "w") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)  # one install per lockfile; others wait, then reuse it
         if (entry / ".ready").exists():
+            validate_cache.touch(entry)  # last use, for eviction
             return modules, ""
         shutil.rmtree(entry, ignore_errors=True)
         entry.mkdir(parents=True)
@@ -157,6 +159,7 @@ def ensure_node_modules(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
             return None, str(exc)
         (entry / ".ready").write_text(lock.name, encoding="utf-8")
         logger.info("installed node_modules %s for %s", entry.name, root)
+        validate_cache.evict_in_background(cache_dir)
         return modules, ""
 
 

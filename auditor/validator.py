@@ -17,6 +17,8 @@ from typing import Callable
 from auditor.config import RepoConfig
 from auditor.contracts import ValidationResult
 from auditor.repo_resolver import resolve_repo_path
+from auditor.proc import run as proc_run
+from auditor import validate_cache
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +138,7 @@ def _exec(
 ) -> ValidationResult:
     t0 = time.monotonic()
     try:
-        proc = subprocess.run(
+        proc = proc_run(
             cmd,
             cwd=cwd,
             capture_output=True,
@@ -513,6 +515,7 @@ def ensure_test_venv(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
     with open(cache_dir / f".{venv.name}.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # one build per env; others wait, then reuse it
         if (venv / ".ready").exists():
+            validate_cache.touch(venv)  # last use, for eviction
             return python, ""
         shutil.rmtree(venv, ignore_errors=True)
         reqs = cache_dir / f".{venv.name}.txt"
@@ -521,7 +524,7 @@ def ensure_test_venv(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
             subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, capture_output=True,
                            text=True, timeout=120)
             # pip's default cache is under HOME, which is / (unwritable) for the container's uid.
-            subprocess.run([str(python), "-m", "pip", "install", "-q", "--disable-pip-version-check",
+            proc_run([str(python), "-m", "pip", "install", "-q", "--disable-pip-version-check",
                             "-r", str(reqs)], check=True, capture_output=True, text=True,
                            timeout=VENV_BUILD_TIMEOUT_S,
                            env={**os.environ, "PIP_CACHE_DIR": str(cache_dir / ".pip-cache")})
@@ -533,6 +536,7 @@ def ensure_test_venv(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
             return None, str(exc)
         (venv / ".ready").write_text(key, encoding="utf-8")
         logger.info("built test venv %s for %s", venv.name, root)
+        validate_cache.evict_in_background(cache_dir)
         return python, ""
 
 
@@ -557,7 +561,7 @@ def _run_project_tests(root: Path, python: Path, timeout_s: int) -> tuple[str, V
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([*paths, str(root)]), "PYTHONDONTWRITEBYTECODE": "1"}
     t0 = time.monotonic()
     try:
-        proc = subprocess.run([str(python), "-m", "pytest", "-q", "--tb=short", "-rfE", "-p", "no:cacheprovider"],
+        proc = proc_run([str(python), "-m", "pytest", "-q", "--tb=short", "-rfE", "-p", "no:cacheprovider"],
                               cwd=root, env=env, capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         return "ran", ValidationResult(passed=False, tool="pytest", duration_ms=int((time.monotonic() - t0) * 1000),

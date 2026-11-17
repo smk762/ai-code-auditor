@@ -119,3 +119,33 @@ def test_slow_by_design_routes_are_not_counted(monkeypatch) -> None:
     assert "/audit/validate_patch" in audit_api.SLOW_BY_DESIGN
     routes = {getattr(r, "path", "") for r in audit_api.app.routes}
     assert audit_api.SLOW_BY_DESIGN <= routes  # a renamed route can't silently drop its exemption
+
+
+def test_validations_over_the_cap_get_429_not_a_queue(monkeypatch) -> None:
+    import threading
+
+    monkeypatch.setenv("AI_AUDIT_VALIDATE_MAX_CONCURRENT", "1")
+    monkeypatch.setattr(audit_api, "_validate_slots", None)
+    monkeypatch.delenv("AI_AUDIT_API_TOKEN", raising=False)
+    started, release = threading.Event(), threading.Event()
+
+    def slow(request):
+        started.set()
+        release.wait(10)
+        return audit_api.JSONResponse({"ok": True})
+
+    # Replace the endpoint body only; the route keeps its dependencies (auth, the slot).
+    route = next(r for r in audit_api.app.routes if getattr(r, "path", "") == "/audit/validate_patch")
+    monkeypatch.setattr(route.dependant, "call", slow)
+    client = TestClient(audit_api.app)
+    body = {"repo": "x", "patch": "p"}
+    first = threading.Thread(target=lambda: client.post("/audit/validate_patch", json=body))
+    first.start()
+    assert started.wait(5)
+    busy = client.post("/audit/validate_patch", json=body)
+    assert busy.status_code == 429 and busy.headers["Retry-After"] == "30"
+    release.set()
+    first.join(10)
+    started.clear()
+    release.set()
+    assert client.post("/audit/validate_patch", json=body).status_code == 200  # the slot came back
