@@ -177,6 +177,29 @@ def test_self_referencing_extras_expand_instead_of_installing_the_published_pack
                      "typer>=0.12", "pytest>=8.0"]  # expanded once each, the self-cycle cut
 
 
+def test_ci_test_extras_are_installed_too(tmp_path: Path) -> None:
+    # argus-forge's tests import typer (cli) and fastapi (server); its CI installs
+    # ".[dev,server,cli]" via argus-ci's python-ci.yml, but the venv only had dev (lint only).
+    _write(tmp_path, {
+        "pyproject.toml": ('[project]\nname = "argus-forge"\ndependencies = ["pydantic>=2.7"]\n'
+                           '[project.optional-dependencies]\n'
+                           'server = ["fastapi>=0.110"]\ncli = ["typer>=0.12"]\ngpu = ["torch"]\n'
+                           'dev = ["pytest>=8.0"]\n'),
+        ".github/workflows/ci.yml": ("jobs:\n  python:\n    uses: smk762/argus-ci/.github/workflows/python-ci.yml@v1\n"
+                                     "    with:\n      test-extras: \"dev,server,cli\"  # tests import typer\n"),
+    })
+    assert validator.ci_test_extras(tmp_path) == ["dev", "server", "cli"]
+    _, specs = validator._declared_deps(tmp_path)
+    assert specs == ["pydantic>=2.7", "pytest>=8.0", "fastapi>=0.110", "typer>=0.12"]  # not gpu
+
+    # A subproject finds its repo's workflows; a tree with none gets the default extras only.
+    _write(tmp_path, {"svc/pyproject.toml": '[project]\nname = "svc"\n'})
+    assert validator.ci_test_extras(tmp_path / "svc") == ["dev", "server", "cli"]
+    bare = tmp_path / "bare"
+    _write(bare, {".git/HEAD": "", "pyproject.toml": '[project]\nname = "bare"\n'})
+    assert validator.ci_test_extras(bare) == []
+
+
 def test_venv_build_uses_a_writable_pip_cache(tmp_path: Path, monkeypatch) -> None:
     envs: list[dict] = []
 

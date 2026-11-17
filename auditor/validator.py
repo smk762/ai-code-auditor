@@ -400,6 +400,9 @@ def _npm_summary(lines: list[str]) -> list[str]:
 _PROJECT_MARKERS = ("pyproject.toml", "setup.py", "requirements.txt")
 _REQUIREMENT_FILES = ("requirements.txt", "requirements-dev.txt", "requirements_dev.txt", "requirements-test.txt")
 _PYPROJECT_EXTRAS = ("dev", "test", "tests")
+# argus-ci's python-ci.yml installs `.[<test-extras>]` before pytest; a repo's CI names the extras
+# its tests need (argus-forge: "dev,server,cli"), so the venv installs the same ones.
+_CI_TEST_EXTRAS_RE = re.compile(r"^\s*test-extras:\s*[\"']?([A-Za-z0-9_,\s-]+?)[\"']?\s*(?:#.*)?$", re.MULTILINE)
 # Fatal-only lint (syntax errors, undefined names, bad comparisons): what flake8 calls the "E9,F63,F7,F82"
 # set. Style rules are left out on purpose, and --isolated ignores repo config that would add them.
 _RUFF_SELECT = "E9,F63,F7,F82"
@@ -425,8 +428,29 @@ def project_root(tree: Path, rel_path: str) -> Path:
         p = p.parent
 
 
+def ci_test_extras(root: Path) -> list[str]:
+    """Extras the repo's CI installs for its tests: every ``test-extras`` input in the nearest
+    ``.github/workflows`` at or above *root* (argus-ci's python-ci.yml). [] when none is set."""
+    for d in (root, *root.parents[:4]):  # a project dir is at most a few levels into its repo
+        wf = d / ".github" / "workflows"
+        if wf.is_dir():
+            found: list[str] = []
+            for f in sorted([*wf.glob("*.yml"), *wf.glob("*.yaml")]):
+                try:
+                    text = f.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                for m in _CI_TEST_EXTRAS_RE.finditer(text):
+                    found += [e.strip() for e in m.group(1).split(",") if e.strip()]
+            return list(dict.fromkeys(found))
+        if (d / ".git").exists():  # the repo's top, and it has no workflows
+            break
+    return []
+
+
 def _declared_deps(root: Path) -> tuple[list[Path], list[str]]:
-    """Requirement files and pyproject dependency specs (project + dev/test extras) of *root*."""
+    """Requirement files and pyproject dependency specs of *root*: the project's dependencies
+    plus its dev/test extras and the extras its CI installs for tests (:func:`ci_test_extras`)."""
     req_files = [root / n for n in _REQUIREMENT_FILES if (root / n).is_file()]
     specs: list[str] = []
     pyproject = root / "pyproject.toml"
@@ -440,7 +464,7 @@ def _declared_deps(root: Path) -> tuple[list[Path], list[str]]:
         extras = project.get("optional-dependencies") or {}
         own = _norm_name(str(project.get("name") or ""))
         specs += _expand_self_refs([str(s) for s in project.get("dependencies") or []], own, extras)
-        for name in _PYPROJECT_EXTRAS:
+        for name in dict.fromkeys([*_PYPROJECT_EXTRAS, *ci_test_extras(root)]):
             specs += _expand_self_refs([str(s) for s in extras.get(name) or []], own, extras, frozenset({name}))
     return req_files, list(dict.fromkeys(specs))
 
