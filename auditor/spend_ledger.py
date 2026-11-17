@@ -24,7 +24,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-# $ per 1M tokens: (input, output). Cache writes bill at 1.25x input, reads at 0.1x.
+# $ per 1M tokens: (input, output). Cache writes bill at 1.25x input (5-minute TTL) or 2x
+# (1-hour TTL); reads at 0.1x, except the models in CACHE_READ_MULT.
 PRICES: dict[str, tuple[float, float]] = {
     "claude-haiku-5-5": (0.10, 0.50),
     "claude-sonnet-5-5": (2.00, 10.00),
@@ -35,6 +36,11 @@ PRICES: dict[str, tuple[float, float]] = {
 }
 # wiki: generated repo wiki (ai-code-auditor#8), ~$20-30/mo with incremental rebuilds
 # classes: LLM finding classifier (#53); evals + backfill approved up to $5 on 2026-11-16
+CACHE_READ_MULT: dict[str, float] = {
+    "claude-sonnet-5-5": 0.05,
+    "claude-opus-5-5": 0.05,
+    "claude-fable-5-2": 0.025,
+}
 DEFAULT_LANE_CAPS = {"audit": 15.0, "audit_batch": 100.0, "conductor": 80.0, "wiki": 30.0, "classes": 5.0}
 DEFAULT_PATH = "index/llm_spend.db"
 
@@ -48,10 +54,13 @@ def bare_model(model: str) -> str:
 
 
 def cost_usd(model: str, input_tokens: int, output_tokens: int, *, cache_write: int = 0,
-             cache_read: int = 0, batch: bool = False) -> float:
-    pin, pout = PRICES.get(bare_model(model), (0.0, 0.0))
-    usd = (input_tokens * pin + cache_write * pin * 1.25 + cache_read * pin * 0.1
-           + output_tokens * pout) / 1e6
+             cache_read: int = 0, cache_write_1h: int = 0, batch: bool = False) -> float:
+    """*cache_write_1h* is the part of *cache_write* written with the 1-hour TTL."""
+    name = bare_model(model)
+    pin, pout = PRICES.get(name, (0.0, 0.0))
+    write_1h = min(cache_write_1h, cache_write)
+    usd = (input_tokens * pin + (cache_write - write_1h) * pin * 1.25 + write_1h * pin * 2.0
+           + cache_read * pin * CACHE_READ_MULT.get(name, 0.1) + output_tokens * pout) / 1e6
     return usd * 0.5 if batch else usd
 
 
@@ -94,10 +103,10 @@ class SpendLedger:
 
     # ── recording ────────────────────────────────────────────────────────────
     def record(self, lane: str, model: str, input_tokens: int, output_tokens: int, *,
-               cache_write: int = 0, cache_read: int = 0, batch: bool = False,
-               note: str = "") -> float:
+               cache_write: int = 0, cache_read: int = 0, cache_write_1h: int = 0,
+               batch: bool = False, note: str = "") -> float:
         usd = cost_usd(model, input_tokens, output_tokens, cache_write=cache_write,
-                       cache_read=cache_read, batch=batch)
+                       cache_read=cache_read, cache_write_1h=cache_write_1h, batch=batch)
         with self._lock:
             self._conn.execute(
                 "INSERT INTO spend VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -111,10 +120,14 @@ class SpendLedger:
                      note: str = "") -> float:
         """Record from an API usage object or dict (Anthropic field names)."""
         get = usage.get if isinstance(usage, dict) else (lambda k, d=0: getattr(usage, k, d))
+        split = get("cache_creation", None) or {}
+        write_1h = (split.get("ephemeral_1h_input_tokens") if isinstance(split, dict)
+                    else getattr(split, "ephemeral_1h_input_tokens", 0))
         return self.record(
             lane, model, int(get("input_tokens", 0) or 0), int(get("output_tokens", 0) or 0),
             cache_write=int(get("cache_creation_input_tokens", 0) or 0),
-            cache_read=int(get("cache_read_input_tokens", 0) or 0), batch=batch, note=note,
+            cache_read=int(get("cache_read_input_tokens", 0) or 0),
+            cache_write_1h=int(write_1h or 0), batch=batch, note=note,
         )
 
     def record_manual(self, lane: str, usd: float, note: str = "") -> None:

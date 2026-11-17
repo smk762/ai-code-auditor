@@ -33,6 +33,9 @@ Optional: `q=<keyword>` boosts matches, `status=open,claimed,in_progress` (defau
    evidence (see "Done means" in the brief): for bug and security packs, a test in the patch that **fails on `dev` and
    passes with the fix**. Otherwise the pack becomes `unverified` and `pack.reason` says what's missing;
    `"evidence_waiver": "<why no test can exercise it>"` resolves it anyway, recorded on the pack.
+   A **429** means the server's validation slots are full: wait `Retry-After` seconds and send the same
+   request again. Don't retry on a client timeout while a validation may still be running; it starts a
+   duplicate run.
 
 ```bash
 B=$AI_AUDIT_PUBLIC_BASE_URL   # real value in local .env

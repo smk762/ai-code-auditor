@@ -155,6 +155,7 @@ def test_ensure_test_venv_returns_an_absolute_path(tmp_path: Path, monkeypatch) 
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(validator.subprocess, "run", fake_run)
+    monkeypatch.setattr(validator, "proc_run", fake_run)
     monkeypatch.chdir(tmp_path)
     _write(tmp_path, {"svc/requirements.txt": ""})
     py, _ = validator.ensure_test_venv(tmp_path / "svc", Path("reports/_validate_venvs"))
@@ -187,6 +188,7 @@ def test_venv_build_uses_a_writable_pip_cache(tmp_path: Path, monkeypatch) -> No
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(validator.subprocess, "run", fake_run)
+    monkeypatch.setattr(validator, "proc_run", fake_run)
     monkeypatch.setenv("HOME", "/")
     _write(tmp_path, {"svc/requirements.txt": "httpx\n"})
     validator.ensure_test_venv(tmp_path / "svc", tmp_path / "cache")
@@ -203,6 +205,7 @@ def test_ensure_test_venv_builds_once_per_deps(tmp_path: Path, monkeypatch) -> N
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(validator.subprocess, "run", fake_run)
+    monkeypatch.setattr(validator, "proc_run", fake_run)
     proj = tmp_path / "svc"
     _write(proj, {"requirements.txt": "httpx\n-e .\n",
                   "pyproject.toml": '[project]\nname="s"\ndependencies=["fastapi"]\n'

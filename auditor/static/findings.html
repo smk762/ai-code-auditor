@@ -354,7 +354,7 @@ function agentPrompt(packs, total) {
     `2. Claim it: curl -s -X POST ${base}/audit/packs/<id>/status -H 'Content-Type: application/json' ${auth} -d '{"status":"claimed"}'`,
     `3. Check the finding against the current code. If it is wrong or already fixed, set status "wontfix" (or "resolved") with a note saying why, and move on.`,
     `4. Fix it, with a test where one fits. Packs in the same file may be one fix; claim them all.`,
-    `5. Validate: POST ${base}/audit/validate_patch {"repo": "<repo>", "patch": "<unified diff>", "pack_id": "<id>"}. A pass marks the pack resolved; on a fail, fix and re-run.`,
+    `5. Validate: POST ${base}/audit/validate_patch {"repo": "<repo>", "patch": "<unified diff>", "pack_id": "<id>"}. A pass marks the pack resolved; on a fail, fix and re-run. A 429 means the validator is busy: wait Retry-After seconds and resend.`,
     ``,
     `Packs, most severe first:`,
     ...packs.map((pk) => `- ${pk.id} · ${pk.severity} ${pk.type} · ${pk.repo}/${pk.path}${pk.line ? ":" + pk.line : ""} — ${pk.title}`),

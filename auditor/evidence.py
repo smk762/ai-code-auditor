@@ -39,6 +39,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from auditor.proc import run as proc_run
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +154,7 @@ def _pytest(root: Path, python: Path, files: list[str], timeout_s: int) -> tuple
     paths = [str(root / "src")] if (root / "src").is_dir() else []
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([*paths, str(root)]), "PYTHONDONTWRITEBYTECODE": "1"}
     try:
-        proc = subprocess.run([str(python), "-m", "pytest", "-q", "-rA", "--tb=line", "-p", "no:cacheprovider", *files],
+        proc = proc_run([str(python), "-m", "pytest", "-q", "-rA", "--tb=line", "-p", "no:cacheprovider", *files],
                               cwd=root, env=env, capture_output=True, text=True, timeout=timeout_s, check=False)
     except subprocess.TimeoutExpired:
         return {}, f"timed out after {timeout_s}s"

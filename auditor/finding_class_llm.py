@@ -84,7 +84,10 @@ def build_requests(rows: list[dict[str, Any]], model: str, system: str) -> list[
         idx = list(range(start, min(start + CHUNK, len(rows))))
         user = "Findings:\n" + "\n".join(_item(k, rows[i]) for k, i in enumerate(idx))
         params = {
-            "model": model, "max_tokens": 4000, "system": system,
+            # The frozen system prompt is the same for every chunk: cache it (1h, batch order).
+            "model": model, "max_tokens": 4000,
+            "system": [{"type": "text", "text": system,
+                        "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
             "messages": [{"role": "user", "content": user}],
             "output_config": {"effort": "low"},
         }

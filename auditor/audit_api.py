@@ -1174,7 +1174,47 @@ class _ValidateRequest(BaseModel):
     timeout_s: int = 120
 
 
-@app.post("/audit/validate", dependencies=[Depends(_require_mutating_auth)])
+# ── validation slots ─────────────────────────────────────────────────────────
+# validate_patch runs a project's tests twice (patched and base) plus the repro, for minutes. Past
+# a few at once they starve each other and the thread pool every other route shares, and agents
+# that time out and retry stack duplicates behind them. Over the cap the API answers 429 with
+# Retry-After instead of queueing (a queued request still holds a thread).
+VALIDATE_RETRY_AFTER_S = 30
+_validate_slots_lock = threading.Lock()
+_validate_slots: threading.BoundedSemaphore | None = None
+
+
+def validate_max_concurrent() -> int:
+    try:
+        return max(1, int(os.getenv("AI_AUDIT_VALIDATE_MAX_CONCURRENT", "3")))
+    except ValueError:
+        return 3
+
+
+def _slots() -> threading.BoundedSemaphore:
+    global _validate_slots
+    with _validate_slots_lock:
+        if _validate_slots is None:
+            _validate_slots = threading.BoundedSemaphore(validate_max_concurrent())
+        return _validate_slots
+
+
+def _validation_slot():
+    slots = _slots()
+    if not slots.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail=(f"{validate_max_concurrent()} validations are already running. Retry in "
+                    f"{VALIDATE_RETRY_AFTER_S}s; the patch was not applied."),
+            headers={"Retry-After": str(VALIDATE_RETRY_AFTER_S)},
+        )
+    try:
+        yield
+    finally:
+        slots.release()
+
+
+@app.post("/audit/validate", dependencies=[Depends(_require_mutating_auth), Depends(_validation_slot)])
 def validate_repo(request: _ValidateRequest) -> JSONResponse:
     """Run the test/lint suite for a configured repository.
 
@@ -1538,7 +1578,7 @@ def evidence_bar_enabled() -> bool:
     return enabled()
 
 
-@app.post("/audit/validate_patch", dependencies=[Depends(_require_mutating_auth)])
+@app.post("/audit/validate_patch", dependencies=[Depends(_require_mutating_auth), Depends(_validation_slot)])
 def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
     """Apply *patch* to a temp copy of *repo* and run its test/lint suite.
 
