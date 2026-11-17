@@ -183,3 +183,45 @@ def test_pin_base_needs_a_git_mirror(tmp_path) -> None:
     (tmp_path / "plain").mkdir()
     with pytest.raises(BaseRefError, match="plain copy"):
         pin_base(resolve_base(tmp_path / "plain"), "dev", tmp_path / "plain")
+
+
+# ── the exported tree has a git HEAD (#97) ─────────────────────────────────────
+
+def test_export_has_head_at_the_base_and_its_history_without_touching_the_mirror(repos, tmp_path) -> None:
+    _, mirror, pusher = repos
+    first = _git(pusher, "rev-parse", "HEAD")
+    _git(pusher, "tag", "-a", "v0.1.0", "-m", "v0.1.0")  # annotated, pushed after the mirror's sync
+    tip = _merge_upstream(pusher)
+    _git(pusher, "tag", "v9-elsewhere", first)
+    _git(pusher, "checkout", "-q", "-b", "side")
+    _git(pusher, "tag", "v-off-dev", _commit(pusher, "svc/app/side.py", "S = 1\n"))
+    _git(pusher, "push", "-q", "origin", "--tags")
+    before = _snapshot(mirror)
+    base = resolve_base(mirror)
+    tree = tmp_path / "tree"
+    export_tree(base, mirror, tree)
+    assert _git(tree, "rev-parse", "HEAD") == tip
+    assert _git(tree, "rev-list", "HEAD").split() == [tip, first]  # history up to the base is reachable
+    assert _git(tree, "status", "--porcelain") == ""
+    assert _git(tree, "describe", "--tags", "--long", "--match", "v0*", "HEAD").startswith("v0.1.0-1-g")
+    assert sorted(_git(tree, "tag").split()) == ["v0.1.0", "v9-elsewhere"]  # not the tag off dev
+    (tree / "svc/app/old.py").write_text("OLD = 9\n")
+    assert _git(tree, "diff", "--name-only") == "svc/app/old.py"  # a patch shows as a working-tree change
+    assert _snapshot(mirror) == before
+
+
+def test_subtree_export_head_sits_on_the_base(repos, tmp_path) -> None:
+    _, mirror, pusher = repos
+    tip = _merge_upstream(pusher)
+    base = resolve_base(mirror / "svc")
+    tree = tmp_path / "tree"
+    export_tree(base, mirror / "svc", tree)
+    assert _git(tree, "rev-parse", "HEAD^") == tip
+    assert _git(tree, "status", "--porcelain") == "" and (tree / "app/new.py").exists()
+
+
+def test_plain_copy_gets_no_repository(tmp_path) -> None:
+    (tmp_path / "plain").mkdir()
+    (tmp_path / "plain/a.py").write_text("A = 1\n")
+    export_tree(resolve_base(tmp_path / "plain"), tmp_path / "plain", tmp_path / "tree")
+    assert (tmp_path / "tree/a.py").exists() and not (tmp_path / "tree/.git").exists()

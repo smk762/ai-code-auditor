@@ -410,6 +410,7 @@ VENV_BUILD_TIMEOUT_S = 900
 _ENV_GAP_RE = re.compile(r"\b(ModuleNotFoundError|ImportError)\b")
 _RESULT_COUNTS_RE = re.compile(r"\b\d+ (passed|failed)\b")
 _FAILED_ID_RE = re.compile(r"^(?:FAILED|ERROR) (\S+)", re.M)
+_ERRORED_ID_RE = re.compile(r"^ERROR (\S+)", re.MULTILINE)
 
 
 def project_root(tree: Path, rel_path: str) -> Path:
@@ -574,18 +575,21 @@ def _lint_files(tree: Path, files: list[str], timeout_s: int) -> ValidationResul
     return _exec([sys.executable, "-m", "py_compile", *files], cwd=tree, tool="lint_only", timeout_s=timeout_s)
 
 
-def _run_project_tests(root: Path, python: Path, timeout_s: int) -> tuple[str, ValidationResult]:
+def _run_project_tests(root: Path, python: Path, timeout_s: int,
+                       only: list[str] | None = None) -> tuple[str, ValidationResult]:
     """Run *root*'s tests. Returns ``(outcome, result)``: ``ran``, ``no_tests`` or ``env_gap``.
 
     ``env_gap``: collection failed on a missing module, so the env, not the patch, is the
-    problem (a dependency the project doesn't declare, such as torch from a base image)."""
+    problem (a dependency the project doesn't declare, such as torch from a base image).
+    *only* limits the run to those test ids (a rerun of suspected flakes)."""
     import os
 
     paths = [str(root / "src")] if (root / "src").is_dir() else []
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([*paths, str(root)]), "PYTHONDONTWRITEBYTECODE": "1"}
     t0 = time.monotonic()
     try:
-        proc = proc_run([str(python), "-m", "pytest", "-q", "--tb=short", "-rfE", "-p", "no:cacheprovider"],
+        proc = proc_run([str(python), "-m", "pytest", "-q", "--tb=short", "-rfE", "-p", "no:cacheprovider",
+                         *(["--", *only] if only else [])],
                               cwd=root, env=env, capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         return "ran", ValidationResult(passed=False, tool="pytest", duration_ms=int((time.monotonic() - t0) * 1000),
@@ -770,7 +774,11 @@ def _against_base(
     root: Path, tree: Path, base_tree: "Callable[[], Path | None]", python: Path, timeout_s: int,
     res: ValidationResult, label: str, notes: list[str],
 ) -> ValidationResult:
-    """Re-judge a failing run by what the patch broke: failures also present without it don't count."""
+    """Re-judge a failing run by what the patch broke: failures also present without it don't count.
+
+    A test that fails only with the patch is run once more on the patched tree, and one that then
+    passes is a flake, not the patch's (#97). Tests that *error* on both trees are reported apart
+    from ones that fail on both: an error at setup usually means the test env, not the repo."""
     patched = _failed_ids(res.raw_output)
     base = base_tree()
     if base is None or not patched:
@@ -782,12 +790,29 @@ def _against_base(
     outcome, base_res = _run_project_tests(base_root, python, timeout_s)
     if outcome != "ran":
         return res
+    duration = res.duration_ms + base_res.duration_ms
     already = _failed_ids(base_res.raw_output)
     new = sorted(patched - already)
+    flaky: list[str] = []
+    if new:
+        r_outcome, rerun = _run_project_tests(root, python, timeout_s, only=new)
+        duration += rerun.duration_ms
+        if r_outcome == "ran" and rerun.passed:
+            flaky, new = new, []
+        elif r_outcome == "ran" and (still := _failed_ids(rerun.raw_output)):
+            flaky, new = sorted(set(new) - still), sorted(set(new) & still)
     if new:
         res.raw_output = (f"new failures from this patch: {', '.join(new)}\n" + res.raw_output)[-_OUTPUT_LIMIT:]
         return res
-    notes.append(f"{label}: {len(patched)} test(s) fail on the base branch too, not counted: "
-                 f"{', '.join(sorted(patched))[:400]}")
-    return ValidationResult(passed=True, tool="pytest", duration_ms=res.duration_ms + base_res.duration_ms,
-                            errors=[], raw_output=res.raw_output)
+    if flaky:
+        notes.append(f"{label}: {len(flaky)} test(s) failed only with the patch but passed on a rerun (flaky), "
+                     f"not counted: {', '.join(flaky)[:400]}")
+    both = patched & already
+    errored = both & set(_ERRORED_ID_RE.findall(res.raw_output)) & set(_ERRORED_ID_RE.findall(base_res.raw_output))
+    if errored:
+        notes.append(f"{label}: {len(errored)} test(s) error on the base branch too (likely the test env, "
+                     f"not the repo), not counted: {', '.join(sorted(errored))[:400]}")
+    if failed := both - errored:
+        notes.append(f"{label}: {len(failed)} test(s) fail on the base branch too, not counted: "
+                     f"{', '.join(sorted(failed))[:400]}")
+    return ValidationResult(passed=True, tool="pytest", duration_ms=duration, errors=[], raw_output=res.raw_output)
