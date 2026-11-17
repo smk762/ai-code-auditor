@@ -81,7 +81,7 @@ the same file are paired by title word overlap (`auditor/finding_match.py`). Pac
 (`auditor/validate_node.py`). That project's tests or npm checks then run in a cached env built from its declared deps.
 Failures are compared against the unpatched tree, so only failures the patch introduced count; one of those that passes on a single rerun is reported as a flake, and tests that error on both trees are reported apart from ones that fail on both. When nothing can run,
 the result is `lint_only` (Python) or skipped (TS/JS), with a note saying why. A hatch-vcs or setuptools-scm version
-module gets a stub. The response names its base (`base_source`, `base_stale`, `behind_by`). A request's `base_ref` (#91) pins an older base for a fix that has already merged; it must be an ancestor of the `dev` tip, and both the patched and the "before" runs use it.
+module gets a stub. The response names its base (`base_source`, `base_stale`, `behind_by`). A request's `base_ref` (#91) pins an older base for a fix that has already merged; it must be an ancestor of the `dev` tip, and both the patched and the "before" runs use it. One test module that imports an undeclared package stops pytest's collection, so every patch to that project validates lint-only: `ai-audit test-env` (nightly, `auditor/test_env_readiness.py`) collects each project's tests in those same envs and reports the missing modules (`/audit/test-env.json`, Repos page).
 
 **Evidence bar** (`auditor/evidence.py`, #58). A pass resolves a pack only with evidence, else it becomes
 `unverified`, which is still open work. Bug, security and untyped finding packs need a test from the patch that fails

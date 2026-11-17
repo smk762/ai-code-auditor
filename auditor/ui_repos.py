@@ -171,6 +171,23 @@ def _github_slugs() -> dict[str, str]:
     return out
 
 
+def _test_env_by_repo(out_dir: Path) -> dict[str, dict[str, Any]] | None:
+    """Per repo from the last test-env report: projects ready vs. not, and what's missing."""
+    from auditor.test_env_readiness import BAD, load_report
+
+    rep = load_report(out_dir)
+    if rep is None:
+        return None
+    out = {}
+    for name, r in (rep.get("repos") or {}).items():
+        projects = r.get("projects") or []
+        bad = [{"project": p["project"], "status": p["status"], "missing": p.get("missing") or []}
+               for p in projects if p["status"] in BAD]
+        out[name] = {"projects": len(projects), "ready": sum(p["status"] == "ready" for p in projects),
+                     "failing": bad, "error": r.get("error") or "", "at": rep.get("generated_at")}
+    return out
+
+
 def repos_data(output_dir: str | Path) -> dict[str, Any]:
     """One card per enabled repo. Each source degrades on its own (listed in ``errors``)."""
     from auditor.config import load_ecosystem_config
@@ -197,6 +214,7 @@ def repos_data(output_dir: str | Path) -> dict[str, Any]:
     entries = _try("packs", lambda: _pack_entries(out_dir), [])
     work = _try("pr intel", lambda: _github_work(out_dir), None)
     slugs = _try("mirror slugs", _github_slugs, {})
+    test_env = _try("test env", lambda: _test_env_by_repo(out_dir), None)
 
     packs: dict[str, Counter] = defaultdict(Counter)
     open_high: Counter = Counter()
@@ -233,6 +251,8 @@ def repos_data(output_dir: str | Path) -> dict[str, Any]:
             "packs": {st: packs[repo.name].get(st, 0) for st in PACK_STATUSES} | {"open_high": open_high[repo.name]},
             "violations": violations.get(repo.name, 0) if violations is not None else None,
             "wiki": (out_dir / "wiki" / repo.name / "INDEX.json").is_file(),
+            # None: the check hasn't run (or skipped this repo); see auditor/test_env_readiness.py
+            "test_env": (test_env or {}).get(repo.name),
             # None: PR intel hasn't run, or failed for this repo (unknown, not zero)
             "github": (None if work is None or repo.name in work["failed"] else
                        work["by_repo"].get(repo.name) or {"prs": {"open": 0, "blocked": 0},
