@@ -410,11 +410,12 @@ def findings_data(
         pack_matrix = {}
         for f in current:
             st = (f.get("pack") or {}).get("status") or "none"
-            cell = pack_matrix.setdefault(f["repo"], {"by_status": {}, "resolved_by_severity": {}})
+            cell = pack_matrix.setdefault(f["repo"], {"by_status": {}, "resolved_by_severity": {},
+                                                      "open_by_severity": {}})
             cell["by_status"][st] = cell["by_status"].get(st, 0) + 1
-            if st == "resolved":
-                rs = cell["resolved_by_severity"]
-                rs[f["severity"]] = rs.get(f["severity"], 0) + 1
+            if st in ("resolved", "open"):  # open: what the page's default agent prompt picks from
+                bucket = cell[f"{st}_by_severity"]
+                bucket[f["severity"]] = bucket.get(f["severity"], 0) + 1
         pack_matrix = dict(sorted(pack_matrix.items()))
     ps_set = {x.strip().lower() for x in pack_status.split(",") if x.strip()}
     sev_set = {x.strip().upper() for x in severity.split(",") if x.strip()}
