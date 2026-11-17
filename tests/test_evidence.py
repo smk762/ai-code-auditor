@@ -329,3 +329,44 @@ def test_trust_metrics_count_evidence_kinds() -> None:
     ]))
     assert m["by_evidence"] == {"repro": 1, "waiver": 1} and m["waiver_rate"] == 0.5
     assert m["lint_only"] == 2  # a waived lint-only resolution still counts as lint-only
+
+
+def _head(repo: Path) -> str:
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
+def test_endpoint_validates_a_merged_fix_at_an_older_base(mono) -> None:
+    """#91: once the fix is on dev the patch no longer applies at the tip; base_ref pins the
+    commit before it, the patch applies there, and the "before" run uses that commit too."""
+    from auditor.agent_pack import load_pack
+
+    repo = Path(mono["out"]).parent / "mono"
+    before = _head(repo)
+    (repo / "svc/app/calc.py").write_text((repo / "svc/app/calc.py").read_text().replace("a - b  # bug", "a + b"))
+    _git(repo, "commit", "-qam", "fix merged")
+
+    at_tip = _post(patch=FIX + NEW_TEST, pack_id=mono["pack"])
+    assert not at_tip["patch_applied"] and at_tip["skipped_reason"] == "patch did not apply"
+
+    body = _post(patch=FIX + NEW_TEST, pack_id=mono["pack"], base_ref=before)
+    assert body["patch_applied"] and body["passed"], body
+    assert body["base_ref"] == before and body["base_sha"] == before and body["base_source"] == "pinned"
+    assert body["pack"]["status"] == "resolved" and body["pack"]["evidence"] == "repro", body["pack"]
+    ev = load_pack(mono["out"], mono["pack"])["verification"]["evidence"]
+    assert ev["base_sha"] == before and ev["base_ref"] == before
+    assert ev["repro"]["base"] == {"svc/tests/test_calc.py::test_add": "failed"}
+
+
+def test_endpoint_refuses_a_base_ref_off_dev(mono) -> None:
+    repo = Path(mono["out"]).parent / "mono"
+    _git(repo, "checkout", "-qb", "side")
+    (repo / "svc/app/side.py").write_text("X = 1\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "side")
+    side = _head(repo)
+    _git(repo, "checkout", "-q", "-")
+    client = TestClient(app)
+    for ref, why in ((side, "not an ancestor"), ("--output=/tmp/x", "invalid git ref"), ("nope", "not a commit")):
+        resp = client.post("/audit/validate_patch", json={"repo": "mono", "patch": FIX, "base_ref": ref})
+        assert resp.status_code == 400 and why in resp.json()["detail"], (ref, resp.text)

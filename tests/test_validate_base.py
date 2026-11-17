@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from auditor import validate_base
-from auditor.validate_base import export_tree, resolve_base, staleness
+from auditor.validate_base import BaseRefError, export_tree, pin_base, resolve_base, staleness
 
 ENV_CFG = ["-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
 
@@ -132,3 +132,54 @@ def test_staleness_against_the_merge_poll_tip(repos, tmp_path, monkeypatch) -> N
     assert staleness(old, "m", state_path=state) == {"base_stale": True, "dev_tip": tip, "behind_by": 1}
     monkeypatch.setenv("AI_AUDIT_VALIDATE_FETCH", "1")
     assert staleness(resolve_base(mirror), "m", state_path=state) == {"base_stale": False, "dev_tip": tip}
+
+
+# ── a pinned base (#91) ──────────────────────────────────────────────────────
+
+def test_pin_base_moves_back_to_an_ancestor_of_dev(repos, tmp_path) -> None:
+    _, mirror, pusher = repos
+    old = _git(pusher, "rev-parse", "HEAD")
+    _merge_upstream(pusher)
+    tip = resolve_base(mirror)
+    pinned = pin_base(tip, old, mirror)
+    assert pinned.sha == old and pinned.ref == old and pinned.source == "pinned" and not pinned.fresh
+    assert pinned.git_dir == tip.git_dir
+    export_tree(pinned, mirror, tmp_path / "tree")
+    assert (tmp_path / "tree/svc/app/old.py").exists() and not (tmp_path / "tree/svc/app/new.py").exists()
+    assert pin_base(tip, tip.sha, mirror).sha == tip.sha  # the tip itself is allowed
+
+
+def test_pin_base_finds_a_commit_merged_after_the_nightly_sync_without_touching_the_mirror(repos) -> None:
+    _, mirror, pusher = repos
+    mid = _merge_upstream(pusher)  # the mirror never saw it; the dev fetch brings it into the cache
+    _commit(pusher, "svc/app/later.py", "L = 3\n")
+    _git(pusher, "push", "-q", "origin", "dev")
+    before = _snapshot(mirror)
+    assert pin_base(resolve_base(mirror), mid, mirror).sha == mid
+    assert _snapshot(mirror) == before
+
+
+@pytest.mark.parametrize("ref,why", [("--output=/tmp/x", "invalid git ref"), ("a..b", "invalid git ref"),
+                                     ("nope", "not a commit"), ("f" * 40, "not a commit")])
+def test_pin_base_refuses_unsafe_or_unknown_refs(repos, ref, why) -> None:
+    _, mirror, _ = repos
+    with pytest.raises(BaseRefError, match=why):
+        pin_base(resolve_base(mirror), ref, mirror)
+
+
+def test_pin_base_refuses_a_commit_off_dev(repos) -> None:
+    _, mirror, pusher = repos
+    _git(pusher, "checkout", "-q", "-b", "side")
+    side = _commit(pusher, "svc/app/side.py", "S = 1\n")
+    _git(pusher, "push", "-q", "origin", "side")
+    _git(mirror, "fetch", "-q", "origin")  # the nightly sync knows every branch
+    tip = resolve_base(mirror)
+    for ref in (side, "origin/side"):
+        with pytest.raises(BaseRefError, match="not an ancestor"):
+            pin_base(tip, ref, mirror)
+
+
+def test_pin_base_needs_a_git_mirror(tmp_path) -> None:
+    (tmp_path / "plain").mkdir()
+    with pytest.raises(BaseRefError, match="plain copy"):
+        pin_base(resolve_base(tmp_path / "plain"), "dev", tmp_path / "plain")

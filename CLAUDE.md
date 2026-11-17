@@ -81,7 +81,7 @@ the same file are paired by title word overlap (`auditor/finding_match.py`). Pac
 (`auditor/validate_node.py`). That project's tests or npm checks then run in a cached env built from its declared deps.
 Failures are compared against the unpatched tree, so only failures the patch introduced count. When nothing can run,
 the result is `lint_only` (Python) or skipped (TS/JS), with a note saying why. A hatch-vcs or setuptools-scm version
-module gets a stub. The response names its base (`base_source`, `base_stale`, `behind_by`).
+module gets a stub. The response names its base (`base_source`, `base_stale`, `behind_by`). A request's `base_ref` (#91) pins an older base for a fix that has already merged; it must be an ancestor of the `dev` tip, and both the patched and the "before" runs use it.
 
 **Evidence bar** (`auditor/evidence.py`, #58). A pass resolves a pack only with evidence, else it becomes
 `unverified`, which is still open work. Bug, security and untyped finding packs need a test from the patch that fails

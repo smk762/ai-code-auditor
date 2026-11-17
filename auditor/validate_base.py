@@ -11,6 +11,10 @@ Fetches are bounded by a timeout and skipped when the cache fetched less than
 ``AI_AUDIT_VALIDATE_FETCH_TTL_S`` (default 60) seconds ago, so a burst of validations costs
 one fetch. When a fetch fails, the mirror's own ``origin/dev`` (else ``HEAD``) is used and the
 error is reported.
+
+A request may pin an older base (``base_ref``, #91) when its fix has already merged and no longer
+applies to the tip: :func:`pin_base` resolves it and refuses anything that isn't an ancestor of the ``dev`` tip, so evidence can't come
+from an unrelated branch.
 """
 
 from __future__ import annotations
@@ -35,10 +39,10 @@ class BaseRef:
     """Where the clean tree comes from. ``git_dir`` is ``None`` for a plain copy (not a git checkout)."""
 
     git_dir: Path | None
-    ref: str          # what was resolved: "origin/dev", "HEAD" or "copy"
+    ref: str          # what was resolved: "origin/dev", "HEAD", "copy", or a pinned base_ref
     sha: str = ""
     prefix: str = ""  # repo_path relative to the checkout top ("" at the top)
-    source: str = "mirror"  # fetched | cached | mirror | copy
+    source: str = "mirror"  # fetched | cached | mirror | copy | pinned
     fetch_error: str = ""
 
     @property
@@ -160,6 +164,38 @@ def resolve_base(repo_path: Path, *, branch: str = "dev", output_dir: str | Path
     return _mirror_base(top, prefix, branch, err)
 
 
+class BaseRefError(ValueError):
+    """A requested ``base_ref`` that can't be used; the message is safe to return to the caller."""
+
+
+
+def pin_base(tip: BaseRef, base_ref: str, repo_path: Path) -> BaseRef:
+    """*tip* moved back to *base_ref*, which must be an ancestor of (or equal to) ``tip.sha``.
+
+    *base_ref* is resolved in the cache repo, then among the mirror's own refs. Nothing is
+    fetched: an ancestor of the tip is already present wherever the tip is, so a sha that isn't
+    there couldn't pass the ancestry check anyway. Raises :class:`BaseRefError` when it is
+    unsafe, unknown, or not on ``dev``."""
+    from auditor.diff_auditor import git_ref_arg
+
+    try:
+        git_ref_arg(base_ref)
+    except RuntimeError as exc:
+        raise BaseRefError(str(exc)) from exc
+    if tip.git_dir is None or not tip.sha:
+        raise BaseRefError("base_ref needs a git mirror; this repo is a plain copy")
+    top_r = _git("rev-parse", "--show-toplevel", cwd=Path(repo_path))
+    top = Path(top_r.stdout.strip()) if top_r.returncode == 0 else None
+
+    sha = _verify(base_ref, git_dir=tip.git_dir) or (_verify(base_ref, cwd=top) if top else "")
+    if not sha:
+        raise BaseRefError(f"base_ref {base_ref!r} is not a commit in this repo")
+    if sha != tip.sha and _git("merge-base", "--is-ancestor", sha, tip.sha, git_dir=tip.git_dir).returncode != 0:
+        raise BaseRefError(f"base_ref {base_ref!r} ({sha[:12]}) is not an ancestor of {tip.ref} ({tip.sha[:12]})")
+    return BaseRef(git_dir=tip.git_dir, ref=base_ref, sha=sha, prefix=tip.prefix, source="pinned",
+                   fetch_error=tip.fetch_error)
+
+
 def staleness(base: BaseRef, repo: str, *, state_path: Path | None = None) -> dict[str, Any]:
     """Compare *base* with the ``dev`` tip merge-poll last saw on GitHub for *repo*.
 
@@ -202,4 +238,4 @@ def export_tree(base: BaseRef, repo_path: Path, dest: Path) -> None:
         raise RuntimeError(f"git archive {base.ref} failed: {proc.stderr.read().decode(errors='replace')[:300]}")
 
 
-__all__ = ["BaseRef", "cache_root", "export_tree", "resolve_base", "staleness"]
+__all__ = ["BaseRef", "BaseRefError", "cache_root", "export_tree", "pin_base", "resolve_base", "staleness"]
