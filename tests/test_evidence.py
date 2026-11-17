@@ -31,7 +31,7 @@ def _git(cwd: Path, *args: str) -> None:
 @pytest.fixture
 def host_python(monkeypatch):
     """Use this interpreter (it has pytest) instead of building per-project venvs."""
-    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache_dir: (Path(sys.executable), ""))
+    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache_dir, extra=None: (Path(sys.executable), ""))
 
 
 BUG = {"kind": "nightly", "narrative": {"finding_type": "bug"}}
@@ -425,3 +425,20 @@ def _history_status(out, pid):
     from auditor.agent_pack import load_pack
 
     return load_pack(out, pid)["status"]
+
+
+def test_loose_tests_repro_per_directory_so_one_collection_error_spares_the_rest(tmp_path: Path, host_python) -> None:
+    # argus-ci#23 (#102): no project marker; one test dir imports a module the env lacks, which
+    # used to abort the single pytest run, so no test produced a result and the pack stayed unverified.
+    loose = {".git/HEAD": "", "rules/check.py": "def ok(x):\n    return False\n",
+             "scripts/test_wf.py": "import not_a_real_module_xyz\n\ndef test_wf():\n    pass\n"}
+    base, patched = tmp_path / "base", tmp_path / "patched"
+    _write(base, loose)
+    _write(patched, {**loose, "rules/check.py": "def ok(x):\n    return True\n",
+                     "rules/test_check.py": ("import sys\nfrom pathlib import Path\n"
+                                             "sys.path.insert(0, str(Path(__file__).parent))\nimport check\n\n"
+                                             "def test_ok():\n    assert check.ok(1)\n")})
+    tests = ["rules/test_check.py", "scripts/test_wf.py"]
+    res = evidence.python_repro(patched, _fresh(base, tmp_path), tests, cache_dir=tmp_path / "c")
+    assert res.repro == ["rules/test_check.py::test_ok"]
+    assert any(n.startswith("scripts: the patch's tests produced no results") for n in res.notes)

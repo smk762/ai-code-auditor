@@ -438,23 +438,102 @@ def ci_test_extras(root: Path) -> list[str]:
     """Extras the repo's CI installs for its tests, from the nearest ``.github/workflows`` at or
     above *root*: argus-ci's ``test-extras`` input, extras a step installs (``.[a,b]``), and
     :data:`ALL_EXTRAS` for ``--all-extras``. [] when none is set."""
+    found: list[str] = []
+    for text in _workflow_texts(root):
+        for m in [*_CI_TEST_EXTRAS_RE.finditer(text), *_CI_INSTALL_EXTRAS_RE.finditer(text)]:
+            found += [e.strip() for e in m.group(1).split(",") if e.strip()]
+        if _CI_ALL_EXTRAS_RE.search(text):
+            found.append(ALL_EXTRAS)
+    return list(dict.fromkeys(found))
+
+
+# Loose tests (#102): a repo with no project marker (argus-ci) keeps test_*.py next to the code it
+# tests. Its CI installs what they need inline: `uv run --with pyyaml ...`, `pip install pyyaml`.
+_LOOSE_TEST_RE = re.compile(r"^(test_[^/]*|[^/]*_test)\.py$")
+_CI_WITH_RE = re.compile(r"--with[ =]([^\s'\"]+)")
+_CI_PIP_INSTALL_RE = re.compile(r"\bpip3? install\b([^\n#;&|]*)")  # one command: stop at ; && ||
+_PLAIN_REQ_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,-]+\])?(?:[<>=!~]=?[A-Za-z0-9.*+!-]+)?$")
+# Third-party modules loose tests commonly import whose distribution name differs or is obvious.
+# A fixed list, never the import name itself: a patch's imports must not pick what pip installs.
+_IMPORT_DISTS = {"yaml": "pyyaml", "toml": "toml", "tomli": "tomli", "requests": "requests",
+                 "jsonschema": "jsonschema", "httpx": "httpx"}
+_IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
+
+
+def _workflow_texts(root: Path) -> list[str]:
+    """Texts of the workflows in the nearest ``.github/workflows`` at or above *root*, within its repo."""
     for d in (root, *root.parents[:4]):  # a project dir is at most a few levels into its repo
         wf = d / ".github" / "workflows"
         if wf.is_dir():
-            found: list[str] = []
+            out = []
             for f in sorted([*wf.glob("*.yml"), *wf.glob("*.yaml")]):
                 try:
-                    text = f.read_text(encoding="utf-8")
+                    out.append(f.read_text(encoding="utf-8"))
                 except OSError:
                     continue
-                for m in [*_CI_TEST_EXTRAS_RE.finditer(text), *_CI_INSTALL_EXTRAS_RE.finditer(text)]:
-                    found += [e.strip() for e in m.group(1).split(",") if e.strip()]
-                if _CI_ALL_EXTRAS_RE.search(text):
-                    found.append(ALL_EXTRAS)
-            return list(dict.fromkeys(found))
-        if (d / ".git").exists():  # the repo's top, and it has no workflows
+            return out
+        if (d / ".git").exists():
             break
     return []
+
+
+def ci_tool_deps(root: Path) -> list[str]:
+    """Packages the repo's CI installs by name (``--with a,b``, ``pip install a b``), for a repo
+    with no declared dependencies. Paths, editable installs, options and expressions are skipped."""
+    found: list[str] = []
+    for text in _workflow_texts(root):
+        for m in _CI_WITH_RE.finditer(text):
+            found += m.group(1).split(",")
+        for m in _CI_PIP_INSTALL_RE.finditer(text):
+            if "$" in m.group(1):  # an expression (${{ inputs.x }}, $EXTRAS): what it installs is unknown
+                continue
+            toks = [t.strip("'\"") for t in m.group(1).split()]
+            skip = False
+            for t in toks:
+                if skip:
+                    skip = False
+                    continue
+                if t in ("-r", "--requirement", "-c", "--constraint", "-e", "--editable"):
+                    skip = True
+                    continue
+                found.append(t)
+    return list(dict.fromkeys(t.strip() for t in found if _PLAIN_REQ_RE.match(t.strip())))
+
+
+def loose_tests(root: Path, files: list[str]) -> dict[str, list[str]]:
+    """Test files to run for *files* (paths relative to *root*) in a root with no project marker:
+    every ``test_*.py`` / ``*_test.py`` in each changed file's directory, grouped by that directory."""
+    groups: dict[str, list[str]] = {}
+    for d in sorted({str(Path(f).parent) for f in files}):
+        dir_ = root / d
+        tests = sorted(str((dir_ / n.name).relative_to(root)) for n in dir_.glob("*.py")
+                       if _LOOSE_TEST_RE.match(n.name) and n.is_file()) if dir_.is_dir() else []
+        if tests:
+            groups[d] = tests
+    return groups
+
+
+def loose_test_deps(root: Path, tests: list[str]) -> list[str]:
+    """What a markerless root's tests need: the packages its CI installs by name, plus the
+    distributions of known third-party modules the test files import (:data:`_IMPORT_DISTS`)."""
+    deps = ci_tool_deps(root)
+    have = {_dist_name(d) for d in deps}
+    for t in tests:
+        try:
+            text = (root / t).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for mod in _IMPORT_RE.findall(text):
+            dist = _IMPORT_DISTS.get(mod)
+            if dist and dist not in have:  # a CI pin of the same package wins
+                have.add(dist)
+                deps.append(dist)
+    return deps
+
+
+def _dist_name(spec: str) -> str:
+    m = _REQ_NAME.match(spec)
+    return _norm_name(m.group(1)) if m else spec
 
 
 def _declared_deps(root: Path) -> tuple[list[Path], list[str]]:
@@ -528,12 +607,13 @@ def _requirement_lines(path: Path, depth: int = 0) -> list[str]:
     return out
 
 
-def ensure_test_venv(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
+def ensure_test_venv(root: Path, cache_dir: Path, extra: list[str] | None = None) -> tuple[Path | None, str]:
     """Python of a venv holding *root*'s declared deps plus pytest; built once per deps hash.
 
     Returns ``(python, "")`` or ``(None, error)``. Requirement lines that install the project
     itself (``-e .``, ``.``) are skipped: the venv outlives this tree, and tests import the
-    patched code through PYTHONPATH instead."""
+    patched code through PYTHONPATH instead. *extra* adds specs (a markerless root's
+    :func:`loose_test_deps`)."""
     import fcntl
     import hashlib
     import sys
@@ -542,7 +622,7 @@ def ensure_test_venv(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
     lines: list[str] = []
     for f in req_files:
         lines += _requirement_lines(f)
-    lines = list(dict.fromkeys(lines + specs))
+    lines = list(dict.fromkeys(lines + specs + list(extra or [])))
     key = hashlib.sha256("\n".join([sys.version, *sorted(lines)]).encode()).hexdigest()[:16]
     cache_dir = cache_dir.resolve()  # tests run from the project dir, so a relative path would break
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -756,8 +836,13 @@ def _test_python_projects(
     for root in sorted({project_root(tree, f) for f in py}):
         label = str(root.relative_to(tree.resolve())) if root != tree.resolve() else "."
         if not _has_project(root):
-            notes.append(f"{label}: no project (pyproject, setup.py, requirements or tests/) for "
-                         f"{', '.join(f for f in py if project_root(tree, f) == root)}; lint only")
+            mine = [str((tree / f).resolve().relative_to(root)) for f in py if project_root(tree, f) == root]
+            groups = loose_tests(root, mine)
+            if not groups:
+                notes.append(f"{label}: no project (pyproject, setup.py, requirements or tests/) and no "
+                             f"test_*.py beside {', '.join(mine)}; lint only")
+                continue
+            ran += _test_loose(root, tree, groups, cache, base_tree, timeout_s, notes)
             continue
         python, err = ensure_test_venv(root, cache)
         if python is None:
@@ -770,9 +855,7 @@ def _test_python_projects(
         if outcome == "no_tests":
             notes.append(f"{label}: no tests collected, lint only")
         elif outcome == "env_gap":
-            m = _ENV_GAP_RE.search(res.raw_output)
-            line = next((ln for ln in res.raw_output.splitlines() if m and m.group(1) in ln), "")
-            notes.append(f"{label}: tests need a module the env lacks, lint only: {line.strip()[:200]}")
+            notes.append(f"{label}: tests need a module the env lacks, lint only: {_env_gap_line(res)}")
         elif not res.passed and base_tree is not None:
             res = _against_base(root, tree, base_tree, python, timeout_s, res, label, notes)
             ran.append((label, res))
@@ -781,9 +864,43 @@ def _test_python_projects(
     return ran
 
 
+def _test_loose(
+    root: Path, tree: Path, groups: dict[str, list[str]], cache: Path,
+    base_tree: Callable[[], Path | None] | None, timeout_s: int, notes: list[str],
+) -> list[tuple[str, ValidationResult]]:
+    """Run a markerless root's loose tests (#102), one pytest run per directory so one file that
+    fails to collect doesn't stop the rest. They run from *root*, as the repo's CI runs them."""
+    ran: list[tuple[str, ValidationResult]] = []
+    python, err = ensure_test_venv(root, cache, loose_test_deps(root, [t for ts in groups.values() for t in ts]))
+    if python is None:
+        notes.append(f"{_label(root, tree)}: test env did not build, lint only: {err[:300]}")
+        return ran
+    for d, tests in groups.items():
+        label = d if root == tree.resolve() else f"{_label(root, tree)}/{d}"
+        outcome, res = _run_project_tests(root, python, timeout_s, only=tests)
+        if outcome == "no_tests":
+            notes.append(f"{label}: no tests collected from {', '.join(tests)}, lint only")
+        elif outcome == "env_gap":
+            notes.append(f"{label}: tests need a module the env lacks, lint only: {_env_gap_line(res)}")
+        else:
+            if not res.passed and base_tree is not None:
+                res = _against_base(root, tree, base_tree, python, timeout_s, res, label, notes, only=tests)
+            ran.append((label, res))
+    return ran
+
+
+def _label(root: Path, tree: Path) -> str:
+    return str(root.relative_to(tree.resolve())) if root != tree.resolve() else "."
+
+
+def _env_gap_line(res: ValidationResult) -> str:
+    m = _ENV_GAP_RE.search(res.raw_output)
+    return next((ln for ln in res.raw_output.splitlines() if m and m.group(1) in ln), "").strip()[:200]
+
+
 def _against_base(
     root: Path, tree: Path, base_tree: "Callable[[], Path | None]", python: Path, timeout_s: int,
-    res: ValidationResult, label: str, notes: list[str],
+    res: ValidationResult, label: str, notes: list[str], only: list[str] | None = None,
 ) -> ValidationResult:
     """Re-judge a failing run by what the patch broke: failures also present without it don't count.
 
@@ -798,7 +915,10 @@ def _against_base(
     if not base_root.is_dir():
         return res
     stub_version_files(base_root)
-    outcome, base_res = _run_project_tests(base_root, python, timeout_s)
+    base_only = [t for t in only if (base_root / t).is_file()] if only else None
+    if only and not base_only:  # every test file is new in the patch: nothing to compare with
+        return res
+    outcome, base_res = _run_project_tests(base_root, python, timeout_s, only=base_only)
     if outcome != "ran":
         return res
     duration = res.duration_ms + base_res.duration_ms

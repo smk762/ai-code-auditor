@@ -103,7 +103,7 @@ def test_error_ids_drop_line_numbers_and_the_tree_path(tmp_path: Path) -> None:
 
 
 def test_ts_file_without_a_project_is_never_a_pass(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache: (Path(sys.executable), ""))
+    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache, extra=None: (Path(sys.executable), ""))
     _write(tmp_path, {"svc/requirements.txt": "", "svc/app/a.py": "X = 1\n",
                       "svc/tests/test_a.py": "def test_a(): pass\n", "scripts/tool.ts": "export {};\n"})
     r = validate_patch_tree(_Repo(), tmp_path, ["svc/app/a.py", "scripts/tool.ts"], cache_dir=tmp_path / "c")
@@ -223,7 +223,7 @@ def test_npm_never_uses_an_unwritable_home_cache(tmp_path: Path, monkeypatch) ->
 
 @needs_npm
 def test_mixed_patch_runs_both_sides(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache: (Path(sys.executable), ""))
+    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache, extra=None: (Path(sys.executable), ""))
     _npm_project(tmp_path / "web")
     _write(tmp_path, {"svc/requirements.txt": "", "svc/app/a.py": "X = 1\n", "svc/tests/test_a.py": "def test_a(): pass\n"})
     r = validate_patch_tree(_Repo(), tmp_path, ["svc/app/a.py", "web/src/a.ts"], cache_dir=tmp_path / "v",

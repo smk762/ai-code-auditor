@@ -29,7 +29,7 @@ def host_python(monkeypatch):
     """Use this interpreter (it has pytest) instead of building per-project venvs."""
     built: list[Path] = []
 
-    def fake(root, cache_dir):
+    def fake(root, cache_dir, extra=None):
         built.append(root)
         return Path(sys.executable), ""
 
@@ -71,7 +71,7 @@ def test_check_tree_classifies_each_project_as_validate_patch_would(tmp_path: Pa
 
 def test_env_build_failure_is_reported_not_raised(tmp_path: Path, monkeypatch) -> None:
     _write(tmp_path, {"svc/requirements.txt": "nope==0\n", "svc/tests/test_a.py": "def test_a():\n    pass\n"})
-    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache: (None, "No matching distribution for nope==0"))
+    monkeypatch.setattr(validator, "ensure_test_venv", lambda root, cache, extra=None: (None, "No matching distribution for nope==0"))
     [p] = ter.check_tree(tmp_path, venv_cache=tmp_path / "v", node_cache=tmp_path / "n")
     assert p["status"] == "env_failed" and "nope==0" in p["error"]
 
