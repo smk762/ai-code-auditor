@@ -52,6 +52,17 @@ SERVICES: dict[str, tuple[str, str, str, str, str | None]] = {
 }
 _SERVICE_RE = {k: re.compile(v[3]) for k, v in SERVICES.items()}
 
+
+def _scoped(pattern: str) -> str:
+    """A pattern as one alternative of a combined regex (a leading ``(?i)`` becomes ``(?i:...)``)."""
+    return f"(?i:{pattern[4:]})" if pattern.startswith("(?i)") else f"(?:{pattern})"
+
+
+# One pass per file says whether any service pattern can match; the per-service patterns then
+# run only on the few files that hit. Searching every file with every pattern took ~8 s of
+# GIL-bound CPU per rebuild, stalling every other API request (tests/test_hot_paths.py).
+_ANY_SERVICE_RE = re.compile("|".join(_scoped(v[3]) for v in SERVICES.values()))
+
 _cache: dict[str, Any] = {"key": None, "data": None}
 _lock = threading.Lock()
 
@@ -124,6 +135,7 @@ def _scan(repos: list[Any]) -> tuple[dict[str, dict[str, list]], dict[str, dict[
 
     modules = {r.name: r.name.replace("-", "_") for r in repos}
     import_re = {n: re.compile(rf"^\s*(?:from|import)\s+{m}\b", re.M) for n, m in modules.items()}
+    any_import = re.compile(rf"^\s*(?:from|import)\s+(?:{'|'.join(map(re.escape, modules.values()))})\b", re.M)
     imports: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     uses: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     files: Counter = Counter()
@@ -141,12 +153,14 @@ def _scan(repos: list[Any]) -> tuple[dict[str, dict[str, list]], dict[str, dict[
             if text is None or len(text) > MAX_FILE_CHARS:
                 continue
             files[repo.name] += 1
-            for other, rx in import_re.items():
-                if other != repo.name and (m := rx.search(text)):
-                    imports[repo.name][other].append({"path": rel, "line": text.count("\n", 0, m.start()) + 1})
-            for sid, rx in _SERVICE_RE.items():
-                if m := rx.search(text):
-                    uses[repo.name][sid].append({"path": rel, "line": text.count("\n", 0, m.start()) + 1})
+            if any_import.search(text):
+                for other, rx in import_re.items():
+                    if other != repo.name and (m := rx.search(text)):
+                        imports[repo.name][other].append({"path": rel, "line": text.count("\n", 0, m.start()) + 1})
+            if _ANY_SERVICE_RE.search(text):
+                for sid, rx in _SERVICE_RE.items():
+                    if m := rx.search(text):
+                        uses[repo.name][sid].append({"path": rel, "line": text.count("\n", 0, m.start()) + 1})
     return imports, uses, dict(files)
 
 
@@ -229,7 +243,25 @@ def _head(path: str) -> str:
 
 # ── assembly ─────────────────────────────────────────────────────────────────
 
-def topology_data(output_dir: str | Path) -> dict[str, Any]:
+_build_lock = threading.Lock()  # one rebuild at a time; requests that arrive meanwhile reuse it
+BUILD_TIMEOUT_S = 300
+
+
+def _build_isolated(out: Path, repos: list[Any], side: Path) -> dict[str, Any]:
+    """Run :func:`_build` in a child process. Scanning every mirror is seconds of pure-Python
+    CPU; in the API process it holds the GIL and stalls every other request."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as ex:
+        # Inputs go in as arguments: the child imports this module afresh and sees only defaults.
+        return ex.submit(_build, out, repos, side, ECOSYSTEM_DOC).result(timeout=BUILD_TIMEOUT_S)
+
+
+def topology_data(output_dir: str | Path, *, isolate: bool = False) -> dict[str, Any]:
+    """The map's data, cached until a mirror's HEAD, the ecosystem doc or the sidecar changes.
+
+    ``isolate`` (the API) rebuilds in a child process so the server stays responsive."""
     from auditor.config import load_ecosystem_config
 
     out = Path(output_dir)
@@ -241,17 +273,22 @@ def topology_data(output_dir: str | Path) -> dict[str, Any]:
     with _lock:
         if _cache["key"] == key:
             return _cache["data"]
-    data = _build(out, repos, side)
-    with _lock:
-        _cache.update(key=key, data=data)
+    with _build_lock:
+        with _lock:
+            if _cache["key"] == key:  # built while this request waited
+                return _cache["data"]
+        data = _build_isolated(out, repos, side) if isolate else _build(out, repos, side)
+        with _lock:
+            _cache.update(key=key, data=data)
     return data
 
 
-def _build(out: Path, repos: list[Any], side: Path) -> dict[str, Any]:
+def _build(out: Path, repos: list[Any], side: Path, doc_path: Path | None = None) -> dict[str, Any]:
     from auditor.merge_poll import load_state, merge_poll_state_path
 
     names = {r.name for r in repos}
-    doc = ECOSYSTEM_DOC.read_text(encoding="utf-8") if ECOSYSTEM_DOC.is_file() else ""
+    doc_path = doc_path or ECOSYSTEM_DOC
+    doc = doc_path.read_text(encoding="utf-8") if doc_path.is_file() else ""
     meta, flow_short = parse_ecosystem_doc(doc)
     topo = json.loads(side.read_text(encoding="utf-8")) if side.is_file() else {}
     node_info = {n.get("name"): n for n in topo.get("nodes") or []}

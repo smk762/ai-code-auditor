@@ -684,15 +684,16 @@ def _upsert_index_entry(output_dir: str | Path, pack: AgentCodingPack, *, public
 def load_pack(output_dir: str | Path, pack_id: str) -> dict[str, Any] | None:
     path = pack_file_path(output_dir, pack_id)
     if not path.exists():
-        # Fall back to scanning INDEX / yaml files for id match
-        for yaml_path in packs_dir(output_dir).glob("*.yaml"):
-            try:
-                data = _load_yaml(yaml_path.read_text(encoding="utf-8")) or {}
-            except (OSError, yaml.YAMLError):
-                continue
-            if isinstance(data, dict) and data.get("work_item_id") == pack_id:
-                return data
-        return None
+        # An id whose file name differs (sanitised or truncated) is found through INDEX.json.
+        # Never by parsing every pack: that cost ~1.5 s per unknown id on the live set.
+        try:
+            entries = json.loads(index_path(output_dir).read_text(encoding="utf-8")).get("packs") or []
+        except (OSError, ValueError):
+            return None
+        rel = next((e.get("path") for e in entries if e.get("id") == pack_id), None)
+        if not rel:
+            return None
+        path = Path(output_dir) / rel
     try:
         data = _load_yaml(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):

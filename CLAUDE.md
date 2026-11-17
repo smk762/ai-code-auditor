@@ -28,6 +28,7 @@ here and in code. Don't add a rule to remember.
 | Spend past a lane budget | `test_spend_ledger::test_lane_and_total_caps`, `::test_batch_prefetch_trims_to_budget` |
 | Suite-rule findings that disagree with argus-ci's CI (a different catalogue or checker) | `test_suite_rules::test_catalogue_is_read_from_dev_not_the_checkout`; the scanner runs argus-ci's own `check.py` |
 | Serve a brand SVG with scripts or event handlers | `test_ui_topology::test_mark_rejects_active_content` |
+| An agent-facing request whose cost grows with the number of packs, or seconds of CPU-bound work inside the API process | `test_hot_paths::test_agent_hot_paths_cost_the_same_at_any_pack_count`, `::test_topology_rebuilds_outside_the_api_process`. At runtime, requests over `AI_AUDIT_SLOW_REQUEST_MS` (1000) are counted in `/audit/health` `slow_requests`, which should stay empty |
 | A mutating endpoint without `_require_mutating_auth` | Per endpoint (`test_code_review_high_fixes::test_mutating_api_requires_token_when_configured` and others). **UNENFORCED** for a new endpoint: no test sweeps the routes |
 | Work pushed to `main`, a PR into `main` other than the release, or `main` ahead of `dev` except the release merge commit | **UNENFORCED** (see Branches) |
 | Deploy hooks in dragonhound-site, or docs committed into it | **UNENFORCED** here (another repo). Docs go live only by a `docs.lock.json` pin bump on its `dev` |
