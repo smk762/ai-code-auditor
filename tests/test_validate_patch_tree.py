@@ -161,6 +161,38 @@ def test_ensure_test_venv_returns_an_absolute_path(tmp_path: Path, monkeypatch) 
     assert py.is_absolute()
 
 
+def test_self_referencing_extras_expand_instead_of_installing_the_published_package(tmp_path: Path) -> None:
+    # argus-mask's dev extra is "argus-mask[server,cli]": passed to pip as is, it pulled argus-mask
+    # 0.2.0 from PyPI, whose argus-cortex<0.6 pin conflicted with the patched >=0.9 (lint only).
+    _write(tmp_path, {"pyproject.toml": (
+        '[project]\nname = "Argus_Mask"\ndependencies = ["argus-cortex>=0.9,<0.10"]\n'
+        '[project.optional-dependencies]\n'
+        'server = ["fastapi>=0.110", "argus-cortex[server]>=0.9,<0.10"]\n'
+        'cli = ["typer>=0.12", "argus-mask[server]"]\n'
+        'dev = ["argus-mask[server, cli]", "pytest>=8.0", "argus-mask[dev]"]\n')})
+    _, specs = validator._declared_deps(tmp_path)
+    assert not [s for s in specs if s.lower().startswith(("argus-mask", "argus_mask"))]
+    assert specs == ["argus-cortex>=0.9,<0.10", "fastapi>=0.110", "argus-cortex[server]>=0.9,<0.10",
+                     "typer>=0.12", "pytest>=8.0"]  # expanded once each, the self-cycle cut
+
+
+def test_venv_build_uses_a_writable_pip_cache(tmp_path: Path, monkeypatch) -> None:
+    envs: list[dict] = []
+
+    def fake_run(cmd, **kw):
+        if cmd[1:3] == ["-m", "venv"]:
+            (Path(cmd[3]) / "bin").mkdir(parents=True)
+        elif "pip" in cmd:
+            envs.append(kw.get("env") or {})
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(validator.subprocess, "run", fake_run)
+    monkeypatch.setenv("HOME", "/")
+    _write(tmp_path, {"svc/requirements.txt": "httpx\n"})
+    validator.ensure_test_venv(tmp_path / "svc", tmp_path / "cache")
+    assert envs[0]["PIP_CACHE_DIR"] == str((tmp_path / "cache" / ".pip-cache").resolve())
+
+
 def test_ensure_test_venv_builds_once_per_deps(tmp_path: Path, monkeypatch) -> None:
     calls: list[list[str]] = []
 

@@ -6,6 +6,7 @@ repair loop to test a patch before surfacing it to the user).
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -434,11 +435,37 @@ def _declared_deps(root: Path) -> tuple[list[Path], list[str]]:
             project = (tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project") or {})
         except (OSError, ValueError):
             project = {}
-        specs += [str(s) for s in project.get("dependencies") or []]
         extras = project.get("optional-dependencies") or {}
+        own = _norm_name(str(project.get("name") or ""))
+        specs += _expand_self_refs([str(s) for s in project.get("dependencies") or []], own, extras)
         for name in _PYPROJECT_EXTRAS:
-            specs += [str(s) for s in extras.get(name) or []]
-    return req_files, specs
+            specs += _expand_self_refs([str(s) for s in extras.get(name) or []], own, extras, frozenset({name}))
+    return req_files, list(dict.fromkeys(specs))
+
+
+_REQ_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[([^\]]*)\])?")
+
+
+def _norm_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _expand_self_refs(specs: list[str], own: str, extras: dict, seen: frozenset[str] = frozenset()) -> list[str]:
+    """Replace ``<this project>[a,b]`` with extras a and b's own specs, recursively.
+
+    A ``dev = ["pkg[server,cli]", ...]`` extra names the project itself. Passed to pip as is, it
+    installs the *published* release from PyPI, whose pins conflict with the patched tree's
+    (argus-mask 0.2.0 pinned argus-cortex<0.6 while dev asked for >=0.9: no venv, lint only)."""
+    out: list[str] = []
+    for spec in specs:
+        m = _REQ_NAME.match(spec)
+        if not own or not m or _norm_name(m.group(1)) != own:
+            out.append(spec)
+            continue
+        for extra in (e.strip() for e in (m.group(2) or "").split(",") if e.strip()):
+            if extra not in seen:
+                out += _expand_self_refs([str(s) for s in extras.get(extra) or []], own, extras, seen | {extra})
+    return out
 
 
 def _requirement_lines(path: Path, depth: int = 0) -> list[str]:
@@ -493,9 +520,11 @@ def ensure_test_venv(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
         try:
             subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, capture_output=True,
                            text=True, timeout=120)
+            # pip's default cache is under HOME, which is / (unwritable) for the container's uid.
             subprocess.run([str(python), "-m", "pip", "install", "-q", "--disable-pip-version-check",
                             "-r", str(reqs)], check=True, capture_output=True, text=True,
-                           timeout=VENV_BUILD_TIMEOUT_S)
+                           timeout=VENV_BUILD_TIMEOUT_S,
+                           env={**os.environ, "PIP_CACHE_DIR": str(cache_dir / ".pip-cache")})
         except subprocess.CalledProcessError as exc:
             shutil.rmtree(venv, ignore_errors=True)
             return None, ((exc.stderr or exc.stdout or "").strip()[-800:] or str(exc))
