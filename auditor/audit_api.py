@@ -1496,6 +1496,9 @@ class _ValidatePatchRequest(BaseModel):
     semantic_check: bool | None = None
     # why this fix can't carry a failing-then-passing test (≥ 20 chars); recorded on the pack (#58)
     evidence_waiver: str | None = None
+    # apply the patch to this commit (an ancestor of dev) instead of the dev tip, for a fix that
+    # has merged already; the "before" runs use it too (#91). None: the dev tip, as before.
+    base_ref: str | None = None
 
 
 def _load_pack_for_repo(pack_id: str, repo: str) -> tuple[dict[str, Any] | None, str]:
@@ -1561,6 +1564,8 @@ def _judge_evidence(
                                    timeout_s=timeout_s)
     d = evidence.decide(pack, tool=tool, changed=changed, repro=repro, waiver=request.evidence_waiver or "",
                         base_sha=base_sha)
+    if request.base_ref:
+        d.evidence["base_ref"] = request.base_ref.strip()
     if d.status == "resolved":
         note = f"validate_patch passed (repo={request.repo}, tool={tool}, evidence={d.kind})"
     else:
@@ -1590,9 +1595,12 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
     Returns:
         patch_applied:   bool — whether ``git apply`` succeeded.
         patch_error:     str  — git apply stderr when patch_applied is False.
-        base_ref / base_sha: the commit the patch was applied to (the repo's ``dev`` tip).
+        base_ref / base_sha: the commit the patch was applied to: the repo's ``dev`` tip, or the
+                         request's ``base_ref`` (an ancestor of that tip, else 400), which the
+                         "before" runs then use too.
         base_source:     ``fetched`` / ``cached`` (fetched ≤ TTL ago) / ``mirror`` (fetch failed or
-                         disabled: the mirror's own ``origin/dev``; see ``base_fetch_error``) / ``copy``.
+                         disabled: the mirror's own ``origin/dev``; see ``base_fetch_error``) / ``copy``
+                         / ``pinned`` (the request's ``base_ref``).
         base_fresh:      bool — True for ``fetched`` / ``cached``.
         base_stale:      bool | None — the dev tip merge-poll last saw on GitHub isn't in the base
                          (``dev_tip``, ``behind_by``); None when merge-poll hasn't seen the repo.
@@ -1638,9 +1646,14 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
         # A clean committed tree, never the live checkout: whatever is uncommitted there (an
         # agent's work in progress) must neither leak into the result nor make the patch clash.
         # The dev tip is fetched first (bounded, TTL-cached), since mirrors only sync nightly.
-        from auditor.validate_base import resolve_base
+        from auditor.validate_base import BaseRefError, pin_base, resolve_base
 
         base = resolve_base(Path(repo_path), output_dir=cfg.output_dir)
+        if request.base_ref:
+            try:
+                base = pin_base(base, request.base_ref.strip(), Path(repo_path))
+            except BaseRefError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         base_info = _base_fields(base, request.repo, cfg.output_dir)
         _export_clean_tree(Path(repo_path), repo_copy, base)
 
@@ -1751,7 +1764,9 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
                                     "reason": f"{len(refuted)} 'trust me' change(s) have a counterexample"}
             elif not evidence_bar_enabled():
                 response["pack"] = _resolve_pack_after_validation(
-                    request.pack_id, repo=request.repo, tool=val_result.tool
+                    request.pack_id, repo=request.repo, tool=val_result.tool,
+                    note=(f"validate_patch passed (repo={request.repo}, tool={val_result.tool}, "
+                          f"base={request.base_ref.strip()} {base.sha[:12]})" if request.base_ref else ""),
                 )
             else:
                 response.update(_judge_evidence(
@@ -1760,6 +1775,8 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
                     timeout_s=timeout_s,
                 ))
         return JSONResponse(response)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("validate_patch failed for repo %r", request.repo)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

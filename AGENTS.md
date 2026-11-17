@@ -35,6 +35,9 @@ Optional: `q=<keyword>` boosts matches, `status=open,claimed,in_progress` (defau
    evidence (see "Done means" in the brief): for bug and security packs, a test in the patch that **fails on `dev` and
    passes with the fix**. Otherwise the pack becomes `unverified` and `pack.reason` says what's missing;
    `"evidence_waiver": "<why no test can exercise it>"` resolves it anyway, recorded on the pack.
+   If the fix has already merged (the patch no longer applies to `dev`), send `"base_ref": "<sha>"`, the
+   `dev` commit your diff was built on. The patch and the "fails on `dev`" run then both use that commit.
+   It must be an ancestor of the `dev` tip (else 400), and the pack records it.
    A **429** means the server's validation slots are full: wait `Retry-After` seconds and send the same
    request again. Don't retry on a client timeout while a validation may still be running; it starts a
    duplicate run.
