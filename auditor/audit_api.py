@@ -68,7 +68,7 @@ from typing import Any, Literal
 
 from dataclasses import asdict
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -2193,7 +2193,8 @@ def record_class_guard(pack_id: str, request: _ClassGuardRequest) -> JSONRespons
 
 
 @app.post("/audit/packs/{pack_id}/status", dependencies=[Depends(_require_mutating_auth)])
-def set_agent_pack_status(pack_id: str, request: _PackStatusRequest) -> JSONResponse:
+def set_agent_pack_status(pack_id: str, request: _PackStatusRequest,
+                          background_tasks: BackgroundTasks) -> JSONResponse:
     """Update a pack's lifecycle status (persisted in YAML and reflected in INDEX.json)."""
     from auditor.agent_pack import refresh_pack_rag, update_pack_status
     from conductor.publish import public_base_url
@@ -2207,7 +2208,9 @@ def set_agent_pack_status(pack_id: str, request: _PackStatusRequest) -> JSONResp
     )
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Pack {pack_id!r} not found.")
-    refresh_pack_rag(_output_dir(), updated)  # retrieval reflects the new status (best-effort)
+    # Retrieval reflects the new status (best-effort), sent after the response so a slow RAG
+    # service never holds up the claim.
+    background_tasks.add_task(refresh_pack_rag, _output_dir(), updated)
     return JSONResponse({
         "id": pack_id,
         "status": updated["status"],

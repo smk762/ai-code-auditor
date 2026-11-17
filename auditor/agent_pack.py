@@ -12,13 +12,20 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+try:  # libyaml's C loader parses packs several times faster than the pure-Python one
+    from yaml import CSafeLoader as _YamlLoader
+except ImportError:  # pragma: no cover — PyYAML built without libyaml
+    from yaml import SafeLoader as _YamlLoader
 
 from auditor.contracts import Finding, RuleViolation, utc_now_iso
 from auditor.finding_match import reworded_score
@@ -494,9 +501,13 @@ def build_pack_from_worker_finding(
     return pack
 
 
+def _load_yaml(text: str) -> Any:
+    return yaml.load(text, Loader=_YamlLoader)  # noqa: S506 — a safe loader
+
+
 def _read_pack_yaml(path: Path) -> dict[str, Any] | None:
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = _load_yaml(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
         return None
     return data if isinstance(data, dict) else None
@@ -557,27 +568,48 @@ def write_pack(
     return path
 
 
-def rebuild_index(output_dir: str | Path, *, public_base_url: str = "") -> dict[str, Any]:
-    root = packs_dir(output_dir)
-    root.mkdir(parents=True, exist_ok=True)
-    entries: list[dict[str, Any]] = []
-    for yaml_path in sorted(root.glob("*.yaml")):
-        try:
-            data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
-        except (OSError, yaml.YAMLError) as exc:
-            logger.warning("skip bad pack %s: %s", yaml_path, exc)
-            continue
-        if not isinstance(data, dict) or not data.get("work_item_id"):
-            continue
-        pack = AgentCodingPack.from_dict(data)
-        rel = str(yaml_path.relative_to(Path(output_dir)))
-        url = ""
-        if public_base_url:
-            url = f"{public_base_url.rstrip('/')}/audit/packs/{pack.work_item_id}"
-        elif pack.repair.get("pack_url"):
-            url = str(pack.repair["pack_url"])
-        entries.append(pack.to_index_entry(path=rel, url=url))
+_INDEX_THREAD_LOCK = threading.RLock()
+_index_lock_depth = threading.local()
 
+
+@contextmanager
+def _index_lock(output_dir: str | Path):
+    """Serialise INDEX.json read-modify-writes across API threads and other processes (CLI, emits).
+
+    Re-entrant within a thread; the file lock is taken only at the outermost level."""
+    with _INDEX_THREAD_LOCK:
+        depth = getattr(_index_lock_depth, "n", 0)
+        _index_lock_depth.n = depth + 1
+        try:
+            if depth:
+                yield
+                return
+            root = packs_dir(output_dir)
+            root.mkdir(parents=True, exist_ok=True)
+            with open(root / ".INDEX.lock", "w") as fh:
+                try:
+                    import fcntl
+                    fcntl.flock(fh, fcntl.LOCK_EX)
+                except ImportError:  # pragma: no cover — non-POSIX: the thread lock alone
+                    pass
+                yield
+        finally:
+            _index_lock_depth.n = depth
+
+
+def _index_entry(pack: AgentCodingPack, output_dir: str | Path, yaml_path: Path,
+                 public_base_url: str = "") -> dict[str, Any]:
+    rel = str(yaml_path.relative_to(Path(output_dir)))
+    url = ""
+    if public_base_url:
+        url = f"{public_base_url.rstrip('/')}/audit/packs/{pack.work_item_id}"
+    elif pack.repair.get("pack_url"):
+        url = str(pack.repair["pack_url"])
+    return pack.to_index_entry(path=rel, url=url)
+
+
+def _write_index(output_dir: str | Path, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Sort *entries*, add the counts, and replace INDEX.json atomically (readers never see half)."""
     # World model first (ecosystem, then repos), then specialists by score.
     def _sort_key(e: dict[str, Any]) -> tuple:
         layer = e.get("layer") or "specialist"
@@ -611,8 +643,42 @@ def rebuild_index(output_dir: str | Path, *, public_base_url: str = "") -> dict[
         "discovery": dict(PACK_DISCOVERY),
         "packs": entries,
     }
-    index_path(output_dir).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    path = index_path(output_dir)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
     return payload
+
+
+def rebuild_index(output_dir: str | Path, *, public_base_url: str = "") -> dict[str, Any]:
+    """Re-read every pack YAML and rewrite INDEX.json (emits and repairs; seconds on thousands of packs)."""
+    root = packs_dir(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    with _index_lock(output_dir):
+        entries: list[dict[str, Any]] = []
+        for yaml_path in sorted(root.glob("*.yaml")):
+            try:
+                data = _load_yaml(yaml_path.read_text(encoding="utf-8")) or {}
+            except (OSError, yaml.YAMLError) as exc:
+                logger.warning("skip bad pack %s: %s", yaml_path, exc)
+                continue
+            if not isinstance(data, dict) or not data.get("work_item_id"):
+                continue
+            entries.append(_index_entry(AgentCodingPack.from_dict(data), output_dir, yaml_path, public_base_url))
+        return _write_index(output_dir, entries)
+
+
+def _upsert_index_entry(output_dir: str | Path, pack: AgentCodingPack, *, public_base_url: str = "") -> None:
+    """Replace one pack's INDEX.json entry in place (a status change), rebuilding only when the
+    index is missing or unreadable. The caller holds ``_index_lock``."""
+    try:
+        entries = list(json.loads(index_path(output_dir).read_text(encoding="utf-8")).get("packs") or [])
+    except (OSError, ValueError):
+        rebuild_index(output_dir, public_base_url=public_base_url)
+        return
+    entry = _index_entry(pack, output_dir, pack_file_path(output_dir, pack.work_item_id), public_base_url)
+    entries = [e for e in entries if e.get("id") != pack.work_item_id] + [entry]
+    _write_index(output_dir, entries)
 
 
 def load_pack(output_dir: str | Path, pack_id: str) -> dict[str, Any] | None:
@@ -621,14 +687,14 @@ def load_pack(output_dir: str | Path, pack_id: str) -> dict[str, Any] | None:
         # Fall back to scanning INDEX / yaml files for id match
         for yaml_path in packs_dir(output_dir).glob("*.yaml"):
             try:
-                data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+                data = _load_yaml(yaml_path.read_text(encoding="utf-8")) or {}
             except (OSError, yaml.YAMLError):
                 continue
             if isinstance(data, dict) and data.get("work_item_id") == pack_id:
                 return data
         return None
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = _load_yaml(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
         return None
     return data if isinstance(data, dict) else None
@@ -717,17 +783,20 @@ def update_pack_status(
     """
     if status not in PACK_STATUSES:
         raise ValueError(f"invalid pack status {status!r}; expected one of {PACK_STATUSES}")
-    data = load_pack(output_dir, pack_id)
-    if data is None:
-        return None
-    pack = AgentCodingPack.from_dict(data, fallback_id=pack_id)
-    pack.apply_status(status, (note or "")[:2000])
-    if repair_updates:
-        pack.repair.update(repair_updates)
-    if verification_updates:
-        pack.verification.update(verification_updates)
-    write_pack(pack, output_dir, preserve_status=False)
-    rebuild_index(output_dir, public_base_url=public_base_url)
+    # Locked end to end so two writers on one pack can't interleave, and the index is patched in
+    # place: a full rebuild per claim took ~12 s of GIL-bound parsing and queued every other agent.
+    with _index_lock(output_dir):
+        data = load_pack(output_dir, pack_id)
+        if data is None:
+            return None
+        pack = AgentCodingPack.from_dict(data, fallback_id=pack_id)
+        pack.apply_status(status, (note or "")[:2000])
+        if repair_updates:
+            pack.repair.update(repair_updates)
+        if verification_updates:
+            pack.verification.update(verification_updates)
+        write_pack(pack, output_dir, preserve_status=False)
+        _upsert_index_entry(output_dir, pack, public_base_url=public_base_url)
     return pack.to_dict()
 
 
