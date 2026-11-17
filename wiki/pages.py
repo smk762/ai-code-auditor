@@ -103,11 +103,6 @@ def repo_context(repo, notes: list[dict[str, Any]], structure: str, *, ecosystem
     return "\n".join(parts)
 
 
-# Pages go through the Batch API, whose requests run in no set order: a 5-minute entry often
-# expires before a repo's other pages reach it.
-CACHE_1H = {"type": "ephemeral", "ttl": "1h"}
-
-
 def draft_params(page: str, context: str, *, public: bool = False) -> dict[str, Any]:
     _, brief = PAGES[page]
     system = PAGE_SYSTEM + ("\n\n" + PUBLIC_RULES if public else "")
@@ -117,7 +112,7 @@ def draft_params(page: str, context: str, *, public: bool = False) -> dict[str, 
         "output_config": {"effort": PAGE_EFFORT},
         # the repo context is identical for every page of a repo, so it is cached
         "system": [{"type": "text", "text": system},
-                   {"type": "text", "text": context, "cache_control": CACHE_1H}],
+                   {"type": "text", "text": context, "cache_control": {"type": "ephemeral"}}],
         "messages": [{"role": "user", "content": f"Write the **{page}** page.\n\nBrief: {brief}"}],
     }
 
@@ -130,6 +125,6 @@ def verify_params(page: str, draft: str, structure: str, cited: str, *, public: 
         "max_tokens": PAGE_MAX_TOKENS,
         "output_config": {"effort": PAGE_EFFORT},
         "system": [{"type": "text", "text": system},
-                   {"type": "text", "text": structure, "cache_control": CACHE_1H}],
+                   {"type": "text", "text": structure, "cache_control": {"type": "ephemeral"}}],
         "messages": [{"role": "user", "content": f"## Cited code\n{cited}\n\n## Page brief\n{brief}\n\n## Draft\n{draft}"}],
     }

@@ -5,9 +5,6 @@ or more batches; results land in the ReviewCache, so the normal per-unit pass th
 (run cache-only) is all cache hits. Batch ids are recorded in the cache DB, so if this process
 dies mid-wait the next run harvests the finished batch instead of paying again.
 
-Each request carries 1-hour prompt-cache breakpoints after the ecosystem overview and the
-repo briefing (LLMClient.build_prompt_blocks), and requests go in grouped by repo.
-
 Spend: requests are priced up front and trimmed to what the `audit_batch` lane has left this
 budget month (security-relevant units first); actual usage is recorded in the spend ledger.
 """
@@ -160,14 +157,11 @@ def prefetch_reviews(repos: list[RepoConfig], *, poll_s: int = 60, max_wait_s: i
                 if len(unit.raw_text) > max_chars:
                     stats.skipped_oversize += 1
                     continue
-                # 1-hour breakpoints: batch requests run in parallel and in no set order, so a
-                # 5-minute entry can expire before the rest of the repo reaches it.
-                blocks = llm.build_prompt_blocks(unit, repo_path=str(root), ttl="1h")
-                prompt = "".join(b["text"] for b in blocks)
+                prompt = llm.build_prompt(unit, repo_path=str(root))
                 params: dict[str, Any] = {
                     "model": model,
                     "max_tokens": 8192,
-                    "messages": [{"role": "user", "content": blocks}],
+                    "messages": [{"role": "user", "content": prompt}],
                 }
                 if llm.effort:
                     params["output_config"] = {"effort": llm.effort}
@@ -195,9 +189,6 @@ def prefetch_reviews(repos: list[RepoConfig], *, poll_s: int = 60, max_wait_s: i
     if dry_run or not chosen:
         return stats
 
-    # Submit each repo's units together (then by file), so a batch holds runs of requests that
-    # share the cached overview + repo briefing rather than the budget-fit order's mix.
-    chosen.sort(key=lambda c: (c[4].repo, c[4].file_path, c[4].start_line))
     units_by_id = {c[2]: c[4] for c in chosen}
     requests = [{"custom_id": c[2], "params": c[3]} for c in chosen]
     stats.submitted = len(requests)

@@ -66,6 +66,22 @@ def test_openai_compatible_sends_chat_payload(monkeypatch: pytest.MonkeyPatch) -
     assert "prompt" not in seen
 
 
+def test_anthropic_routes_through_conductor_without_temperature(monkeypatch: pytest.MonkeyPatch) -> None:
+    import conductor.llm as cl
+
+    seen: dict[str, Any] = {}
+
+    def fake_completion(messages: list[dict[str, str]], **kw: Any) -> str:
+        seen.update(kw)
+        return "[]"
+
+    monkeypatch.setattr(cl, "completion", fake_completion)
+    c = _client("anthropic", model="claude-haiku-5-5")
+    assert c.generate("hi") == "[]"
+    assert seen["model"] == "anthropic/claude-haiku-5-5"
+    assert seen["temperature"] is None
+
+
 def test_generate_failure_is_logged_and_returns_empty(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

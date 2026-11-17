@@ -11,7 +11,7 @@ def _alive(pid: int) -> bool:
     status = Path(f"/proc/{pid}/status")
     try:
         return "\nState:\tZ" not in status.read_text()  # a zombie is dead, just not reaped
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):  # gone between the lookup and the read
         return False
 
 
