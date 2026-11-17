@@ -300,15 +300,22 @@ def resolution_events(packs: Iterable[PackView]) -> list[dict[str, Any]]:
     return events
 
 
+def _no_tests(e: dict[str, Any]) -> bool:
+    """A resolution no test backed. ``tool=lint_only`` names validate_patch's project run; the
+    evidence bar runs the patch's own tests separately, so a ``repro`` (a test that fails on dev
+    and passes patched) is tested even when that project run couldn't run."""
+    return e["method"] == "validator:lint_only" and e["evidence"] != "repro"
+
+
 def false_resolve_metric(events: list[dict[str, Any]]) -> dict[str, Any]:
     validator = [e for e in events if e["method"].startswith("validator:")]
-    lint = [e for e in validator if e["method"] == "validator:lint_only"]
+    lint = [e for e in validator if _no_tests(e)]
     bar = [e for e in events if e["evidence"]]
-    bar_lint = sum(e["method"] == "validator:lint_only" for e in bar)
+    bar_lint = sum(_no_tests(e) for e in bar)
     by_repo: dict[str, dict[str, int]] = defaultdict(lambda: {"validator": 0, "lint_only": 0})
     for e in validator:
         by_repo[e["repo"]]["validator"] += 1
-        by_repo[e["repo"]]["lint_only"] += e["method"] == "validator:lint_only"
+        by_repo[e["repo"]]["lint_only"] += _no_tests(e)
     return {
         "resolutions": len(events),
         "validator": len(validator),

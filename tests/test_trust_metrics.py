@@ -68,6 +68,14 @@ def test_false_resolve_since_bar_leaves_out_pre_bar_resolutions() -> None:
     assert (m["since_bar"], m["lint_only_since_bar"], m["rate_since_bar"]) == (2, 1, 0.5)
 
 
+def test_a_repro_is_tested_even_when_the_project_run_was_lint_only() -> None:
+    note = "validate_patch passed (repo=x, tool=lint_only, evidence={})"
+    packs = [pack("a", status="resolved", history=[("resolved", 3, note.format("repro"))]),
+             pack("b", status="resolved", history=[("resolved", 3, note.format("waiver"))])]
+    m = tm.false_resolve_metric(tm.resolution_events(packs))
+    assert (m["lint_only"], m["lint_only_since_bar"], m["rate_since_bar"]) == (1, 1, 0.5)
+
+
 def test_resolved_twice_is_two_resolutions_but_repeats_are_one() -> None:
     p = pack("a", status="resolved", history=[
         ("resolved", 1, LINT), ("resolved", 1.5, LINT),  # same resolution re-sent
