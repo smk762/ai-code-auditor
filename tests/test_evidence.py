@@ -370,3 +370,58 @@ def test_endpoint_refuses_a_base_ref_off_dev(mono) -> None:
     for ref, why in ((side, "not an ancestor"), ("--output=/tmp/x", "invalid git ref"), ("nope", "not a commit")):
         resp = client.post("/audit/validate_patch", json={"repo": "mono", "patch": FIX, "base_ref": ref})
         assert resp.status_code == 400 and why in resp.json()["detail"], (ref, resp.text)
+
+
+# ── revalidation (ai-audit revalidate) ───────────────────────────────────────
+
+def _history(out, pid):
+    from auditor.agent_pack import load_pack
+
+    d = load_pack(out, pid)
+    return d["status"], d["verification"]["evidence"]["kind"], [h["status"] for h in d["status_history"]]
+
+
+WAIVER = "add() is exercised only by the GPU pipeline; no unit seam exists"
+
+
+def test_revalidate_upgrades_a_waived_resolution_and_the_metric_reads_it(mono) -> None:
+    from auditor import trust_metrics as tm
+
+    _post(patch=FIX, pack_id=mono["pack"], evidence_waiver=WAIVER)
+    body = _post(patch=FIX + NEW_TEST, pack_id=mono["pack"], revalidate=True)
+    assert body["pack"]["updated"] and body["pack"]["evidence"] == "repro", body["pack"]
+    status, kind, hist = _history(mono["out"], mono["pack"])
+    assert (status, kind) == ("resolved", "repro") and hist[-2:] == ["resolved", "resolved"]
+    [e] = tm.resolution_events(tm.load_packs(mono["out"]))  # still one resolution, now proven
+    assert (e["method"], e["evidence"]) == ("validator:pytest", "repro")
+
+
+def test_revalidate_never_demotes(mono) -> None:
+    _post(patch=FIX, pack_id=mono["pack"], evidence_waiver=WAIVER)
+    body = _post(patch=FIX, pack_id=mono["pack"], revalidate=True)  # no test: nothing stronger
+    assert not body["pack"]["updated"] and "left as it was" in body["pack"]["reason"]
+    assert _history(mono["out"], mono["pack"])[:2] == ("resolved", "waiver")
+
+
+def test_revalidate_leaves_a_proven_resolution_alone(mono) -> None:
+    _post(patch=FIX + NEW_TEST, pack_id=mono["pack"])
+    body = _post(patch=FIX + NEW_TEST, pack_id=mono["pack"], revalidate=True)
+    assert not body["pack"]["updated"] and "nothing to revalidate" in body["pack"]["reason"]
+
+
+def test_revalidate_resolves_an_unverified_pack_with_proof(mono) -> None:
+    assert _post(patch=FIX, pack_id=mono["pack"])["pack"]["status"] == "unverified"
+    body = _post(patch=FIX + NEW_TEST, pack_id=mono["pack"], revalidate=True)
+    assert body["pack"]["updated"] and _history(mono["out"], mono["pack"])[:2] == ("resolved", "repro")
+
+
+def test_revalidate_does_nothing_with_the_bar_off(mono, monkeypatch) -> None:
+    monkeypatch.setenv("AI_AUDIT_EVIDENCE_BAR", "0")
+    body = _post(patch=FIX + NEW_TEST, pack_id=mono["pack"], revalidate=True)
+    assert not body["pack"]["updated"] and _history_status(mono["out"], mono["pack"]) == "open"
+
+
+def _history_status(out, pid):
+    from auditor.agent_pack import load_pack
+
+    return load_pack(out, pid)["status"]

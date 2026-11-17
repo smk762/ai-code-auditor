@@ -1512,6 +1512,9 @@ class _ValidatePatchRequest(BaseModel):
     # apply the patch to this commit (an ancestor of dev) instead of the dev tip, for a fix that
     # has merged already; the "before" runs use it too (#91). None: the dev tip, as before.
     base_ref: str | None = None
+    # re-check a fix that was resolved on a waiver or left unverified (``ai-audit revalidate``):
+    # stronger evidence is recorded on the pack, anything else leaves it exactly as it was
+    revalidate: bool = False
 
 
 def _load_pack_for_repo(pack_id: str, repo: str) -> tuple[dict[str, Any] | None, str]:
@@ -1530,7 +1533,7 @@ def _load_pack_for_repo(pack_id: str, repo: str) -> tuple[dict[str, Any] | None,
 
 def _resolve_pack_after_validation(
     pack_id: str, *, repo: str, tool: str, status: str = "resolved", note: str = "",
-    evidence: dict[str, Any] | None = None,
+    evidence: dict[str, Any] | None = None, expect: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Set *pack_id* to *status* (resolved, or unverified when the evidence fell short) after a
     passing validate_patch, recording the evidence on the pack. Never raises."""
@@ -1552,6 +1555,7 @@ def _resolve_pack_after_validation(
             note or f"validate_patch passed (repo={repo}, tool={tool})",
             public_base_url=public_base_url(),
             verification_updates=ver,
+            expect=expect,
         )
         refresh_pack_rag(out, updated)  # a resolved pack leaves the RAG collection; unverified stays
         return {"id": pack_id, "updated": updated is not None, "status": status}
@@ -1579,6 +1583,8 @@ def _judge_evidence(
                         base_sha=base_sha)
     if request.base_ref:
         d.evidence["base_ref"] = request.base_ref.strip()
+    if request.revalidate:
+        return _upgrade_evidence(request, pack, d, tool=tool)
     if d.status == "resolved":
         note = f"validate_patch passed (repo={request.repo}, tool={tool}, evidence={d.kind})"
     else:
@@ -1587,6 +1593,33 @@ def _judge_evidence(
                                          note=note, evidence=d.evidence)
     out["evidence"] = d.kind
     out["reason"] = d.reason
+    return {"pack": out, "evidence": d.evidence}
+
+
+# Packs a revalidation may touch: resolved on a waiver, or left unverified. Evidence it may record.
+REVALIDATE_FROM = frozenset({"resolved", "unverified"})
+REVALIDATE_TO = frozenset({"repro", "tests", "test_only", "non_code"})
+
+
+def _upgrade_evidence(request: "_ValidatePatchRequest", pack: dict[str, Any], d: Any, *, tool: str) -> dict[str, Any]:
+    """Record *d* on the pack only when it is stronger than what the pack has. Never demotes:
+    a waived resolution whose re-check found nothing better stays resolved on its waiver."""
+    pid = request.pack_id or ""
+    status = str(pack.get("status") or "")
+    had = str(((pack.get("verification") or {}).get("evidence") or {}).get("kind") or "")
+    keep = {"id": pid, "updated": False, "status": status, "evidence": d.kind}
+    if status not in REVALIDATE_FROM or (status == "resolved" and had != "waiver"):
+        why = f"nothing to revalidate: pack is {status}" + (f" on {had or 'unrecorded'} evidence" if status == "resolved" else "")
+        return {"pack": {**keep, "reason": why}}
+    if d.status != "resolved" or d.kind not in REVALIDATE_TO:
+        return {"pack": {**keep, "reason": f"no stronger evidence, pack left as it was: {d.reason}"},
+                "evidence": d.evidence}
+    d.evidence["revalidated"] = {"previous": had or "none", "previous_status": status}
+    note = (f"validate_patch passed (repo={request.repo}, tool={tool}, evidence={d.kind}, "
+            f"revalidated from {had or status})")
+    out = _resolve_pack_after_validation(pid, repo=request.repo, tool=tool, status="resolved", note=note,
+                                         evidence=d.evidence, expect=REVALIDATE_FROM)
+    out.update(evidence=d.kind, reason=d.reason)
     return {"pack": out, "evidence": d.evidence}
 
 
@@ -1775,6 +1808,9 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
                 # tests pass, but a claimed-equivalent change has a counterexample: a human decides
                 response["pack"] = {"id": request.pack_id, "updated": False,
                                     "reason": f"{len(refuted)} 'trust me' change(s) have a counterexample"}
+            elif not evidence_bar_enabled() and request.revalidate:
+                response["pack"] = {"id": request.pack_id, "updated": False,
+                                    "reason": "revalidation needs the evidence bar (AI_AUDIT_EVIDENCE_BAR)"}
             elif not evidence_bar_enabled():
                 response["pack"] = _resolve_pack_after_validation(
                     request.pack_id, repo=request.repo, tool=val_result.tool,
