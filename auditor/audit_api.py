@@ -89,6 +89,45 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="ai-code-auditor API", version="1.0.0")
 app.mount(STATIC_URL, StaticFiles(directory=STATIC_DIR), name="static")
 
+# ── slow-request monitor ─────────────────────────────────────────────────────
+# Every request over AI_AUDIT_SLOW_REQUEST_MS is logged and counted per route, and /audit/health
+# reports the counts, so a hot path that degrades shows up without someone noticing a stall.
+# Routes that are slow by design (they run test suites, start jobs or stream) are exempt.
+SLOW_BY_DESIGN = frozenset({"/audit/validate_patch", "/audit/runs/{run_id}/stream"})
+_slow_lock = threading.Lock()
+_slow_requests: dict[str, dict[str, Any]] = {}
+
+
+def _slow_threshold_ms() -> float:
+    try:
+        return float(os.getenv("AI_AUDIT_SLOW_REQUEST_MS", "1000"))
+    except ValueError:
+        return 1000.0
+
+
+@app.middleware("http")
+async def _time_requests(request: Request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - started) * 1000
+    route = getattr(request.scope.get("route"), "path", None) or "(unmatched)"
+    if ms >= _slow_threshold_ms() and route not in SLOW_BY_DESIGN:
+        logger.warning("slow request: %s %s took %.0f ms", request.method, route, ms)
+        key = f"{request.method} {route}"
+        with _slow_lock:
+            s = _slow_requests.setdefault(key, {"count": 0, "max_ms": 0.0, "last_ms": 0.0, "last_at": ""})
+            s["count"] += 1
+            s["max_ms"] = round(max(s["max_ms"], ms))
+            s["last_ms"] = round(ms)
+            s["last_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return response
+
+
+def slow_requests() -> dict[str, dict[str, Any]]:
+    """Requests over the threshold since the server started, per ``METHOD /route``."""
+    with _slow_lock:
+        return {k: dict(v) for k, v in sorted(_slow_requests.items())}
+
 
 def _require_mutating_auth(
     authorization: str | None = Header(default=None),
@@ -362,6 +401,8 @@ def health() -> JSONResponse:
         "vram_free_mb":  vram.free_mb  if vram else 0,
         "vram_total_mb": vram.total_mb if vram else 0,
         "vram_used_mb":  vram.used_mb  if vram else 0,
+        # Requests over AI_AUDIT_SLOW_REQUEST_MS since start; should stay empty (see _time_requests)
+        "slow_requests": slow_requests(),
     }
     return JSONResponse(body)
 
@@ -636,7 +677,7 @@ def get_topology_map_json() -> JSONResponse:
     """Nodes and edges for the ecosystem map (documented flow, code imports, service use, violations)."""
     from auditor.ui_topology import topology_data
 
-    return JSONResponse(topology_data(_output_dir()))
+    return JSONResponse(topology_data(_output_dir(), isolate=True))
 
 
 @app.get("/audit/usage", response_class=HTMLResponse)
