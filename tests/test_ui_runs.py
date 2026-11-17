@@ -214,7 +214,7 @@ def test_findings_pack_matrix_counts_pack_work_over_the_whole_run(history, tmp_p
     out = _pack_index(tmp_path, [_pk("pack-kept", "kept", status="resolved"), _pk("pack-fresh", "fresh")])
     d = ui_runs.findings_data("x-2", output_dir=out, severity="low")  # filters don't narrow it
     assert d["pack_matrix"] == {"x": {"by_status": {"resolved": 1, "open": 1, "none": 1},
-                                      "resolved_by_severity": {"HIGH": 1}}}
+                                      "resolved_by_severity": {"HIGH": 1}, "open_by_severity": {"LOW": 1}}}
     assert ui_runs.findings_data("x-2")["pack_matrix"] is None
 
 def test_findings_show_a_closed_duplicate_as_its_keeper(history, tmp_path) -> None:

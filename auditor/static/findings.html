@@ -126,6 +126,22 @@ const els = { repo: "f-repo", severity: "f-severity", source: "f-source", type: 
 const PACK_STATUSES = ["open", "claimed", "in_progress", "unverified", "resolved", "wontfix", "obsolete", "none"];
 const PACK_CLASS = { claimed: "warn", in_progress: "warn", unverified: "warn", resolved: "ok", wontfix: "muted", obsolete: "muted" };
 let openPacks = { list: [], total: 0 };
+// The agent prompt should hand over a workable batch, not every open pack in the run. With no repo
+// or severity in the URL, the first load narrows to this pair, or, when it has no open packs, to a
+// random repo/severity pair that has some. Only once: choosing "all" afterwards sticks.
+const DEFAULT_SCOPE = { repo: "ai-code-auditor", severity: "HIGH" };
+let scopeChosen = Boolean(state.repo || state.severity);
+
+// {repo, severity} to start from, or null when no pack in the run is open.
+function defaultScope(d) {
+  const pairs = [];
+  for (const [repo, c] of Object.entries(d.pack_matrix || {}))
+    for (const [severity, n] of Object.entries(c.open_by_severity || {})) if (n) pairs.push({ repo, severity });
+  if (!pairs.length) return null;
+  return pairs.find((x) => x.repo === DEFAULT_SCOPE.repo && x.severity === DEFAULT_SCOPE.severity)
+    || pairs[Math.floor(Math.random() * pairs.length)];
+}
+const openInRun = (d) => Object.values(d.pack_matrix || {}).reduce((a, c) => a + (c.by_status?.open || 0), 0);
 const rowPacks = new Map();
 for (const k in els) els[k] = document.getElementById(els[k]);
 els.q.value = state.q;
@@ -385,6 +401,11 @@ function render(d) {
     document.querySelector("#table tbody").innerHTML = `<tr><td colspan="7" class="empty">Nothing to show.</td></tr>`;
     return;
   }
+  if (!scopeChosen) {
+    scopeChosen = true;
+    const pick = defaultScope(d);
+    if (pick) { state.repo = pick.repo; state.severity = pick.severity; load(); return; }
+  }
   const r = d.run;
   document.getElementById("sub").innerHTML =
     `<a href="/ui/runs/${encodeURIComponent(r.run_id)}">${esc(r.pipeline)} <span class="mono">${esc(r.run_id)}</span></a> · ${UI.ago(r.started_at)} · ` +
@@ -413,7 +434,11 @@ function render(d) {
     rowPacks.set(f.pack.id, { id: f.pack.id, repo: f.repo, severity: f.severity, type: f.type, path: f.path, line: f.line, title: f.title });
   const copyAll = document.getElementById("copy-all");
   copyAll.disabled = !ps.open_total;
-  copyAll.textContent = ps.open_total ? `Copy agent prompt (${int(ps.open_total)} open ${ps.open_total === 1 ? "pack" : "packs"})` : "Copy agent prompt";
+  const scope = [state.repo, state.severity && state.severity.toLowerCase()].filter(Boolean).join(" · ");
+  copyAll.textContent = ps.open_total
+    ? `Copy agent prompt (${int(ps.open_total)} open ${ps.open_total === 1 ? "pack" : "packs"}${scope ? ` · ${scope}` : ""})`
+    : d.pack_matrix && !openInRun(d) ? "All packs in this run are handled: nothing open"
+    : "No open packs match these filters";
   document.getElementById("pack-summary").textContent = PACK_STATUSES.filter((s) => ps.by_status[s])
     .map((s) => `${int(ps.by_status[s])} ${s === "none" ? "without a pack" : s.replace("_", " ")}`).join(" · ");
   refreshPrompt();
