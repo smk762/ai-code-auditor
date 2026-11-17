@@ -200,6 +200,27 @@ def test_ci_test_extras_are_installed_too(tmp_path: Path) -> None:
     assert validator.ci_test_extras(bare) == []
 
 
+def test_ci_extras_from_install_steps_and_all_extras(tmp_path: Path) -> None:
+    # argus-realms installs ".[server,dev]" in a step; argus-mint syncs --all-extras. Both left
+    # the venv without what the tests import (fastapi, typer, PIL), so every patch was lint-only.
+    pyproject = ('[project]\nname = "argus-mint"\ndependencies = ["pydantic>=2.7"]\n'
+                 '[project.optional-dependencies]\n'
+                 'cli = ["typer>=0.12"]\nframes = ["pillow>=11.0"]\nserver = ["fastapi>=0.110", "argus-mint[cli,frames]"]\n'
+                 'dev = ["pytest>=8.0"]\n')
+    step = tmp_path / "step"
+    _write(step, {"pyproject.toml": pyproject,
+                  ".github/workflows/ci.yml": "steps:\n  - run: uv venv && uv pip install -e \".[server,dev]\"\n"})
+    assert validator.ci_test_extras(step) == ["server", "dev"]
+    assert validator._declared_deps(step)[1] == ["pydantic>=2.7", "pytest>=8.0", "fastapi>=0.110",
+                                                 "typer>=0.12", "pillow>=11.0"]
+    sync = tmp_path / "sync"
+    _write(sync, {"pyproject.toml": pyproject,
+                  ".github/workflows/ci.yml": "steps:\n  - run: uv sync --locked --all-extras --python 3.12\n"})
+    assert validator.ci_test_extras(sync) == [validator.ALL_EXTRAS]
+    assert set(validator._declared_deps(sync)[1]) == {"pydantic>=2.7", "pytest>=8.0", "fastapi>=0.110",
+                                                      "typer>=0.12", "pillow>=11.0"}
+
+
 def test_venv_build_uses_a_writable_pip_cache(tmp_path: Path, monkeypatch) -> None:
     envs: list[dict] = []
 

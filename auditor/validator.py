@@ -403,6 +403,11 @@ _PYPROJECT_EXTRAS = ("dev", "test", "tests")
 # argus-ci's python-ci.yml installs `.[<test-extras>]` before pytest; a repo's CI names the extras
 # its tests need (argus-forge: "dev,server,cli"), so the venv installs the same ones.
 _CI_TEST_EXTRAS_RE = re.compile(r"^\s*test-extras:\s*[\"']?([A-Za-z0-9_,\s-]+?)[\"']?\s*(?:#.*)?$", re.MULTILINE)
+# Standalone workflows install extras themselves: `uv sync --all-extras` (argus-mint, atlas, survey)
+# or `pip install -e ".[server,dev]"` / `uv pip install ".[dev,cli]"` (realms, quarry).
+_CI_INSTALL_EXTRAS_RE = re.compile(r"\binstall\b[^\n]*?[\"']?\.\[([A-Za-z0-9_,\s-]+)\]")
+_CI_ALL_EXTRAS_RE = re.compile(r"--all-extras\b")
+ALL_EXTRAS = "*"  # in ci_test_extras(): CI installs every extra the project declares
 # Fatal-only lint (syntax errors, undefined names, bad comparisons): what flake8 calls the "E9,F63,F7,F82"
 # set. Style rules are left out on purpose, and --isolated ignores repo config that would add them.
 _RUFF_SELECT = "E9,F63,F7,F82"
@@ -429,8 +434,9 @@ def project_root(tree: Path, rel_path: str) -> Path:
 
 
 def ci_test_extras(root: Path) -> list[str]:
-    """Extras the repo's CI installs for its tests: every ``test-extras`` input in the nearest
-    ``.github/workflows`` at or above *root* (argus-ci's python-ci.yml). [] when none is set."""
+    """Extras the repo's CI installs for its tests, from the nearest ``.github/workflows`` at or
+    above *root*: argus-ci's ``test-extras`` input, extras a step installs (``.[a,b]``), and
+    :data:`ALL_EXTRAS` for ``--all-extras``. [] when none is set."""
     for d in (root, *root.parents[:4]):  # a project dir is at most a few levels into its repo
         wf = d / ".github" / "workflows"
         if wf.is_dir():
@@ -440,8 +446,10 @@ def ci_test_extras(root: Path) -> list[str]:
                     text = f.read_text(encoding="utf-8")
                 except OSError:
                     continue
-                for m in _CI_TEST_EXTRAS_RE.finditer(text):
+                for m in [*_CI_TEST_EXTRAS_RE.finditer(text), *_CI_INSTALL_EXTRAS_RE.finditer(text)]:
                     found += [e.strip() for e in m.group(1).split(",") if e.strip()]
+                if _CI_ALL_EXTRAS_RE.search(text):
+                    found.append(ALL_EXTRAS)
             return list(dict.fromkeys(found))
         if (d / ".git").exists():  # the repo's top, and it has no workflows
             break
@@ -464,7 +472,10 @@ def _declared_deps(root: Path) -> tuple[list[Path], list[str]]:
         extras = project.get("optional-dependencies") or {}
         own = _norm_name(str(project.get("name") or ""))
         specs += _expand_self_refs([str(s) for s in project.get("dependencies") or []], own, extras)
-        for name in dict.fromkeys([*_PYPROJECT_EXTRAS, *ci_test_extras(root)]):
+        names = [*_PYPROJECT_EXTRAS, *ci_test_extras(root)]
+        if ALL_EXTRAS in names:
+            names = [*_PYPROJECT_EXTRAS, *extras]
+        for name in dict.fromkeys(n for n in names if n != ALL_EXTRAS):
             specs += _expand_self_refs([str(s) for s in extras.get(name) or []], own, extras, frozenset({name}))
     return req_files, list(dict.fromkeys(specs))
 
