@@ -4,7 +4,8 @@
     python scripts/model_eval.py --n 50 --dry-run      # sample + cost estimate, no API calls
     python scripts/model_eval.py --n 50                 # run (spends API credit)
 
-Every arm gets the exact production prompt (LLMClient.build_prompt). The judge sees each
+Every arm gets the exact production request (LLMClient.build_prompt_blocks, cache
+breakpoints included), priced as the spend ledger prices it. The judge sees each
 unit's code plus all arms' findings, shuffled and anonymised, and labels each finding
 real / false_positive / unclear, groups duplicates under one issue_key, and lists real
 issues nobody found. Recall is measured against that pooled set of known issues, so it is
@@ -39,13 +40,7 @@ from auditor.ecosystem_briefing import build_repo_briefing  # noqa: E402
 from auditor.llm_client import LLMClient, _parse_findings_json  # noqa: E402
 from auditor.repo_resolver import resolve_scan_root  # noqa: E402
 from auditor.repo_scanner import scan_repo  # noqa: E402
-
-# $ per 1M tokens (input, output) — Anthropic first-party rates.
-PRICES = {
-    "claude-haiku-5-5": (0.10, 0.50),
-    "claude-sonnet-5-5": (2.00, 10.00),
-    "claude-opus-5-5": (4.00, 20.00),
-}
+from auditor.spend_ledger import PRICES, cost_usd  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -130,16 +125,15 @@ Judge on the code and context alone. Do not reward length or confident wording."
 
 
 def price(model: str, usage: Any) -> float:
-    pin, pout = PRICES[model]
-    inp = (
-        usage.input_tokens
-        + (usage.cache_creation_input_tokens or 0) * 1.25
-        + (usage.cache_read_input_tokens or 0) * 0.1
-    )
-    return (inp * pin + usage.output_tokens * pout) / 1e6
+    split = getattr(usage, "cache_creation", None)
+    return cost_usd(model, usage.input_tokens, usage.output_tokens,
+                    cache_write=usage.cache_creation_input_tokens or 0,
+                    cache_read=usage.cache_read_input_tokens or 0,
+                    cache_write_1h=getattr(split, "ephemeral_1h_input_tokens", 0) or 0)
 
 
-def call(client: anthropic.Anthropic, arm: Arm, content: str, max_tokens: int, schema: dict | None = None) -> dict:
+def call(client: anthropic.Anthropic, arm: Arm, content: str | list[dict[str, Any]], max_tokens: int,
+         schema: dict | None = None) -> dict:
     kwargs: dict[str, Any] = {"effort": arm.effort}
     if schema:
         kwargs["format"] = {"type": "json_schema", "schema": schema}
@@ -159,6 +153,8 @@ def call(client: anthropic.Anthropic, arm: Arm, content: str, max_tokens: int, s
         "stop_reason": msg.stop_reason,
         "latency_s": round(time.time() - t0, 2),
         "input_tokens": msg.usage.input_tokens,
+        "cache_read_tokens": msg.usage.cache_read_input_tokens or 0,
+        "cache_write_tokens": msg.usage.cache_creation_input_tokens or 0,
         "output_tokens": msg.usage.output_tokens,
         "cost": price(arm.model, msg.usage),
     }
@@ -224,13 +220,15 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     sample = sample_units(args.n, args.seed, args.risky_share)
-    prompts: dict[str, str] = {}
+    prompts: dict[str, str] = {}  # shown to the judge
+    requests: dict[str, list[dict[str, Any]]] = {}  # sent to the arms
     for unit, root, briefing in sample:
         llm = LLMClient(
             provider_config=ModelProviderConfig(provider="anthropic", model="eval", endpoint=""),
             repo_briefing=briefing,
         )
-        prompts[unit.id] = llm.build_prompt(unit, repo_path=root)
+        requests[unit.id] = llm.build_prompt_blocks(unit, repo_path=root)
+        prompts[unit.id] = "".join(b["text"] for b in requests[unit.id])
     (out / "sample.json").write_text(
         json.dumps([{**asdict(u), "raw_text": None} for u, _, _ in sample], indent=1, default=str)
     )
@@ -254,7 +252,7 @@ def main() -> int:
 
     def run_arm(job: tuple[Arm, str]) -> None:
         arm, uid = job
-        r = call(client, arm, prompts[uid], max_tokens=8192)
+        r = call(client, arm, requests[uid], max_tokens=8192)
         parsed = _parse_findings_json(r.get("text", ""), units[uid]) if "text" in r else None
         r["parse_ok"] = parsed is not None
         r["findings"] = [asdict(f) for f in (parsed or [])]
@@ -341,6 +339,9 @@ def main() -> int:
             "cost_per_unit": cost / len(rs),
             "full_sweep_batch": cost / len(rs) * 6357 / 2,
             "latency_s": sum(r.get("latency_s", 0) for r in rs) / len(rs),
+            "cache_read_share": sum(r.get("cache_read_tokens", 0) for r in rs)
+            / max(1, sum(r.get("input_tokens", 0) + r.get("cache_read_tokens", 0) + r.get("cache_write_tokens", 0)
+                         for r in rs)),
             "errors": sum(1 for r in rs if "error" in r),
             "parse_fail": sum(1 for r in rs if "error" not in r and not r["parse_ok"]),
         })
@@ -354,14 +355,14 @@ def main() -> int:
         f"Known real issues: {len(all_real)} ({len(all_high)} HIGH/CRITICAL). Total spend ${total:.2f} "
         f"(judge ${judge_cost:.2f}).",
         "",
-        "| Arm | Findings | Precision | Recall (all) | Recall (HIGH+) | Real issues | $/unit | Full sweep via batch | Avg latency | Errors | Parse fails |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| Arm | Findings | Precision | Recall (all) | Recall (HIGH+) | Real issues | $/unit | Full sweep via batch | Cache read | Avg latency | Errors | Parse fails |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         md.append(
             f"| {r['arm']} | {r['findings']} | {r['precision']:.0%} | {r['recall']:.0%} | "
             f"{r['high_recall']:.0%} | {r['real_issues']} | ${r['cost_per_unit']:.4f} | "
-            f"${r['full_sweep_batch']:.2f} | {r['latency_s']:.1f}s | {r['errors']} | {r['parse_fail']} |"
+            f"${r['full_sweep_batch']:.2f} | {r['cache_read_share']:.0%} | {r['latency_s']:.1f}s | {r['errors']} | {r['parse_fail']} |"
         )
     md += [
         "",
