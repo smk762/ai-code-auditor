@@ -55,6 +55,7 @@ Start:
 """
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -130,6 +131,11 @@ def slow_requests() -> dict[str, dict[str, Any]]:
         return {k: dict(v) for k, v in sorted(_slow_requests.items())}
 
 
+def _secret_equal(given: str, expected: str) -> bool:
+    """Constant-time compare, so response time doesn't leak how much of a secret matched."""
+    return hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8"))
+
+
 def _require_mutating_auth(
     authorization: str | None = Header(default=None),
     x_auth_code: str | None = Header(default=None, alias="X-Auth-Code"),
@@ -146,13 +152,13 @@ def _require_mutating_auth(
     if not cfg.auth_mode and not api_token:
         return
 
-    if api_token and (x_api_token or "").strip() == api_token:
+    if api_token and _secret_equal((x_api_token or "").strip(), api_token):
         return
 
     if cfg.auth_mode:
         expected_env = cfg.auth_code_env or "AI_AUDIT_AUTH_CODE"
         expected = os.getenv(expected_env, "")
-        if expected and (x_auth_code or "") == expected:
+        if expected and _secret_equal(x_auth_code or "", expected):
             return
 
     bearer = (authorization or "").strip()
