@@ -64,3 +64,17 @@ def test_next_reset_clamps_to_month_end():
     assert _next_reset(date(2028, 1, 30)) == date(2028, 2, 29)
     assert _next_reset(date(2026, 3, 31)) == date(2026, 4, 30)
     assert _next_reset(date(2026, 12, 15)) == date(2027, 1, 15)
+
+
+@pytest.mark.parametrize("key", ["week", "7days", "all", "1.5d", ""])
+def test_unparseable_range_falls_back_instead_of_raising(key: str) -> None:
+    d = usage_data(key)
+    assert d["range"] == key and d["range_start"]
+
+
+def test_headline_projection_matches_the_chart_end() -> None:
+    led = get_ledger()
+    led.record("audit", "claude-haiku-5-5", 7_000_000, 0, note="argus-mask")  # $0.70 recurring
+    d = usage_data("month")
+    assert d["month"]["burn_per_day"] > 0
+    assert d["month"]["projected"] == pytest.approx(d["cumulative"][-1]["projected"], abs=1e-3)

@@ -39,7 +39,10 @@ def usage_data(range_key: str = "month") -> dict[str, Any]:
     if range_key == "month":
         r_start = m_start
     else:
-        days = max(1, min(int(range_key.rstrip("d") or 14), 90))
+        try:
+            days = max(1, min(int(str(range_key).rstrip("d") or 14), 90))
+        except ValueError:  # "week", "1.5d", a stale URL: the default window, not a 500
+            days = 14
         r_start = today - timedelta(days=days - 1)
     since = min(r_start, m_start)
     rows = ledger.rows_since(datetime(since.year, since.month, since.day).timestamp())
@@ -136,7 +139,9 @@ def usage_data(range_key: str = "month") -> dict[str, Any]:
             "cap": caps.get("total"),
             "burn_per_day": round(burn, 4),
             "one_off": round(one_off, 4),
-            "projected": round(month_spent + burn * days_left, 4),
+            # Same definition as the chart's last point: today is already in month_spent, so
+            # only the full days after it are projected.
+            "projected": round(month_spent + burn * max(days_left - 1, 0), 4),
         },
         "range_totals": {"cost": round(sum(by_lane.values()), 4), "calls": calls,
                          "input_tokens": tokens_in, "output_tokens": tokens_out},
