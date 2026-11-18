@@ -76,42 +76,45 @@ def completion(
         # deprecated for this model"), so never send it on the Anthropic path.
         temperature = None
         get_ledger().check(lane)
+    elif _is_openai_reasoning(chosen):
+        temperature = None  # OpenAI reasoning models reject a non-default temperature
     extra: dict[str, Any] = {}
     if temperature is not None:
         extra["temperature"] = temperature
     if effort and chosen.startswith("anthropic/"):
         extra["output_config"] = {"effort": effort}
+    elif effort and _is_openai_reasoning(chosen):
+        extra["reasoning_effort"] = _openai_effort(effort)
+    elif effort and not is_anthropic:
+        logger.warning("effort=%s ignored: %s takes no reasoning effort", effort, chosen)
     try:
         import litellm  # type: ignore
-
-        resp = litellm.completion(
-            model=chosen,
-            messages=messages,
-            max_tokens=max_tokens,
-            **extra,
-        )
-        if is_anthropic:
-            _record_litellm_usage(lane, chosen, resp, note)
-        return str(resp.choices[0].message.content or "")
     except ImportError:
         logger.debug("litellm not installed; using requests fallback for %s", chosen)
         return _requests_completion(
             chosen, messages, temperature=temperature, max_tokens=max_tokens, effort=effort, lane=lane,
             note=note,
         )
+    try:
+        resp = litellm.completion(
+            model=chosen,
+            messages=messages,
+            max_tokens=max_tokens,
+            **extra,
+        )
     except Exception as exc:
+        # Only a failed model call reaches the fallbacks: once a call has succeeded (and
+        # been billed), nothing after it may re-issue the request to another model.
         if not use_fallbacks:
             raise
         for fb in models.fallbacks:
             fb_anthropic = _is_anthropic(fb)
             # Same rules as the primary path: Claude rejects sampling params, and
             # every Anthropic call is budget-checked and recorded in the ledger.
-            fb_temperature = None if fb_anthropic else requested_temperature
+            fb_temperature = None if fb_anthropic or _is_openai_reasoning(fb) else requested_temperature
             if fb_anthropic:
                 get_ledger().check(lane)
             try:
-                import litellm  # type: ignore
-
                 resp = litellm.completion(
                     model=fb,
                     messages=messages,
@@ -125,10 +128,28 @@ def completion(
             logger.warning("primary model %s failed (%s); used fallback %s", chosen, exc, fb)
             return str(resp.choices[0].message.content or "")
         raise
+    if is_anthropic:
+        _record_litellm_usage(lane, chosen, resp, note)
+    return str(resp.choices[0].message.content or "")
 
 
 def _is_anthropic(model: str) -> bool:
     return model.startswith("anthropic/") or model.startswith("claude")
+
+
+def _is_openai_reasoning(model: str) -> bool:
+    """OpenAI reasoning models (o1/o3/o4, gpt-5): they take ``max_completion_tokens`` and
+    ``reasoning_effort``, and reject ``max_tokens`` and a non-default ``temperature``."""
+    if not (model.startswith("openai/") or model.startswith("gpt") or model[:2] in ("o1", "o3", "o4")):
+        return False
+    name = model.split("/", 1)[-1].lower()
+    return name.startswith(("o1", "o3", "o4", "gpt-5"))
+
+
+def _openai_effort(effort: str) -> str:
+    """Anthropic effort levels (low..max) mapped onto OpenAI's reasoning_effort (low|medium|high)."""
+    e = (effort or "").strip().lower()
+    return e if e in ("minimal", "low", "medium", "high") else "high"
 
 
 def _record_litellm_usage(lane: str, model: str, resp: Any, note: str = "") -> None:
@@ -212,18 +233,31 @@ def _requests_completion(
 
     if not key:
         raise RuntimeError("API key missing for provider")
+    is_openai = base.startswith("https://api.openai.com/")
+    reasoning = is_openai and _is_openai_reasoning(model)
+    body = {
+        "model": name,
+        "messages": messages,
+        # OpenAI deprecated max_tokens, and its reasoning models reject it with a 400.
+        ("max_completion_tokens" if is_openai else "max_tokens"): max_tokens,
+    }
+    if temperature is not None and not reasoning:
+        body["temperature"] = temperature
+    if effort and reasoning:
+        body["reasoning_effort"] = _openai_effort(effort)
+    elif effort:
+        logger.warning("effort=%s ignored: %s takes no reasoning effort", effort, model)
     resp = requests.post(
         base,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json={
-            "model": name,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            **({"temperature": temperature} if temperature is not None else {}),
-        },
+        json=body,
         timeout=120,
     )
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        # Surface the API's error message (e.g. unknown model, rejected param).
+        raise RuntimeError(f"{model} API {resp.status_code}: {resp.text[:300]}") from exc
     data = resp.json()
     usage = data.get("usage") or {}
     try:
