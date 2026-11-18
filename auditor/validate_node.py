@@ -274,12 +274,34 @@ def _against_base(script: str, args: list[str], root: Path, tree: Path, base_tre
                             errors=[], raw_output=res.raw_output)
 
 
+def _env_gap_is_the_cause(root: Path, script: str, output: str) -> bool:
+    """True when *script* couldn't start here: node itself is missing, or the command the script
+    runs first isn't installed. A missing command reported from inside a running check is not."""
+    if re.search(r"env: .?node.?: No such file", output):
+        return True
+    try:
+        cmd = str((json.loads((root / "package.json").read_text(encoding="utf-8")).get("scripts") or {})
+                  .get(script) or "")
+    except (OSError, ValueError):
+        return False
+    first = next((t for t in cmd.split() if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t)), "")
+    if not first:
+        return False
+    b = re.escape(first)
+    return bool(re.search(rf"(^|\n)(sh: \d+: {b}: not found|(\S+: )*(line \d+: )?{b}: command not found)", output))
+
+
 def _syntax_check(tree: Path, files: list[str], timeout_s: int) -> ValidationResult:
     """``node --check`` each plain JS file: syntax only, the JS counterpart of the fatal-only ruff lint."""
     failed: list[str] = []
     total = 0
+    tree_r = tree.resolve()
     for f in files:
-        r = _run(["node", "--check", f], tree, timeout_s, tool=SYNTAX_TOOL)
+        if not (tree / f).resolve().is_relative_to(tree_r):
+            failed.append(f"{f}: resolves outside the tree, not checked")
+            continue
+        # "--" ends node's options: a file named "--require=x.js" must be a path, not an option.
+        r = _run(["node", "--check", "--", f], tree, timeout_s, tool=SYNTAX_TOOL)
         total += r.duration_ms
         if not r.passed:
             failed.append(r.raw_output.strip())
@@ -327,10 +349,13 @@ def validate_node_projects(
         results: list[tuple[str, ValidationResult]] = []
         for script, args in checks:
             res = _run(["npm", *args], root, timeout_s)
-            if not res.passed and _ENV_GAP_RE.search(res.raw_output):
+            if not res.passed and _env_gap_is_the_cause(root, script, res.raw_output):
                 line = next((ln for ln in res.raw_output.splitlines() if _ENV_GAP_RE.search(ln)), "")
                 out.notes.append(f"{label}: {script} can't run here, skipped: {line.strip()[:200]}")
                 continue
+            # Any other failure, even one whose output mentions a missing command (a patch can break
+            # an import or spawn a missing binary), is judged against the base tree: it is only
+            # discounted when the base fails the same way.
             if not res.passed and base_tree is not None:
                 res = _against_base(script, args, root, tree, base_tree, cache_dir, timeout_s, res, label,
                                     out.notes)
