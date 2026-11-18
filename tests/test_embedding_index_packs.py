@@ -23,7 +23,7 @@ def _remote(tmp_path: Path, dim: int = 4) -> EmbeddingIndex:
 
 @pytest.fixture(autouse=True)
 def _no_retry_sleep(monkeypatch):
-    monkeypatch.setattr(ei, "with_retries", lambda func, retries=3, base_delay_s=1.0: func())
+    monkeypatch.setattr("auditor.retry.time.sleep", lambda s: None)
 
 
 def test_the_code_body_is_embedded_not_its_hash(tmp_path: Path, monkeypatch) -> None:
@@ -52,3 +52,73 @@ def test_remote_vectors_are_fitted_to_the_index_dim(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(idx, "_remote_openai_embedding", lambda text: [1.0, 0.0])
     with pytest.raises(ValueError, match="returned 2 dims"):
         idx._embed_text("x")
+
+
+class _Resp:
+    def __init__(self, status: int, body: dict | None = None):
+        self.status_code, self._body = status, body or {}
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise ei.requests.HTTPError(f"{self.status_code}", response=self)
+
+    def json(self) -> dict:
+        return self._body
+
+
+def _posts(monkeypatch, replies: list) -> list:
+    calls: list = []
+
+    def post(url, **kw):
+        calls.append(url)
+        r = replies[len(calls) - 1]
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    monkeypatch.setattr(ei.requests, "post", post)
+    return calls
+
+
+def test_a_transient_endpoint_failure_is_retried(tmp_path: Path, monkeypatch) -> None:
+    idx = _remote(tmp_path)
+    ok = _Resp(200, {"data": [{"embedding": [3.0, 4.0, 0.0, 0.0]}]})
+    calls = _posts(monkeypatch, [ei.requests.ConnectionError("reset"), _Resp(503), ok])
+    assert idx._embed_text("x") == pytest.approx([0.6, 0.8, 0.0, 0.0])
+    assert len(calls) == 3
+
+
+def test_a_client_error_is_not_retried_and_fails_loudly(tmp_path: Path, monkeypatch) -> None:
+    idx = _remote(tmp_path)
+    calls = _posts(monkeypatch, [_Resp(401)])
+    with pytest.raises(RuntimeError, match="returned no vector"):
+        idx._embed_text("x")
+    assert len(calls) == 1
+    _posts(monkeypatch, [ei.requests.ConnectionError("down")])
+    assert idx.health_check() == (False, "embedding endpoint unavailable")
+
+
+class _FaissThatCannotReadJson:
+    @staticmethod
+    def read_index(path: str):
+        raise RuntimeError("Error in faiss::read_index: not a faiss index")
+
+
+def test_a_json_index_is_searchable_where_faiss_is_installed(tmp_path: Path, monkeypatch) -> None:
+    local = EmbedderProviderConfig(provider="local-hash", model="local-hash")
+    monkeypatch.setattr(ei, "faiss", None)
+    EmbeddingIndex(path=str(tmp_path / "idx.faiss"), provider_config=local).rebuild([_unit(1, "a"), _unit(2, "b")])
+    monkeypatch.setattr(ei, "faiss", _FaissThatCannotReadJson)
+    monkeypatch.setattr(ei, "np", object())
+    hits = EmbeddingIndex(path=str(tmp_path / "idx.faiss"), provider_config=local).search("svc:svc/m1.py:f1\na")
+    assert {h["id"] for h in hits} == {"u1", "u2"}
+
+
+def test_json_vectors_left_in_the_index_path_by_an_older_build_still_search(tmp_path: Path, monkeypatch) -> None:
+    local = EmbedderProviderConfig(provider="local-hash", model="local-hash")
+    idx = EmbeddingIndex(path=str(tmp_path / "idx.faiss"), provider_config=local)
+    idx.path.write_text("[[1.0, 0.0], [0.0, 1.0]]")
+    idx.meta_path.write_text('[{"id": "u1"}, {"id": "u2"}]')
+    monkeypatch.setattr(ei, "faiss", _FaissThatCannotReadJson)
+    monkeypatch.setattr(ei, "np", object())
+    assert sorted(h["id"] for h in idx.search("q", top_k=2)) == ["u1", "u2"]

@@ -44,6 +44,7 @@ reports/_validate_git/
 graph/*.db
 index/code_embeddings.faiss
 index/code_embeddings.meta.json
+index/code_embeddings.vectors.json
 audit.db
 extraction-candidates-report.md
 tmp-chat.txt

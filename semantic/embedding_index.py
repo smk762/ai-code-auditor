@@ -27,6 +27,14 @@ def _unit_text(unit: CodeUnit) -> str:
     return f"{unit.repo}:{unit.file_path}:{unit.symbol}\n{(unit.raw_text or '')[:MAX_EMBED_CHARS]}"
 
 
+def _transient(exc: Exception) -> bool:
+    """Worth another attempt: no response, a timeout, a 429 or a 5xx (a 4xx would repeat itself)."""
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return True
+    return resp.status_code == 429 or resp.status_code >= 500
+
+
 def _hash_embedding(text: str, dim: int = DIM) -> list[float]:
     raw = hashlib.sha256(text.encode("utf-8")).digest()
     vec = [(raw[i % len(raw)] / 255.0) for i in range(dim)]
@@ -39,6 +47,9 @@ class EmbeddingIndex:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.meta_path = self.path.with_suffix(".meta.json")
+        # Vectors stored without faiss go to their own file, so an index built where faiss is missing
+        # is still readable where it is installed (and the other way round).
+        self.vectors_path = self.path.with_suffix(".vectors.json")
         self.records: list[dict] = []
         self._faiss_index = None
         self.provider_config = provider_config or load_embedder_provider_config()
@@ -66,8 +77,10 @@ class EmbeddingIndex:
             self._faiss_index = faiss.IndexFlatIP(self.dim)
             self._faiss_index.add(arr)
             faiss.write_index(self._faiss_index, str(self.path))
+            self.vectors_path.unlink(missing_ok=True)
         else:
-            self.path.write_text(json.dumps(vectors), encoding="utf-8")
+            self.vectors_path.write_text(json.dumps(vectors), encoding="utf-8")
+            self.path.unlink(missing_ok=True)  # a stale faiss index would describe other records
 
         self.meta_path.write_text(json.dumps(self.records, indent=2), encoding="utf-8")
 
@@ -79,13 +92,17 @@ class EmbeddingIndex:
             return []
 
         q_vec = self._embed_text(query)
-        if faiss is not None and np is not None and self.path.exists():
-            index = faiss.read_index(str(self.path))
-            q_arr = np.array([q_vec], dtype="float32")
-            _, idxs = index.search(q_arr, min(top_k, len(records)))
-            return [records[i] for i in idxs[0] if 0 <= i < len(records)]
+        if faiss is not None and np is not None and self.path.exists() and not self.vectors_path.exists():
+            try:
+                index = faiss.read_index(str(self.path))
+            except Exception:  # noqa: BLE001 — e.g. JSON vectors written there by an older build
+                index = None
+            if index is not None:
+                q_arr = np.array([q_vec], dtype="float32")
+                _, idxs = index.search(q_arr, min(top_k, len(records)))
+                return [records[i] for i in idxs[0] if 0 <= i < len(records)]
 
-        vectors = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else []
+        vectors = self._json_vectors()
         scored = []
         for i, vec in enumerate(vectors):
             score = sum(a * b for a, b in zip(q_vec, vec))
@@ -93,15 +110,31 @@ class EmbeddingIndex:
         scored.sort(reverse=True)
         return [records[i] for _, i in scored[:top_k]]
 
+    def _json_vectors(self) -> list[list[float]]:
+        """Vectors stored as JSON: the vectors file, else (older builds) JSON in the index path."""
+        for path in (self.vectors_path, self.path):
+            if not path.exists():
+                continue
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                continue  # a binary faiss index this environment cannot read
+        return []
+
     def _embed_text(self, text: str) -> list[float]:
         provider = self.provider_config.provider.lower()
         if provider == "openai-compatible" and self.provider_config.endpoint:
-            remote = with_retries(lambda: self._remote_openai_embedding(text), retries=3, base_delay_s=1.0)
+            try:
+                remote = with_retries(lambda: self._remote_openai_embedding(text), retries=3, base_delay_s=1.0,
+                                      retry_if=_transient)
+                error = ""
+            except requests.RequestException as exc:  # retries exhausted, or a non-transient error
+                remote, error = [], f": {exc}"
             if not remote:
                 # never fall back to hash vectors here: they live in a different space, so a mixed
                 # index (or a hash query against remote vectors) returns arbitrary results
-                raise RuntimeError(f"embedding endpoint {self.provider_config.endpoint} returned no vector "
-                                   "(remote embedder configured; not falling back to local hashes)")
+                raise RuntimeError(f"embedding endpoint {self.provider_config.endpoint} returned no vector"
+                                   f"{error} (remote embedder configured; not falling back to local hashes)")
             return self._fit(remote)
         return _hash_embedding(text, dim=self.dim)
 
@@ -117,28 +150,29 @@ class EmbeddingIndex:
         return [v / norm for v in vec]
 
     def _remote_openai_embedding(self, text: str) -> list[float]:
+        """One embedding request. HTTP and network errors are raised, so the caller can retry them."""
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         payload = {"model": self.provider_config.model, "input": text}
-        try:
-            resp = requests.post(self.provider_config.endpoint, headers=headers, json=payload, timeout=60)
-            resp.raise_for_status()
-            body = resp.json()
-            data = body.get("data", [])
-            if data and isinstance(data[0], dict):
-                emb = data[0].get("embedding", [])
-                if emb and isinstance(emb, list):
-                    return [float(v) for v in emb]
-        except requests.RequestException:
-            return []
+        resp = requests.post(self.provider_config.endpoint, headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+        body = resp.json()
+        data = body.get("data", []) if isinstance(body, dict) else []
+        if data and isinstance(data[0], dict):
+            emb = data[0].get("embedding", [])
+            if emb and isinstance(emb, list):
+                return [float(v) for v in emb]
         return []
 
     def health_check(self) -> tuple[bool, str]:
         provider = self.provider_config.provider.lower()
         if provider != "openai-compatible":
             return True, "local embedder"
-        sample = self._remote_openai_embedding("health-check")
+        try:
+            sample = self._remote_openai_embedding("health-check")
+        except requests.RequestException:
+            sample = []
         if sample and len(sample) < self.dim:
             return False, f"embedder returns {len(sample)} dims, index configured for {self.dim}"
         if sample:
