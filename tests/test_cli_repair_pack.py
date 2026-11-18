@@ -146,3 +146,29 @@ def test_disallowed_audit_base_explains_the_422(monkeypatch) -> None:
                         audit_api_base="http://192.168.1.198:8765")
     msg = str(exc.value)
     assert "422" in msg and "192.168.1.198:8765" in msg and "AUDIT_API_ALLOWED_HOSTS" in msg
+
+
+def test_write_run_without_jwt_is_refused_when_auth_is_on(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    seen = _capture(monkeypatch)
+    monkeypatch.delenv("AI_AUDIT_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(cli, "load_ecosystem_config",
+                        lambda: SimpleNamespace(auth_mode=True, auth_code_env="X"))
+    monkeypatch.setattr(cli, "require_auth", lambda *a, **k: None)
+    with pytest.raises(PermissionError, match="admin JWT"):
+        cli._run_repair(repo_name="r", repair_api_url="http://rag.test", pack_id="ext-1",
+                        apply=True, rag_chat_api_key="k")
+    assert "payload" not in seen  # nothing was sent
+
+
+def test_write_run_without_jwt_still_works_with_auth_off(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    seen = _capture(monkeypatch)
+    monkeypatch.delenv("AI_AUDIT_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(cli, "load_ecosystem_config",
+                        lambda: SimpleNamespace(auth_mode=False, auth_code_env="X"))
+    cli._run_repair(repo_name="r", repair_api_url="http://rag.test", pack_id="ext-1",
+                    apply=True, rag_chat_api_key="k")
+    assert seen["payload"]["pack_id"] == "ext-1"

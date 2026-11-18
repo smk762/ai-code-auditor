@@ -1003,6 +1003,10 @@ def _run_repair(
     # for read-only review/suggest; write paths require ``admin``.
     write_ops = bool(apply or commit or push)
     token = auth_token or os.getenv("AI_AUDIT_AUTH_TOKEN", "")
+    if write_ops and cfg.auth_mode and not token:
+        # With auth on, a missing JWT must not pass where a low-privilege one is refused.
+        raise PermissionError("--apply / --commit / --push need an admin JWT (--auth-token or "
+                              "AI_AUDIT_AUTH_TOKEN) when auth_mode is on")
     if token:
         enforce_role(token, "admin" if write_ops else "analyst", "cli:repair")
 
