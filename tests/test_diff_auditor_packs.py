@@ -79,3 +79,24 @@ def test_diff_paths_outside_the_repo_are_never_read(monkeypatch, tmp_path):
     assert seen_impact == [["ok.py"]]
     assert seen_static == [[str(root / "ok.py")]]
     assert analyzed and all(Path(p).resolve().is_relative_to(root.resolve()) for p in analyzed)
+
+
+def _git(root: Path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(["git", "-C", str(root), "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                   check=True, capture_output=True)
+
+
+def test_non_utf8_diff_content_is_returned_not_raised(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "dev")
+    (root / "a.txt").write_bytes(b"one\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "base")
+    _git(root, "checkout", "-qb", "feature")
+    (root / "a.txt").write_bytes(b"caf\xe9 latin-1\n")
+    _git(root, "commit", "-qam", "latin1")
+    for diff in (da.get_diff_from_branch(root, "dev"), da.get_diff_between_refs(root, "dev", "HEAD")):
+        assert "latin-1" in diff and "�" in diff
