@@ -61,6 +61,8 @@ services:
   audit-api:
     <<: *auditor-base
     container_name: audit-api
+    # Stay up: come back after a crash and on boot (Docker starts with the host), unless stopped by hand.
+    restart: unless-stopped
     # Lets the container resolve services running on the host (e.g. rag-ingest at
     # host.docker.internal:9050 referenced from config/ecosystem.yaml).
     extra_hosts:

@@ -11,3 +11,8 @@ def test_every_service_runs_under_init():
     assert services
     missing = [name for name, svc in services.items() if svc.get("init") is not True]
     assert not missing, f"services without init: true: {missing}"
+
+
+def test_api_restarts_after_a_crash_and_on_boot():
+    api = yaml.safe_load(COMPOSE.read_text())["services"]["audit-api"]
+    assert api.get("restart") in {"unless-stopped", "always"}
