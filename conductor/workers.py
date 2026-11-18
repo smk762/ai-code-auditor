@@ -22,19 +22,21 @@ def run_worker(task: WorkerTask, *, dry_run: bool = False) -> WorkerResult:
             summary=f"[dry-run] {task.mission} skipped",
             findings=[],
         )
-    models = load_conductor_models()
-    model = models.pr_review if task.mission in ("pr_review",) else models.workers
-    messages = [
-        {"role": "system", "content": system_for(task.mission)},
-        {
-            "role": "user",
-            "content": (
-                f"Task id: {task.id}\nTitle: {task.title}\n"
-                f"Intensity: {task.intensity}\n\n{task.prompt}"
-            ),
-        },
-    ]
     try:
+        # Config, mission and prompt setup sit inside the try so a bad model config
+        # or unknown mission is recorded as FAILED for this task, not raised.
+        models = load_conductor_models()
+        model = models.pr_review if task.mission in ("pr_review",) else models.workers
+        messages = [
+            {"role": "system", "content": system_for(task.mission)},
+            {
+                "role": "user",
+                "content": (
+                    f"Task id: {task.id}\nTitle: {task.title}\n"
+                    f"Intensity: {task.intensity}\n\n{task.prompt}"
+                ),
+            },
+        ]
         # Claude 5.x thinking counts toward max_tokens; 4096 can truncate the JSON reply.
         raw = completion(messages, model=model, max_tokens=16000, note=f"{task.mission}:{task.id}")
         return parse_worker_json(raw, task.id)
