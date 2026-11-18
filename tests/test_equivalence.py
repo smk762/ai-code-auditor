@@ -93,6 +93,8 @@ def test_semantic_check_off_by_default_and_unproven_still_resolves(tmp_path: Pat
     client = TestClient(app)
     off = client.post("/audit/validate_patch", json={"repo": "argus-cortex", "patch": PATCH}).json()
     assert "semantic" not in off and calls == []
+    # The first post names no pack, so the resolution below comes from the semantic-on call.
+    assert load_pack(out, "pack-fixme")["status"] == "open"
 
     on = _post(client, semantic_check=True)
     assert on["semantic"]["unproven"] and on["pack"]["status"] == "resolved"
