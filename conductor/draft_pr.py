@@ -67,10 +67,13 @@ def create_draft_pr(
     except GitError as exc:
         return DraftPrResult(draft=None, error=str(exc))
 
-    intent = repo_path / "intent.md"
+    # Namespaced notes path, so a repo's own intent.md is never overwritten.
+    intent_rel = f".audit/{sanitize_branch_slug(slug) or 'repair'}/intent.md"
+    intent = repo_path / intent_rel
     try:
+        intent.parent.mkdir(parents=True, exist_ok=True)
         intent.write_text(f"# {title}\n\n{body}\n", encoding="utf-8")
-        commit_repair(repo_path, message=f"audit: {title[:60]}", paths=["intent.md"])
+        commit_repair(repo_path, message=f"audit: {title[:60]}", paths=[intent_rel])
         push = push_repair_branch(repo_path, branch=br.branch)
     except (GitError, OSError, TypeError, ValueError) as exc:
         return DraftPrResult(draft=None, branch=br.branch, error=str(exc))
@@ -92,6 +95,7 @@ def create_draft_pr(
                 body[:4000],
                 "--head",
                 br.branch,
+                *(["--base", base_branch] if base_branch else []),
             ],
             cwd=str(repo_path),
             capture_output=True,
