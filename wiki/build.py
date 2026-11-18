@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from auditor.fsutil import atomic_write_text
 from auditor.repo_resolver import resolve_scan_root
 from auditor.spend_ledger import BudgetExceeded, get_ledger
 from wiki import citations, notes as notes_mod, pages as pages_mod
@@ -105,7 +106,7 @@ def _write_top_index(output_dir: str | Path) -> None:
             continue
         repos[idx["repo"]] = {"built_at": idx.get("built_at"), "source_sha": idx.get("source_sha"),
                               "branch": idx.get("branch"), "pages": len(idx.get("pages") or [])}
-    (root / "INDEX.json").write_text(json.dumps({"updated_at": _now(), "repos": repos}, indent=2), encoding="utf-8")
+    atomic_write_text(root / "INDEX.json", json.dumps({"updated_at": _now(), "repos": repos}, indent=2))
 
 
 def build(repo_names: list[str] | None, output_dir: str | Path, *, mode: str = "batch",
@@ -312,5 +313,5 @@ def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport
                   "oversize_skipped": res.oversize},
         "pages": [entries[s] for s in order if s in entries],
     }
-    (d / "INDEX.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
+    atomic_write_text(d / "INDEX.json", json.dumps(index, indent=2))
     return list(res.pages_written)
