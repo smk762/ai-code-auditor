@@ -14,19 +14,13 @@ JWT_MIN_SECRET_LEN = 32  # HS256 key floor enforced by auditor.settings
 
 
 def _token(key: str) -> str:
+    s = get_settings()  # issuer/audience/algorithm as the verifier sees them in this environment
     now = int(time.time())
-    claims = {"sub": "attacker", "iss": "ai-code-auditor", "aud": "ai-code-auditor",
+    claims = {"sub": "attacker", "iss": s.jwt_issuer, "aud": s.jwt_audience,
               "exp": now + 600, "roles": ["admin"]}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # PyJWT warns about short HMAC keys
-        return jwt.encode(claims, key, algorithm="HS256")
-
-
-@pytest.fixture(autouse=True)
-def _jwt_env(monkeypatch):
-    monkeypatch.setenv("JWT_ISSUER", "ai-code-auditor")
-    monkeypatch.setenv("JWT_AUDIENCE", "ai-code-auditor")
-    monkeypatch.setenv("JWT_ALGORITHM", "HS256")
+        return jwt.encode(claims, key, algorithm=s.jwt_algorithm)
 
 
 @pytest.mark.parametrize("configured", [None, "change-me", "short"])
