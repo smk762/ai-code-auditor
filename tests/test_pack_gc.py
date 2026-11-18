@@ -81,7 +81,7 @@ def test_file_gone_closes_any_open_finding_pack_including_ask() -> None:
 
 
 def test_nightly_pack_closes_after_n_consecutive_misses() -> None:
-    m = {"x": FakeMirror({"app/calc.py": CODE})}
+    m = {"x": FakeMirror({"app/calc.py": CODE}, {"app/calc.py": at(0)})}  # last changed before it was seen
     p = pack("n", seen=1)
     two = [scan("s1", 10), scan("s2", 20)]
     assert ids(plan([p], two, m, now=NOW, misses=3)) == {}
