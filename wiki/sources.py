@@ -12,6 +12,7 @@ from auditor.repo_scanner import scan_repo
 
 SKIP_DIRS = {"vendor", "vendored", "third_party"}
 MAX_FILE_CHARS = 200_000  # larger files are skipped and reported, never truncated
+DYNAMIC_ALL = "<dynamic __all__>"
 
 
 def source_files(repo) -> list[Path]:
@@ -67,13 +68,25 @@ def _module_imports(stmts: list[ast.stmt], type_only: bool = False):
             yield from _module_imports(node.body, type_only)
 
 
+def _literal_names(value: ast.expr) -> list[str] | None:
+    """The names in a literal ``__all__`` list/tuple/set, or None when it isn't one."""
+    try:
+        val = ast.literal_eval(value)
+    except (ValueError, SyntaxError, TypeError, RecursionError, MemoryError):
+        return None
+    if not isinstance(val, (list, tuple, set, frozenset)):
+        return None
+    return [str(v) for v in val]
+
+
 def file_structure(path: Path, text: str) -> dict[str, Any]:
     """Imports, exports and top-level names, read from the code itself."""
     out: dict[str, Any] = {"imports": [], "exports": None, "top_level": []}
     if path.suffix == ".py":
         try:
             tree = ast.parse(text)
-        except SyntaxError:
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            # ValueError: NUL bytes before Python 3.12; RecursionError/MemoryError: pathological nesting
             return out
         imps: list[str] = []
         module_level = list(_module_imports(tree.body))
@@ -87,13 +100,19 @@ def file_structure(path: Path, text: str) -> dict[str, Any]:
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 out["top_level"].append(node.name)
-            elif isinstance(node, ast.Assign):
-                for t in node.targets:
-                    if isinstance(t, ast.Name) and t.id == "__all__":
-                        try:
-                            out["exports"] = list(ast.literal_eval(node.value))
-                        except (ValueError, SyntaxError):
-                            out["exports"] = ["<dynamic __all__>"]
+            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if node.value is None or not any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+                    continue
+                names = _literal_names(node.value)
+                if isinstance(node, ast.AugAssign):
+                    # ``__all__ += [...]`` extends a literal ``__all__``; anything else is dynamic
+                    prev = out["exports"]
+                    if isinstance(node.op, ast.Add) and names is not None and prev is not None and DYNAMIC_ALL not in prev:
+                        names = prev + names
+                    else:
+                        names = None
+                out["exports"] = names if names is not None else [DYNAMIC_ALL]
         # lazy imports inside functions matter for "optional dependency" claims; module-level
         # ``try:``/``if`` blocks (optional or version-gated imports, TYPE_CHECKING) are not lazy
         top = {id(n) for n, _ in module_level}
