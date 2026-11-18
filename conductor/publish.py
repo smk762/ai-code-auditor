@@ -16,6 +16,15 @@ from conductor.schemas import MithrandirStatus, validate_status_dict
 logger = logging.getLogger(__name__)
 
 _WORD_RE = re.compile(r"\b[\w']+\b")
+_URL_RE = re.compile(r"https?://\S+")
+_SEG = r"[A-Za-z0-9._-]+"
+# A path starts a token: absolute (/a/b, ~/a/b, ./a/b) or a relative path whose
+# last segment carries a file extension (src/pkg/mod.py). Windows paths too.
+_PATH_RE = re.compile(
+    rf"(?<![\w/~.])(?:~|\.{{1,2}})?(?:/{_SEG}){{2,}}"
+    rf"|(?<![\w/~.]){_SEG}(?:/{_SEG}){{1,}}/[A-Za-z0-9_-]*\.[A-Za-z0-9]{{1,6}}\b"
+    r"|[A-Za-z]:\\[^\s]+"
+)
 
 
 def public_base_url() -> str:
@@ -63,11 +72,14 @@ def md_passes_tts_rules(md: str) -> tuple[bool, list[str]]:
         reasons.append("contains_table")
     if re.search(r"!\[|\[!\[|badge", md, re.I):
         reasons.append("badge_or_image")
-    # Absolute paths or long relative paths (more than basename)
-    for m in re.finditer(r"(?:/[A-Za-z0-9._-]+){2,}|[A-Za-z]:\\[^\s]+", md):
+    # Absolute paths or long relative paths (more than basename). URLs are
+    # reported on their own, and slash-separated prose ("read/write/execute",
+    # "2024/01/15") is not a path.
+    no_urls = _URL_RE.sub(" ", md)
+    for m in _PATH_RE.finditer(no_urls):
         reasons.append(f"long_path:{m.group(0)[:40]}")
         break
-    if re.search(r"https?://\S+", md):
+    if _URL_RE.search(md):
         reasons.append("raw_https_url")
     return (len(reasons) == 0, reasons)
 
@@ -112,10 +124,17 @@ def publish_status(
 
     archive_json = archive_md = None
     if archive:
-        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M")
+        # Microsecond stamp plus a counter: two publishes in one minute (a retry,
+        # a rerun) must not replace each other's archived snapshot.
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%f")
         arch = root / "archive"
         archive_json = arch / f"{stamp}.json"
         archive_md = arch / f"{stamp}.md"
+        n = 1
+        while archive_json.exists() or archive_md.exists():
+            archive_json = arch / f"{stamp}-{n}.json"
+            archive_md = arch / f"{stamp}-{n}.md"
+            n += 1
         _atomic_write_json(archive_json, data)
         _atomic_write_text(archive_md, markdown.rstrip() + "\n")
 
