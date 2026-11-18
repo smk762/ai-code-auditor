@@ -99,7 +99,7 @@ def load_state(path: Path) -> dict[str, Any]:
         return {"repos": {}, "updated_at": ""}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):  # ValueError covers JSONDecodeError and UnicodeDecodeError
         return {"repos": {}, "updated_at": ""}
     if not isinstance(data, dict):
         return {"repos": {}, "updated_at": ""}
@@ -243,6 +243,10 @@ def poll_dev_tips(
 
         prev = repos_state.get(name) or {}
         prev_sha = str(prev.get("sha") or "").strip()
+        prev_branch = str(prev.get("branch") or "").strip()
+        if prev_branch and prev_branch != br:
+            # A SHA from another branch is no "before" for this one: baseline afresh.
+            prev_sha = ""
         recorded_sha = tip
 
         if not prev_sha:

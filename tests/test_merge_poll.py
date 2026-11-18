@@ -114,3 +114,32 @@ def test_poll_keeps_previous_sha_when_dispatch_fails(tmp_path: Path, monkeypatch
         )
     assert retried.changed == ["argus-cortex"]
     assert sent[0].before == "aaa" and sent[0].after == "bbb"
+
+
+def test_branch_change_baselines_instead_of_queueing(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AI_AUDIT_MERGE_POLL_ENABLED", "1")
+    monkeypatch.setenv("AI_AUDIT_MERGE_HOOK_ENABLED", "1")
+    monkeypatch.setattr("auditor.merge_poll.time.sleep", lambda _s: None)
+    state = tmp_path / "state.json"
+    mirrors = tmp_path / "mirrors.yaml"
+    mirrors.write_text(
+        "mirrors:\n  - name: argus-cortex\n    url: https://github.com/smk762/argus-cortex.git\n"
+        "    path: /tmp/unused\n",
+        encoding="utf-8",
+    )
+    tips = {"dev": "d" * 40, "main": "e" * 40}
+    sent: list = []
+    with patch("auditor.merge_poll.fetch_branch_tip", side_effect=lambda slug, br, **kw: tips[br]):
+        poll_dev_tips(branch="dev", mirrors_path=mirrors, state_path=state, dispatch=sent.append)
+        res = poll_dev_tips(branch="main", mirrors_path=mirrors, state_path=state,
+                            dispatch=lambda ev: sent.append(ev) or {"accepted": True})
+    assert res.baselined == ["argus-cortex"]
+    assert res.changed == [] and sent == []
+
+
+def test_non_utf8_state_file_falls_back_to_empty(tmp_path: Path):
+    from auditor.merge_poll import load_state
+
+    state = tmp_path / "state.json"
+    state.write_bytes(b'{"repos": {"\xff\xfe": 1}}')
+    assert load_state(state) == {"repos": {}, "updated_at": ""}
