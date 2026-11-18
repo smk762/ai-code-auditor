@@ -87,9 +87,14 @@ def static_class(pack: dict[str, Any]) -> str:
     return m.cls if m.rule.startswith("static:") else UNCLASSIFIED
 
 
+def _votes(entry: dict[str, Any] | None, sha: str) -> dict[str, str]:
+    """The answers cached for this text (empty when the text changed since)."""
+    return dict((entry or {}).get("votes") or {}) if (entry or {}).get("sha") == sha else {}
+
+
 def run(output_dir: str | Path, *, dry_run: bool = False, mode: str = "batch", runner_factory: Any = None,
         public_base_url: str = "") -> dict[str, Any]:
-    from auditor.agent_pack import AgentCodingPack, rebuild_index, write_pack
+    from auditor.agent_pack import AgentCodingPack, load_pack, pack_lock, rebuild_index, write_pack
 
     out = Path(output_dir)
     system = llm.frozen_system(out)
@@ -100,53 +105,75 @@ def run(output_dir: str | Path, *, dry_run: bool = False, mode: str = "batch", r
     cache = _load_cache(out)
     rows = [_row(p) for p in packs]
     todo = [] if system is None else sorted(
-        (r for r in rows if not static[r["id"]] and (cache.get(r["id"]) or {}).get("sha") != r["sha"]),
+        (r for r in rows if not static[r["id"]]
+         and ((cache.get(r["id"]) or {}).get("sha") != r["sha"] or "class" not in (cache.get(r["id"]) or {}))),
         key=lambda r: r["id"])
-    priced = [llm.classify_rows(todo, m, out, system=system, mode=mode, dry_run=True) for m in llm.MODELS] if todo else []
+    # Per model, only the rows it hasn't answered yet: answers are cached as each model returns,
+    # so a run that fails part-way keeps what it already paid for.
+    need = {m: [r for r in todo if not _votes(cache.get(r["id"]), r["sha"]).get(m)] for m in llm.MODELS}
+    priced = [llm.classify_rows(need[m], m, out, system=system, mode=mode, dry_run=True)
+              for m in llm.MODELS if need[m]]
     est = round(sum(p["est_usd"] for p in priced), 4)
     if dry_run:
         return {"packs": len(rows), "to_classify": len(todo), "est_usd": est}
     cost = 0.0
     if todo:
-        answers: dict[str, list[str]] = {}
         for m in llm.MODELS:
-            res = llm.classify_rows(todo, m, out, system=system, mode=mode,
+            if not need[m]:
+                continue
+            res = llm.classify_rows(need[m], m, out, system=system, mode=mode,
                                     runner=runner_factory() if runner_factory else None)
             cost += res.get("cost_usd") or 0.0
-            answers[m] = res["preds"]
-        for k, r in enumerate(todo):
-            votes = {m: answers[m][k] for m in llm.MODELS}
-            if any(not v for v in votes.values()):
-                continue  # a failed request: ask again next run rather than cache a non-answer
-            cache[r["id"]] = {"sha": r["sha"], "votes": votes, "class": decide(votes)}
+            preds = list(res.get("preds") or [])
+            if len(preds) != len(need[m]):
+                logger.warning("pack classes: %s returned %d answers for %d packs; asking again next run",
+                               m, len(preds), len(need[m]))
+                continue
+            for r, v in zip(need[m], preds, strict=True):
+                if not v:
+                    continue  # a failed request: ask again next run rather than cache a non-answer
+                votes = _votes(cache.get(r["id"]), r["sha"])
+                votes[m] = v
+                cache[r["id"]] = {"sha": r["sha"], "votes": votes}
+            _save_cache(out, cache)
+        for r in todo:
+            votes = _votes(cache.get(r["id"]), r["sha"])
+            if votes and all(votes.get(m) for m in llm.MODELS):
+                cache[r["id"]] = {"sha": r["sha"], "votes": votes, "class": decide(votes)}
         _save_cache(out, cache)
     tax = taxonomy()
     written = removed = 0
     by_class: dict[str, int] = {}
-    for data, r in zip(packs, rows, strict=True):
-        hit = cache.get(r["id"]) or {}
-        by = BY
-        if static[r["id"]]:
-            cls, by = static[r["id"]], f"static:{(data.get('provenance') or {}).get('source', '')}"
-        else:
-            cls = hit.get("class") if hit.get("sha") == r["sha"] else UNCLASSIFIED
-        cur = ((data.get("governance") or {}).get("finding_class") or {})
-        want = ({"id": cls, "guard": tax.get(cls).guard, "by": by, "text_sha": r["sha"]}  # type: ignore[union-attr]
-                if cls and tax.get(cls) else None)
-        if cls:
-            by_class[cls] = by_class.get(cls, 0) + 1
-        if (cur or None) == want:
-            continue
-        pack = AgentCodingPack.from_dict(data)
-        if want:
-            pack.governance["finding_class"] = want
-            written += 1
-        else:
-            pack.governance.pop("finding_class", None)
-            removed += 1
-        write_pack(pack, out, preserve_status=False)
-    if written or removed:
-        rebuild_index(out, public_base_url=public_base_url)
+    # The model calls above can take hours: each pack is re-read under the pack lock and only its
+    # finding_class changes, so a status or edit made meanwhile is never overwritten.
+    with pack_lock(out):
+        for r in rows:
+            data = load_pack(out, r["id"])
+            if data is None or _row(data)["sha"] != r["sha"]:
+                continue  # gone, or its text changed since: the next run classifies the new text
+            hit = cache.get(r["id"]) or {}
+            by = BY
+            if static[r["id"]]:
+                cls, by = static[r["id"]], f"static:{(data.get('provenance') or {}).get('source', '')}"
+            else:
+                cls = hit.get("class") if hit.get("sha") == r["sha"] else UNCLASSIFIED
+            cur = ((data.get("governance") or {}).get("finding_class") or {})
+            want = ({"id": cls, "guard": tax.get(cls).guard, "by": by, "text_sha": r["sha"]}  # type: ignore[union-attr]
+                    if cls and tax.get(cls) else None)
+            if cls:
+                by_class[cls] = by_class.get(cls, 0) + 1
+            if (cur or None) == want:
+                continue
+            pack = AgentCodingPack.from_dict(data)
+            if want:
+                pack.governance["finding_class"] = want
+                written += 1
+            else:
+                pack.governance.pop("finding_class", None)
+                removed += 1
+            write_pack(pack, out, preserve_status=False)
+        if written or removed:
+            rebuild_index(out, public_base_url=public_base_url)
     return {"packs": len(rows), "classified_now": len(todo), "est_usd": est, "cost_usd": round(cost, 4),
             "written": written, "removed": removed, "with_class": sum(by_class.values()), "by_class": by_class}
 
