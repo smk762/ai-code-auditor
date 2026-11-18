@@ -85,7 +85,7 @@ PROMPTS = {"v1": AUDIT_INSTRUCTIONS, "v2": AUDIT_INSTRUCTIONS_V2, "v3": AUDIT_IN
 def _safe_line(value: Any, default: int) -> int:
     try:
         return max(int(value), 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: inf from "1e999"
         return default
 
 
@@ -378,17 +378,29 @@ def _parse_findings_json(raw: str, unit: CodeUnit) -> list[Finding] | None:
     return findings
 
 
+# Fallback rules, used only when the model gave no usable output. Each must point at a
+# concrete line: a string literal assigned to a secret-like name (not a mention of the
+# word, an env/config lookup or a hash_password()), a TODO/FIXME comment marker (not
+# `todos`), and a bare print( call (not pprint/fingerprint/blueprint/obj.print).
+_HEURISTIC_RULES: list[tuple[str, str, str, re.Pattern[str]]] = [
+    ("hardcoded_secret", "HIGH", "Potential hardcoded secret", re.compile(
+        r"""\b\w*(?:password|passwd|secret|api_?key|token)\w*['"]?\s*(?::\s*[\w\[\], .]+?\s*=|[:=])\s*[rbuf]?(['"])[^'"\s]{4,}\1""",
+        re.IGNORECASE)),
+    ("todo_tech_debt", "LOW", "TODO marker found", re.compile(
+        r"(?:#|//|/\*|^\s*\*)\s*(?:TODO|FIXME)\b", re.IGNORECASE | re.MULTILINE)),
+    ("debug_print", "LOW", "Debug print statement present", re.compile(r"(?<![\w.])print\(")),
+]
+
+
 def _heuristic_findings(unit: CodeUnit) -> list[Finding]:
-    text = unit.raw_text.lower()
+    text = unit.raw_text
     findings: list[Finding] = []
-    rules = [
-        ("hardcoded_secret", "HIGH", "Potential hardcoded secret", "password" in text or "secret" in text),
-        ("todo_tech_debt", "LOW", "TODO marker found", "todo" in text or "fixme" in text),
-        ("debug_print", "LOW", "Debug print statement present", "print(" in text),
-    ]
-    for idx, (kind, severity, title, matched) in enumerate(rules):
-        if not matched:
+    for idx, (kind, severity, title, pattern) in enumerate(_HEURISTIC_RULES):
+        m = pattern.search(text)
+        if not m:
             continue
+        line = unit.start_line + text.count("\n", 0, m.start())
+        evidence = text.split("\n")[line - unit.start_line].strip()[:200] if text else unit.symbol
         findings.append(
             Finding(
                 id=f"heuristic:{unit.id}:{idx}",
@@ -396,10 +408,10 @@ def _heuristic_findings(unit: CodeUnit) -> list[Finding]:
                 severity=severity,
                 repo=unit.repo,
                 file_path=unit.file_path,
-                line=unit.start_line,
+                line=line,
                 title=title,
                 description=f"Matched heuristic rule: {kind}",
-                evidence=unit.symbol,
+                evidence=evidence or unit.symbol,
                 recommendation="Review this code path and apply project standards.",
                 source="heuristic",
             )
