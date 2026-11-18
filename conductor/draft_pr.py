@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -20,6 +21,9 @@ from auditor.git_ops import (
 from conductor.schemas import CodeReviewSummary, DraftPr
 
 logger = logging.getLogger(__name__)
+
+# gh must never wait on a prompt or a stalled network: the conductor worker runs unattended.
+GH_TIMEOUT_S = 120
 
 
 @dataclass(slots=True)
@@ -78,32 +82,45 @@ def create_draft_pr(
     except (GitError, OSError, TypeError, ValueError) as exc:
         return DraftPrResult(draft=None, branch=br.branch, error=str(exc))
 
-    if not push.pushed and push.skipped_reason:
-        logger.warning("push skipped: %s", push.skipped_reason)
+    if not push.pushed:
+        # gh pr create --head would fail on a branch the remote doesn't have; report why.
+        reason = push.skipped_reason or "push did not happen"
+        logger.warning("push skipped: %s", reason)
+        return DraftPrResult(draft=None, branch=br.branch, error=f"push skipped: {reason}")
 
     url = ""
     if _gh_available():
-        r = subprocess.run(
-            [
-                "gh",
-                "pr",
-                "create",
-                "--draft",
-                "--title",
-                title[:70],
-                "--body",
-                body[:4000],
-                "--head",
-                br.branch,
-                *(["--base", base_branch] if base_branch else []),
-            ],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            r = subprocess.run(
+                [
+                    "gh",
+                    "pr",
+                    "create",
+                    "--draft",
+                    "--title",
+                    title[:70],
+                    "--body",
+                    body[:4000],
+                    "--head",
+                    br.branch,
+                    *(["--base", base_branch] if base_branch else []),
+                ],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=GH_TIMEOUT_S,
+                env={**os.environ, "GH_PROMPT_DISABLED": "1"},
+            )
+        except subprocess.TimeoutExpired:
+            return DraftPrResult(draft=None, branch=br.branch,
+                                 error=f"gh pr create timed out after {GH_TIMEOUT_S}s")
         if r.returncode == 0:
-            url = (r.stdout or "").strip().splitlines()[-1].strip()
+            lines = (r.stdout or "").strip().splitlines()
+            url = lines[-1].strip() if lines else ""
+            if not url:
+                return DraftPrResult(draft=None, branch=br.branch,
+                                     error="gh pr create printed no PR URL")
         else:
             logger.warning("gh pr create failed: %s", (r.stderr or "")[:500])
             return DraftPrResult(
