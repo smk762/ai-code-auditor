@@ -65,6 +65,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -613,13 +614,18 @@ def delete_run(run_id: str) -> None:
     return None
 
 
+# get_report: how far a report's mtime may sit past the run sentinel's, or before the run's start
+_REPORT_MTIME_SLACK_S = 5.0
+_REPORT_START_SLACK_S = 60.0
+
+
 @app.get("/audit/reports/{run_id}", response_class=PlainTextResponse)
 def get_report(run_id: str) -> str:
     """Return the combined markdown reports for a completed run.
 
     Reports live in the configured output_dir (default: ``reports/``).
     They reflect the most recent completed run — if the requested run_id
-    matches, return them; if it is older, return 410 Gone.
+    matches, return them; if a later run has overwritten them, return 410 Gone.
     """
     out = Path(_output_dir())
 
@@ -648,20 +654,34 @@ def get_report(run_id: str) -> str:
             detail=f"Run status is {st!r}; report is not available from this endpoint.",
         )
 
-    # Check that on-disk reports belong to this run (the JSON sentinel file).
+    from auditor.db import as_utc
+    from auditor.ui_runs import REPORTS_BY_PIPELINE
+
+    gone = HTTPException(
+        status_code=410,
+        detail=(
+            f"Reports for {run_id!r} are no longer on disk "
+            "(overwritten by a later run). Check S3 archive if configured."
+        ),
+    )
+    # The pipeline writes its run sentinel after its reports, so a report belongs to this run only
+    # if it was written after the run started and no later than the sentinel. A newer file is a
+    # later run's (an older sentinel can outlive its reports); an older one is a stale leftover.
     sentinel = out / f"run_{run_id}.json"
     if not sentinel.exists():
-        raise HTTPException(
-            status_code=410,
-            detail=(
-                f"Reports for {run_id!r} are no longer on disk "
-                "(overwritten by a later run). Check S3 archive if configured."
-            ),
-        )
+        raise gone
+    newest = sentinel.stat().st_mtime + _REPORT_MTIME_SLACK_S
+    started = as_utc(datetime.fromisoformat(row["started_at"])) if row.get("started_at") else None
+    oldest = started.timestamp() - _REPORT_START_SLACK_S if started else float("-inf")
 
-    md_files = sorted(out.glob("*.md"))
-    if not md_files:
+    # Only this pipeline's known report names: no directory listing per request.
+    names = REPORTS_BY_PIPELINE.get(row.get("pipeline") or "", REPORTS_BY_PIPELINE["ecosystem-audit"])
+    on_disk = [p for p in (out / n for n in names) if p.is_file()]
+    if not on_disk:
         raise HTTPException(status_code=404, detail="No markdown reports found.")
+    md_files = [p for p in on_disk if oldest <= p.stat().st_mtime <= newest]
+    if not md_files:
+        raise gone
 
     sections: list[str] = []
     for f in md_files:
@@ -1331,11 +1351,12 @@ def schedule_merge_refresh(request: _MergeRefreshRequest) -> JSONResponse:
 
     Close pushes to the same repo are coalesced for ``AI_AUDIT_MERGE_DEBOUNCE_S``
     (default 900s). Distinct repos wait ``AI_AUDIT_MERGE_GLOBAL_GAP_S`` (default 120s)
-    between runs. Pass ``force=true`` to skip the per-repo quiet window.
+    between runs. Pass ``force=true`` to skip the per-repo quiet window; it never overrides
+    ``AI_AUDIT_MERGE_HOOK_ENABLED=0``.
     """
     from auditor.merge_hook import MergeEvent, get_scheduler, merge_hook_enabled
 
-    if not merge_hook_enabled() and not request.force:
+    if not merge_hook_enabled():
         raise HTTPException(status_code=503, detail="Merge hook disabled (AI_AUDIT_MERGE_HOOK_ENABLED=0)")
 
     event = MergeEvent(
@@ -1394,7 +1415,7 @@ async def github_merge_webhook(
 
     try:
         payload = json.loads(body.decode("utf-8") or "{}")
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:  # JSONDecodeError, and UnicodeDecodeError for a non-UTF-8 body
         raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
 
     if not isinstance(payload, dict):
@@ -1464,6 +1485,8 @@ def audit_diff(request: _DiffAuditRequest) -> JSONResponse:
     from auditor.agent_pack import emit_packs_from_findings
     from conductor.publish import public_base_url
 
+    # one id per invocation, so two diff audits of a repo never share (or overwrite) a run's packs
+    diff_run_id = f"diff-{request.repo}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
     packs = []
     try:
         packs = emit_packs_from_findings(
@@ -1471,7 +1494,7 @@ def audit_diff(request: _DiffAuditRequest) -> JSONResponse:
             output_dir=_output_dir(),
             repo_path=resolve_repo_path(repo),
             kind="diff_audit",
-            run_id=f"diff-{request.repo}",
+            run_id=diff_run_id,
             directly_changed=sorted(result.impact.directly_changed),
             transitively_affected=sorted(result.impact.transitively_affected),
             public_base_url=public_base_url(),
@@ -1482,6 +1505,7 @@ def audit_diff(request: _DiffAuditRequest) -> JSONResponse:
 
     return JSONResponse({
         "repo": result.repo,
+        "run_id": diff_run_id,
         "files_changed": len(result.impact.directly_changed),
         "files_affected": len(result.impact.transitively_affected),
         "directly_changed": sorted(result.impact.directly_changed),
@@ -2312,7 +2336,8 @@ def list_agent_packs(
         "status_counts": idx_meta.get("status_counts", {}),
         "packs": packs,
         # Always serve current discovery (older INDEX.json files point specialist at kind=architecture).
-        "discovery": {**PACK_DISCOVERY, "index_file": f"{out}/agent_packs/INDEX.json"},
+        # index_file stays relative to the output root (PACK_DISCOVERY's), never the server's path
+        "discovery": dict(PACK_DISCOVERY),
     })
 
 
@@ -2487,6 +2512,13 @@ def get_agent_pack_brief(pack_id: str) -> PlainTextResponse:
     return PlainTextResponse(pack.to_brief_md())
 
 
+def _ingest_timeout_s() -> int:
+    try:
+        return max(1, int(os.getenv("AI_AUDIT_INGEST_TIMEOUT_S", "600")))
+    except ValueError:
+        return 600
+
+
 @app.post("/audit/ingest", dependencies=[Depends(_require_mutating_auth)])
 def trigger_ingest() -> JSONResponse:
     """Push the latest audit briefings to the RAG ingest service (audit_docs collection)."""
@@ -2494,15 +2526,23 @@ def trigger_ingest() -> JSONResponse:
     if not script.exists():
         raise HTTPException(status_code=500, detail="ingest_ecosystem_to_rag.py not found.")
 
-    result = subprocess.run(
-        [sys.executable, str(script)],
-        capture_output=True,
-        text=True,
-        env=os.environ.copy(),
-    )
+    timeout_s = _ingest_timeout_s()
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            text=True,
+            env=os.environ.copy(),
+            timeout=timeout_s,  # a hung RAG service must not hold this worker forever
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.error("RAG ingest timed out after %ss", timeout_s)
+        raise HTTPException(status_code=504, detail=f"Ingest timed out after {timeout_s}s.") from exc
     if result.returncode != 0:
+        # stderr can name internal hosts, paths or credentialed URLs: log it, don't return it
+        logger.error("RAG ingest failed (exit %s): %s", result.returncode, result.stderr[-4000:])
         raise HTTPException(
             status_code=500,
-            detail=f"Ingest failed (exit {result.returncode}): {result.stderr[-2000:]}",
+            detail=f"Ingest failed (exit {result.returncode}); see the audit-api log.",
         )
     return JSONResponse({"status": "ok", "output": result.stdout[-2000:]})

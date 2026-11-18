@@ -255,7 +255,7 @@ def _one_repo_config(monkeypatch: pytest.MonkeyPatch, repo_path) -> None:
 
     from auditor import repo_resolver
 
-    cfg = SimpleNamespace(repos=[SimpleNamespace(name="r1", enabled=True)])
+    cfg = SimpleNamespace(repos=[SimpleNamespace(name="r1", enabled=True)], auth_mode=False)
     monkeypatch.setattr(audit_api, "load_ecosystem_config", lambda: cfg)
     monkeypatch.setattr(repo_resolver, "resolve_repo_path", lambda repo: repo_path)
 
@@ -318,3 +318,118 @@ def test_patch_paths_raises_when_git_fails(tmp_path) -> None:
     bad.write_text("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\nthis is not a hunk line\n")
     with pytest.raises(RuntimeError):
         audit_api._patch_paths(bad, tmp_path)
+
+
+# ── endpoint hardening: webhook, merge switch, diff runs, discovery, ingest, reports ──
+
+def test_webhook_with_non_utf8_body_is_a_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AI_AUDIT_MERGE_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setenv("AI_AUDIT_MERGE_HOOK_ENABLED", "1")
+    r = TestClient(audit_api.app, raise_server_exceptions=False).post(
+        "/audit/hooks/github", content=b"\xff\xfe{", headers={"X-GitHub-Event": "push"})
+    assert r.status_code == 400
+
+
+def test_force_does_not_override_the_merge_hook_kill_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    from auditor import merge_hook
+
+    queued: list = []
+
+    class _Sched:
+        def enqueue(self, event):
+            queued.append(event)
+            return {"accepted": True}
+
+    monkeypatch.setattr(merge_hook, "get_scheduler", lambda: _Sched())
+    monkeypatch.setenv("AI_AUDIT_MERGE_HOOK_ENABLED", "0")
+    r = TestClient(audit_api.app).post("/audit/merge", json={"repo": "x", "force": True})
+    assert r.status_code == 503 and queued == []
+
+
+def test_each_diff_audit_gets_its_own_run_id(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from auditor import agent_pack, diff_auditor, repo_resolver
+
+    cfg = SimpleNamespace(repos=[SimpleNamespace(name="r1", enabled=True)], output_dir=str(tmp_path), auth_mode=False)
+    monkeypatch.setattr(audit_api, "load_ecosystem_config", lambda: cfg)
+    monkeypatch.setattr(audit_api, "_output_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(repo_resolver, "resolve_repo_path", lambda repo: tmp_path)
+    impact = SimpleNamespace(directly_changed=set(), transitively_affected=set())
+    monkeypatch.setattr(diff_auditor, "run_diff_audit", lambda repo, diff: SimpleNamespace(
+        repo="r1", findings=[], impact=impact, units_analyzed=[], generated_at="now"))
+    seen: list[str] = []
+
+    def emit(findings, **kw):
+        seen.append(kw["run_id"])
+        return []
+
+    monkeypatch.setattr(agent_pack, "emit_packs_from_findings", emit)
+    client = TestClient(audit_api.app)
+    a = client.post("/audit/diff", json={"repo": "r1", "diff": "diff --git a/x b/x\n"}).json()
+    b = client.post("/audit/diff", json={"repo": "r1", "diff": "diff --git a/y b/y\n"}).json()
+    assert len(set(seen)) == 2 and [a["run_id"], b["run_id"]] == seen
+
+
+def test_pack_discovery_does_not_leak_the_output_dir(client: TestClient, tmp_path) -> None:
+    d = client.get("/audit/packs").json()["discovery"]
+    assert d["index_file"] == "agent_packs/INDEX.json"
+    assert str(tmp_path) not in str(d)
+
+
+def test_ingest_has_a_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    seen: dict = {}
+
+    def run(args, **kw):
+        seen.update(kw)
+        raise subprocess.TimeoutExpired(args, kw.get("timeout") or 0)
+
+    monkeypatch.setattr(audit_api.subprocess, "run", run)
+    r = TestClient(audit_api.app, raise_server_exceptions=False).post("/audit/ingest")
+    assert seen.get("timeout") and r.status_code == 504
+
+
+def test_ingest_failure_does_not_return_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    leak = "httpx.ConnectError: http://admin:hunter2@10.0.0.7:6333/ /home/smk/secret"
+    monkeypatch.setattr(audit_api.subprocess, "run",
+                        lambda args, **kw: subprocess.CompletedProcess(args, 1, stdout="", stderr=leak))
+    r = TestClient(audit_api.app, raise_server_exceptions=False).post("/audit/ingest")
+    assert r.status_code == 500 and "hunter2" not in r.text and "/home/smk" not in r.text
+
+
+def _finished_run(run_id: str, hours_ago: float = 0.0) -> None:
+    from datetime import timedelta
+
+    from auditor.db import AuditRun, db_session, utcnow
+
+    with db_session() as s:
+        s.add(AuditRun(run_id=run_id, pipeline="ecosystem-audit", status="completed",
+                       started_at=utcnow() - timedelta(hours=hours_ago),
+                       finished_at=utcnow() - timedelta(hours=hours_ago) + timedelta(minutes=5),
+                       metadata_json={}))
+
+
+def test_report_for_an_older_run_is_gone_once_a_later_run_rewrote_it(client: TestClient, tmp_path) -> None:
+    import os
+    import time
+
+    _finished_run("eco-old", hours_ago=3)
+    sentinel = tmp_path / "run_eco-old.json"
+    sentinel.write_text("{}")
+    old = time.time() - 3 * 3600 + 300
+    os.utime(sentinel, (old, old))
+    (tmp_path / "ecosystem_report.md").write_text("# newer run's report")  # written just now
+    assert client.get("/audit/reports/eco-old").status_code == 410
+
+
+def test_report_reads_only_the_runs_known_report_files(client: TestClient, tmp_path) -> None:
+    _finished_run("eco-new")
+    (tmp_path / "ecosystem_report.md").write_text("# Eco")
+    (tmp_path / "scratch_notes.md").write_text("# not a report")
+    (tmp_path / "run_eco-new.json").write_text("{}")
+    r = client.get("/audit/reports/eco-new")
+    assert r.status_code == 200 and "# Eco" in r.text and "not a report" not in r.text
