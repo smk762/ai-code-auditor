@@ -1,5 +1,8 @@
 x-auditor-base: &auditor-base
   build: .
+  # An init process as PID 1 reaps orphans. git detaches background gc, which is re-parented to
+  # PID 1 on exit; uvicorn never reaps them, and ~75k zombies exhausted the container's pids.
+  init: true
   user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
   env_file:
     - .env
