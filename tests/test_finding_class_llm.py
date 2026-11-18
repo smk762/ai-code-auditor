@@ -100,3 +100,25 @@ def test_runner_lane_and_dir_are_separate_from_the_wiki(tmp_path) -> None:
     assert r.lane == "classes" and r.root == tmp_path / "_classes"
     w = Runner(tmp_path)
     assert w.lane == "wiki" and w.root == tmp_path / "wiki"
+
+
+def test_save_gold_preds_interrupted_write_keeps_every_model(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    from pathlib import Path
+
+    rows = [{"id": "a"}, {"id": "b"}]
+    llm.save_gold_preds(tmp_path, rows, "model-1", ["injection", "data_integrity"])
+    path = llm.classes_dir(tmp_path) / llm.GOLD_PREDS_FILE
+    real = Path.write_text
+
+    def torn(self, text, *a, **kw):  # disk full / killed half way through the write
+        real(self, text[: len(text) // 2], *a, **kw)
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(Path, "write_text", torn)
+    with pytest.raises(OSError):
+        llm.save_gold_preds(tmp_path, rows, "model-2", ["injection", "injection"])
+    monkeypatch.undo()
+    assert json.loads(path.read_text()) == {"model-1": {"a": "injection", "b": "data_integrity"}}
+    assert [p.name for p in path.parent.iterdir() if p.name.endswith(".tmp")] == []
+    llm.save_gold_preds(tmp_path, rows, "model-2", ["injection", "injection"])
+    assert set(json.loads(path.read_text())) == {"model-1", "model-2"}
