@@ -158,9 +158,11 @@ def detect_competing_providers(
                 )
 
         for iface, providers in iface_providers.items():
-            if len(providers) < 2:
+            # Count distinct backends, not class definitions: a conditional
+            # redefinition or a same-named copy is still one backend.
+            backends = sorted({p[0] for p in providers})
+            if len(backends) < 2:
                 continue
-            backends = [p[0] for p in providers]
             locations = [
                 f"{_repo_relative(Path(p[1]), files)}:{p[2]}" for p in providers
             ]
@@ -170,7 +172,7 @@ def detect_competing_providers(
                     violating_path=f"{repo_name}: {iface}Provider",
                     entities=[repo_name],
                     evidence=(
-                        f"{repo_name!r} has {len(providers)} competing {iface}Provider "
+                        f"{repo_name!r} has {len(backends)} competing {iface}Provider "
                         f"implementations ({', '.join(backends)}). "
                         f"Active path depends on deployment config. "
                         f"Locations: {', '.join(locations)}."

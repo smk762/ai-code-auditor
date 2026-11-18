@@ -56,12 +56,11 @@ def verify_bundle(bundle: Path, *, denylist_path: str | Path | None = None,
 def _private_names(visibility: Callable[[str], str | None] | None) -> list[str]:
     from auditor.config import load_ecosystem_config
     from auditor.merge_poll import github_token
-    from wiki.public import github_visibility
+    from wiki.public import github_visibility, private_repo_names
 
     token = github_token()
     lookup = visibility or (lambda r: github_visibility(r, token))
-    return sorted(r.name for r in load_ecosystem_config().repos
-                  if r.enabled and not r.name.startswith("argus-") and lookup(r.name) != "public")
+    return private_repo_names({r.name: lookup(r.name) for r in load_ecosystem_config().repos if r.enabled})
 
 
 def publish(bundle_dir: str | Path, *, repo: str = DEFAULT_REPO, checkout: str | Path | None = None,
@@ -107,7 +106,9 @@ def publish(bundle_dir: str | Path, *, repo: str = DEFAULT_REPO, checkout: str |
                    f"bundle_sha256: {manifest['bundle_sha256']}\n\n{lines}\n")
         _git(co, "-c", f"user.name={BOT_NAME}", "-c", f"user.email={BOT_EMAIL}", "commit", "-q", "-m", message)
     result["commit"] = _git(co, "rev-parse", "HEAD", check=False) or None
-    if push and result["changed"]:
+    # with no remote branch yet, a local commit from an earlier unpushed or failed run already holds this
+    # bundle ("unchanged" locally), but the remote still lacks it
+    if push and (result["changed"] or not has_remote_branch):
         _git(co, "push", "-q", "origin", f"HEAD:{BRANCH}")
         result["pushed"] = True
     result["pin"] = {"repo": repo, "commit": result["commit"], "bundle_sha256": manifest["bundle_sha256"]}

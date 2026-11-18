@@ -1,7 +1,36 @@
 from __future__ import annotations
 
+import logging
+import re
+
 from auditor.contracts import RuleViolation
 from ecosystem.graph_builder import GraphBuilder
+
+logger = logging.getLogger(__name__)
+
+# "SRC->TGT" with an optional ":TYPE" suffix; names may themselves contain "::".
+_TYPE_SUFFIX = re.compile(r"^(?P<tgt>.*[^:]):(?P<type>[A-Za-z_]+)$")
+
+
+def _parse_forbidden(pattern: str) -> tuple[str, str, str | None] | None:
+    """Split a forbidden pattern into (src, tgt, type); type None means any edge type."""
+    text = pattern.replace(" ", "").upper()
+    if "->" not in text:
+        return None
+    src, tgt = text.split("->", 1)
+    edge_type: str | None = None
+    m = _TYPE_SUFFIX.match(tgt)
+    if m:
+        tgt, edge_type = m.group("tgt"), m.group("type")
+    if not src or not tgt:
+        return None
+    return src, tgt, edge_type
+
+
+def _names(entity: str) -> set[str]:
+    """The fully-qualified and the short (``::``-stripped) name of an entity, upper-cased."""
+    full = entity.upper()
+    return {full, full.split("::")[-1]}
 
 
 class ArchitectureEngine:
@@ -27,17 +56,27 @@ class ArchitectureEngine:
         edges: list[tuple[str, str, str]],
     ) -> list[RuleViolation]:
         violations: list[RuleViolation] = []
-        normalized = {edge.replace(" ", "").upper() for edge in forbidden_edges}
+        patterns = []
+        for raw in forbidden_edges:
+            parsed = _parse_forbidden(raw)
+            if parsed is None:
+                logger.warning("rule %r: malformed forbidden edge %r (expected SRC->TGT[:TYPE]); ignored",
+                               rule_name, raw)
+                continue
+            patterns.append((raw, parsed))
         for src, tgt, edge_type in edges:
-            candidate = f"{src}->{tgt}:{edge_type}".upper()
-            for forbidden in normalized:
-                if edge_type.upper() in forbidden and forbidden in candidate:
+            src_names, tgt_names = _names(src), _names(tgt)
+            for raw, parsed in patterns:
+                f_src, f_tgt, f_type = parsed
+                if f_type is not None and f_type != edge_type.upper():
+                    continue
+                if f_src in src_names and f_tgt in tgt_names:
                     violations.append(
                         RuleViolation(
                             rule_name=rule_name,
                             violating_path=f"{src} -> {tgt}",
                             entities=[src, tgt],
-                            evidence=f"Matched forbidden pattern {forbidden}",
+                            evidence=f"Matched forbidden pattern {raw.replace(' ', '').upper()}",
                         )
                     )
         return violations

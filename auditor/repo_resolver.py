@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
+import re
+import shutil
 import subprocess
 import tempfile
+import threading
+from pathlib import Path
 
 from auditor.config import RepoConfig, get_secret_from_env
 
@@ -12,6 +15,15 @@ logger = logging.getLogger(__name__)
 
 # Tried in order when no branch is explicitly configured.
 BRANCH_PREFERENCE: tuple[str, ...] = ("dev", "main", "master")
+
+# Seconds before a local git query (rev-parse, diff) or a network one (clone, fetch) is abandoned.
+GIT_LOCAL_TIMEOUT_S = 60
+GIT_NETWORK_TIMEOUT_S = 600
+
+# A cache directory name: one path segment, so ``cache_root / name`` stays inside the cache.
+_SAFE_REPO_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+# The userinfo of a URL (``https://user:token@host``), masked in error text.
+_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@")
 
 
 def head_commit(repo_path: Path) -> dict[str, str]:
@@ -27,10 +39,16 @@ def head_commit(repo_path: Path) -> dict[str, str]:
 
 def branch_exists(repo_path: Path, branch: str) -> bool:
     """Return True if *branch* exists as a local branch in the git repo at *repo_path*."""
-    result = subprocess.run(
-        ["git", "-C", str(repo_path), "rev-parse", "--verify", f"refs/heads/{branch}"],
-        capture_output=True,
-    )
+    # show-ref matches the literal ref name; rev-parse would also accept revision
+    # expressions such as ``dev~1`` or ``dev^{tree}``.
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+            capture_output=True,
+            timeout=GIT_LOCAL_TIMEOUT_S, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
     return result.returncode == 0
 
 
@@ -72,14 +90,24 @@ def diff_files(repo_path: Path, base: str, head: str = "HEAD") -> frozenset[str]
     """
     if not (repo_path / ".git").exists():
         return frozenset()
-    result = subprocess.run(
-        ["git", "-C", str(repo_path), "diff", "--name-only", f"{base}...{head}"],
-        capture_output=True,
-        text=True,
-    )
+    if base.startswith("-") or head.startswith("-"):
+        # A leading dash would make git read the range as an option (e.g. --output=<file>).
+        logger.warning("diff_files: refusing ref that looks like a git option: %r...%r", base, head)
+        return frozenset()
+    try:
+        result = subprocess.run(
+            # quotePath off and -z: paths come back raw, not C-quoted, and need no stripping.
+            ["git", "-C", str(repo_path), "-c", "core.quotePath=false", "diff", "--name-only", "-z",
+             f"{base}...{head}"],
+            capture_output=True,
+            timeout=GIT_LOCAL_TIMEOUT_S, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
     if result.returncode != 0:
         return frozenset()
-    return frozenset(p.strip() for p in result.stdout.splitlines() if p.strip())
+    out = result.stdout.decode("utf-8", errors="surrogateescape")
+    return frozenset(p for p in out.split("\0") if p)
 
 
 def resolve_repo_path(repo: RepoConfig) -> Path:
@@ -112,94 +140,145 @@ def _is_remote(path: str) -> bool:
     return path.startswith("http://") or path.startswith("https://")
 
 
-def _materialize_remote_repo(repo: RepoConfig) -> Path:
+def _cache_dir(repo: RepoConfig) -> tuple[Path, Path]:
+    """``(cache_root, repo_dir)`` for *repo*; refuses a name that would leave the cache."""
+    name = repo.name or ""
+    if not _SAFE_REPO_NAME.match(name) or name in (".", ".."):
+        msg = f"repo name {name!r} is not a safe cache directory name"
+        raise ValueError(msg)
     cache_root = Path(repo.local_cache_path or ".cache/repos")
+    return cache_root, cache_root / name
+
+
+def _run_git(args: list[str], git_env: dict[str, str], repo_name: str, token: str = "") -> None:
+    """Run a network/cache git command, raising a sanitised RuntimeError on failure or timeout."""
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, env=git_env,
+                                timeout=GIT_NETWORK_TIMEOUT_S, check=False)
+    except subprocess.TimeoutExpired as exc:
+        msg = f"git operation timed out for repo '{repo_name}' after {GIT_NETWORK_TIMEOUT_S}s"
+        raise RuntimeError(msg) from exc
+    _ensure_git_ok(result, repo_name, token)
+
+
+def _materialize_remote_repo(repo: RepoConfig) -> Path:
+    cache_root, repo_dir = _cache_dir(repo)
     cache_root.mkdir(parents=True, exist_ok=True)
-    repo_dir = cache_root / repo.name
     token = get_secret_from_env(repo.access_token_env)
-    git_env = _git_env_with_token(token)
+    git_env = _git_env(token, cache_root)
+    if repo_dir.exists() and not (repo_dir / ".git").exists():
+        # Not a clone (a failed clone, or made by hand): git -C would search upward and act on an
+        # enclosing repository, so replace it. repo_dir is a direct child of the cache.
+        logger.warning("repo '%s': cache dir %s is not a git clone; re-cloning", repo.name, repo_dir)
+        shutil.rmtree(repo_dir, ignore_errors=True)
     if not repo_dir.exists():
-        branch = _clone_with_branch_fallback(repo, git_env)
-    else:
-        fetch = subprocess.run(
-            ["git", "-C", str(repo_dir), "fetch", "origin"],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=git_env,
-        )
-        _ensure_git_ok(fetch, repo.name)
-        branch = select_branch(repo, repo_dir)
-        checkout = subprocess.run(
-            ["git", "-C", str(repo_dir), "checkout", branch],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=git_env,
-        )
-        _ensure_git_ok(checkout, repo.name)
-        pull = subprocess.run(
-            ["git", "-C", str(repo_dir), "pull", "--ff-only", "origin", branch],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=git_env,
-        )
-        _ensure_git_ok(pull, repo.name)
+        _clone_with_branch_fallback(repo, git_env)
+        return repo_dir
+    # The cache is a disposable copy: move it to the remote tip even after a force-push, and
+    # discard any local change, rather than a pull --ff-only that would then fail on every run.
+    branch = select_branch(repo, repo_dir)
+    remote_ref = f"refs/remotes/origin/{branch}"
+    _run_git(["git", "-C", str(repo_dir), "fetch", "--depth", "1", "origin",
+              f"+refs/heads/{branch}:{remote_ref}"], git_env, repo.name, token)
+    _run_git(["git", "-C", str(repo_dir), "checkout", "-f", "-B", branch, remote_ref],
+             git_env, repo.name, token)
+    _run_git(["git", "-C", str(repo_dir), "clean", "-fdx"], git_env, repo.name, token)
     return repo_dir
 
 
 def _clone_with_branch_fallback(repo: RepoConfig, git_env: dict[str, str] | None) -> str:
-    """Clone *repo* trying ``repo.branch`` first, then ``BRANCH_PREFERENCE`` in order.
+    """Clone *repo* at ``repo.branch`` when one is configured, else the first of
+    ``BRANCH_PREFERENCE`` that exists. A configured branch is never swapped for another.
 
     Returns the branch that succeeded.
     """
-    cache_root = Path(repo.local_cache_path or ".cache/repos")
-    repo_dir = cache_root / repo.name
+    cache_root, repo_dir = _cache_dir(repo)
+    if repo.path.startswith("-"):
+        msg = f"repo '{repo.name}' path must not start with '-'"
+        raise ValueError(msg)
+    if git_env is None:
+        git_env = _git_env("", cache_root)
+    token = git_env.get("GIT_TOKEN", "")
     candidates = [repo.branch] if repo.branch else list(BRANCH_PREFERENCE)
+    existed = repo_dir.exists()
     last_error = ""
     for branch in candidates:
-        result = subprocess.run(
-            ["git", "clone", "--depth", "1", "--branch", branch, repo.path, str(repo_dir)],
-            capture_output=True,
-            text=True,
-            env=git_env,
-        )
-        if result.returncode == 0:
+        try:
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", branch, "--", repo.path, str(repo_dir)],
+                capture_output=True,
+                text=True,
+                env=git_env,
+                timeout=GIT_NETWORK_TIMEOUT_S, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            result = None
+            last_error = f"timed out after {GIT_NETWORK_TIMEOUT_S}s"
+        if result is not None and result.returncode == 0:
             logger.debug("repo '%s': cloned branch '%s'", repo.name, branch)
             return branch
-        last_error = (result.stderr or "").strip()
-        if repo_dir.exists():
-            # Clean up partial clone before retrying.
-            import shutil
+        if result is not None:
+            last_error = (result.stderr or "").strip()
+        if repo_dir.exists() and not existed:
+            # Clean up the partial clone before retrying; never a directory that was already there.
             shutil.rmtree(repo_dir, ignore_errors=True)
     raise RuntimeError(
-        f"git clone failed for repo '{repo.name}' (tried {candidates}): {last_error[:400]}"
+        f"git clone failed for repo '{repo.name}' (tried {candidates}): "
+        f"{_sanitize_git_output(last_error, token)[:400]}"
     )
+
+
+_ASKPASS_LOCK = threading.Lock()
+_ASKPASS_PATH: str | None = None
+
+
+def _askpass_script() -> str:
+    """One askpass script per process, reused. It holds no secret: it echoes ``$GIT_TOKEN``."""
+    global _ASKPASS_PATH
+    with _ASKPASS_LOCK:
+        if _ASKPASS_PATH and Path(_ASKPASS_PATH).is_file():
+            return _ASKPASS_PATH
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, encoding="utf-8",
+                                         prefix="ai-audit-askpass-", suffix=".sh") as tmp:
+            tmp.write("#!/usr/bin/env sh\n")
+            tmp.write("case \"$1\" in\n")
+            tmp.write("*Username*) echo \"oauth2\" ;;\n")
+            tmp.write("*Password*) echo \"$GIT_TOKEN\" ;;\n")
+            tmp.write("*) echo \"\" ;;\n")
+            tmp.write("esac\n")
+        Path(tmp.name).chmod(0o700)
+        _ASKPASS_PATH = tmp.name
+        return tmp.name
+
+
+def _git_env(token: str, cache_root: Path) -> dict[str, str]:
+    """Environment for cache git commands: never prompt, never search above the cache."""
+    env = _git_env_with_token(token) or dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_CEILING_DIRECTORIES"] = str(cache_root.resolve())
+    return env
 
 
 def _git_env_with_token(token: str) -> dict[str, str] | None:
     if not token:
         return None
     # Avoid placing token in command args or URL.
-    tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, encoding="utf-8")
-    tmp.write("#!/usr/bin/env sh\n")
-    tmp.write("case \"$1\" in\n")
-    tmp.write("*Username*) echo \"oauth2\" ;;\n")
-    tmp.write("*Password*) echo \"$GIT_TOKEN\" ;;\n")
-    tmp.write("*) echo \"\" ;;\n")
-    tmp.write("esac\n")
-    tmp.flush()
-    Path(tmp.name).chmod(0o700)
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
-    env["GIT_ASKPASS"] = tmp.name
+    env["GIT_ASKPASS"] = _askpass_script()
     env["GIT_TOKEN"] = token
     return env
 
 
-def _ensure_git_ok(result: subprocess.CompletedProcess[str], repo_name: str) -> None:
+def _sanitize_git_output(text: str, token: str = "") -> str:
+    """Mask URL credentials and any known token value in git's output."""
+    if token:
+        text = text.replace(token, "***")
+    return _URL_USERINFO.sub(r"\1***@", text)
+
+
+def _ensure_git_ok(result: subprocess.CompletedProcess[str], repo_name: str, token: str = "") -> None:
     if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
+        stderr = _sanitize_git_output((result.stderr or "").strip(), token)
         # Never include token values in error output.
         raise RuntimeError(f"git operation failed for repo '{repo_name}': {stderr[:400]}")

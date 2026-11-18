@@ -170,7 +170,7 @@ class AgentCodingPack:
 
     def to_brief_md(self) -> str:
         sev = (self.priority or {}).get("severity", "MEDIUM")
-        title = (self.narrative or {}).get("title", self.work_item_id)
+        title = _one_line((self.narrative or {}).get("title", self.work_item_id))
         repo = (self.repo or {}).get("name", "")
         loc = self.location or {}
         lines = [
@@ -203,12 +203,10 @@ class AgentCodingPack:
         lines.append("## Evidence")
         evidence = loc.get("evidence") or (self.narrative or {}).get("description") or ""
         if evidence:
-            lines.append("```")
-            lines.append(str(evidence)[:2000])
-            lines.append("```")
+            lines.extend(_fenced(str(evidence)[:2000]))
         snippet = loc.get("code_snippet") or ""
         if snippet:
-            lines.extend(["", "## Code snippet", "```", snippet[:3000], "```"])
+            lines.extend(["", "## Code snippet", *_fenced(str(snippet)[:3000])])
         impact = self.impact or {}
         call_path = impact.get("call_path") or []
         if call_path:
@@ -256,7 +254,7 @@ class AgentCodingPack:
 
     def to_compact_md(self) -> str:
         """Short brief (no snippet/evidence) used by bundles under a token budget."""
-        title = (self.narrative or {}).get("title", self.work_item_id)
+        title = _one_line((self.narrative or {}).get("title", self.work_item_id))
         loc = self.location or {}
         lines = [
             f"## {title}",
@@ -290,6 +288,21 @@ class AgentCodingPack:
             f"Fetch full pack via GET /audit/packs/{self.work_item_id}",
         ]
         return "\n".join(p for p in parts if p)
+
+
+def _fenced(text: str) -> list[str]:
+    """*text* in a code fence it cannot close: one backtick longer than its longest backtick run.
+
+    Evidence and snippets come from audited code and LLM output; a ``` line inside a fixed fence
+    would end it and turn the rest into top-level brief text for the coding agent."""
+    longest = max((len(m) for m in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return [fence, text, fence]
+
+
+def _one_line(text: Any) -> str:
+    """A title on one line, so it can't open new markdown sections under its heading."""
+    return " ".join(str(text or "").split())
 
 
 def packs_dir(output_dir: str | Path) -> Path:
@@ -341,7 +354,10 @@ def read_code_snippet(
     lines = text.splitlines()
     if not lines:
         return ""
-    idx = max(1, int(line or 1)) - 1
+    try:
+        idx = max(1, int(line or 1)) - 1
+    except (TypeError, ValueError):  # e.g. "12-14" or "N/A" from finding JSON
+        idx = 0
     start = max(0, idx - radius)
     end = min(len(lines), idx + radius + 1)
     numbered = [f"{i + 1:>5}| {lines[i]}" for i in range(start, end)]
@@ -383,7 +399,8 @@ def build_pack_from_finding(
     public_base_url: str = "",
     missing_evidence: str = "",
 ) -> AgentCodingPack:
-    root = Path(repo_path) if repo_path else Path(".")
+    # No repo_path means no checkout to read: never fall back to the auditor's own cwd.
+    root = Path(repo_path) if repo_path else None
     sev = _normalize_severity(finding.severity)
     pack_id = stable_pack_id(
         repo=finding.repo,
@@ -393,8 +410,9 @@ def build_pack_from_finding(
         run_id=run_id,
         finding_id=finding.id,
     )
-    tool, cmds = suggest_test_commands(root, finding.file_path) if root.exists() else ("skipped", [])
-    snippet = read_code_snippet(root, finding.file_path, finding.line) if root.exists() else ""
+    have_root = root is not None and root.exists()
+    tool, cmds = suggest_test_commands(root, finding.file_path) if have_root else ("skipped", [])
+    snippet = read_code_snippet(root, finding.file_path, finding.line) if have_root else ""
     pack_url = f"{public_base_url.rstrip('/')}/audit/packs/{pack_id}" if public_base_url else ""
     return AgentCodingPack(
         work_item_id=pack_id,
@@ -1210,6 +1228,8 @@ def link_recurrences(packs: list[AgentCodingPack], output_dir: str | Path) -> di
             continue
         used_new.add(i)
         used_old.add(eid)
+        if packs[i].governance is None:
+            packs[i].governance = {}
         packs[i].governance["recurrence_of"] = eid
         linked[packs[i].work_item_id] = eid
     return linked
@@ -1248,22 +1268,29 @@ def dedupe_packs(
     if dry_run or not dupes:
         return dupes
     closed: list[AgentCodingPack] = []
-    for d in dupes:
-        data = load_pack(output_dir, d["id"])
-        if data is None:
-            continue
-        pack = AgentCodingPack.from_dict(data, fallback_id=d["id"])
-        pack.apply_status("wontfix", f"duplicate of {d['duplicate_of']}")
-        pack.governance["duplicate_of"] = d["duplicate_of"]
-        write_pack(pack, output_dir, preserve_status=False)
-        closed.append(pack)
-    rebuild_index(output_dir, public_base_url=public_base_url)
+    done: list[dict[str, Any]] = []
+    # Load, re-check and write under the lock claims take: the index snapshot above is stale by
+    # now, and a pack claimed since then is someone's work, not a duplicate to close.
+    with pack_lock(output_dir):
+        for d in dupes:
+            data = load_pack(output_dir, d["id"])
+            if data is None:
+                continue
+            pack = AgentCodingPack.from_dict(data, fallback_id=d["id"])
+            if (pack.status or DEFAULT_PACK_STATUS) != "open":
+                continue
+            pack.apply_status("wontfix", f"duplicate of {d['duplicate_of']}")
+            pack.governance["duplicate_of"] = d["duplicate_of"]
+            write_pack(pack, output_dir, preserve_status=False)
+            closed.append(pack)
+            done.append(d)
+        rebuild_index(output_dir, public_base_url=public_base_url)
     if closed and pack_rag_ingest_enabled():
         try:
             ingest_packs_to_rag(closed, output_dir=output_dir)  # retires them (wontfix)
         except Exception as exc:  # noqa: BLE001 — the next emit re-syncs
             logger.warning("RAG retire of duplicate packs failed: %s", exc)
-    return dupes
+    return done
 
 
 def emit_packs_from_findings(
@@ -1333,6 +1360,8 @@ def finding_from_violation(violation: RuleViolation) -> Finding:
     elif violation.entities:
         repo = violation.entities[0]
         file_path = vp if ("/" in vp or re.search(r"\.\w+$", vp)) and ":" not in vp.split("/")[0] else ""
+        if file_path.startswith(f"{repo}/"):  # "repo/path.py": store the repo-relative path
+            file_path = file_path[len(repo) + 1:]
         if not file_path:
             m = re.search(r"([\w./-]+\.[a-zA-Z0-9]+):(\d+)", vp + " " + (violation.evidence or ""))
             if m:
@@ -1580,7 +1609,14 @@ def emit_packs_from_extraction_candidates(
         except (OSError, yaml.YAMLError) as exc:
             logger.warning("cannot read extraction candidates: %s", exc)
             return []
-        items = list(payload.get("candidates") or [])
+        if isinstance(payload, list):  # a bare list of candidates
+            payload = {"candidates": payload}
+        if not isinstance(payload, dict):
+            logger.warning("extraction candidates in %s: expected a mapping, got %s", path,
+                           type(payload).__name__)
+            return []
+        raw = payload.get("candidates") or []
+        items = list(raw) if isinstance(raw, list) else []
 
     base = public_base_url.rstrip("/") if public_base_url else ""
     packs: list[AgentCodingPack] = []
@@ -1595,10 +1631,14 @@ def emit_packs_from_extraction_candidates(
         score = float(cand.get("extraction_score") or 0.0)
         title = str(cand.get("title") or f"Extraction {cid}")
         rationale = cand.get("rationale") or []
+        if not isinstance(rationale, list):
+            rationale = [rationale]
         plan = cand.get("migration_plan") or {}
         risks = cand.get("risks") or []
         source_units = cand.get("source_units") or []
-        first = source_units[0] if source_units else {}
+        first = source_units[0] if source_units and isinstance(source_units[0], dict) else {}
+        syms = first.get("symbols") or []
+        symbols = [str(x) for x in (syms if isinstance(syms, list) else [syms])]
         desc_parts = [
             title,
             "",
@@ -1629,7 +1669,7 @@ def emit_packs_from_extraction_candidates(
             location={
                 "file_path": str(first.get("path") or ""),
                 "line": 0,
-                "symbol": ",".join(first.get("symbols") or []),
+                "symbol": ",".join(symbols),
                 "code_snippet": "",
                 "evidence": json.dumps(source_units[:5], ensure_ascii=False)[:2000],
             },

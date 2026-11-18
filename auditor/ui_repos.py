@@ -37,12 +37,16 @@ def _pack_entries(output_dir: str | Path) -> list[dict[str, Any]]:
 
 # ── repo cards ───────────────────────────────────────────────────────────────
 
+_HEX_SHA = re.compile(r"[0-9a-fA-F]{4,64}")
+
+
 def _commit_time(repo_path: Path, sha: str) -> str | None:
     """Committer date of *sha* from the local mirror (None if it isn't fetched yet)."""
-    if not sha or not (repo_path / ".git").exists():
+    # sha comes from polled GitHub data: only a hex object name may reach git, never an option
+    if not sha or not _HEX_SHA.fullmatch(sha) or not (repo_path / ".git").exists():
         return None
     try:
-        r = subprocess.run(["git", "-C", str(repo_path), "show", "-s", "--format=%cI", sha],
+        r = subprocess.run(["git", "-C", str(repo_path), "show", "-s", "--format=%cI", "--end-of-options", sha],
                            capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         return None

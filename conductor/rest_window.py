@@ -44,14 +44,26 @@ def load_rest_windows(path: str | Path = "config/rest_windows.yaml") -> RestWind
         source = REST_TZ_ENV if os.getenv(REST_TZ_ENV, "").strip() else f"{p} timezone"
         raise ValueError(f"{source}: unknown IANA timezone {tz!r}") from exc
 
-    def _parse(hhmm: str) -> time:
-        h, m = hhmm.split(":")
-        return time(int(h), int(m))
+    def _parse(key: str, value: Any) -> time:
+        # YAML 1.1 reads an unquoted 22:30 as the base-60 integer 1350; map it back.
+        if isinstance(value, int) and not isinstance(value, bool):
+            h, m = divmod(value, 60)
+        elif isinstance(value, str) and value.count(":") == 1:
+            hh, mm = value.split(":")
+            try:
+                h, m = int(hh), int(mm)
+            except ValueError:
+                h = m = -1
+        else:
+            h = m = -1
+        if not (0 <= h < 24 and 0 <= m < 60):
+            raise ValueError(f"{p} {key}: {value!r} is not an HH:MM time (quote it, e.g. \"22:30\")")
+        return time(h, m)
 
     return RestWindowConfig(
         timezone=tz,
-        start=_parse(str(w0.get("start", "00:30"))),
-        end=_parse(str(w0.get("end", "06:00"))),
+        start=_parse("start", w0.get("start", "00:30")),
+        end=_parse("end", w0.get("end", "06:00")),
         wrap_up_before_end_minutes=int(raw.get("wrap_up_before_end_minutes", 20)),
         inflight_grace_s=int(raw.get("inflight_grace_s", 120)),
         max_tasks_per_session=int(raw.get("max_tasks_per_session", 12)),

@@ -139,51 +139,55 @@ def run() -> None:
     meta = RunMetadata.start("ecosystem-audit", run_id=forced_run_id)
     meta.repos_total = len(cfg.repos)
 
-    if skip_gpu:
-        os.environ.setdefault("AI_AUDIT_SKIP_GPU_SCHEDULER", "1")
-        gpu = scheduler.wait_for_capacity()
-        logger.info(
-            "Ecosystem run %s — GPU scheduler skipped (cloud/API path). Repos: %d.",
-            meta.run_id,
-            len(cfg.repos),
-        )
-    else:
-        meta.current_stage = "awaiting_gpu_capacity"
-        record_run_progress(meta)
-        _apply_gpu_wait_progress(
-            meta,
-            scheduler.wait_progress_payload(
-                vram=get_vram_info(),
-                services=[],
-                reason="awaiting_gpu_capacity",
-                queue_ahead=None,
-            ),
-        )
-        gpu = scheduler.wait_for_capacity(
-            on_wait_update=lambda s: _apply_gpu_wait_progress(meta, s),
-        )
-        for k in _WAIT_PROGRESS_EXTRA_KEYS:
-            meta.extra.pop(k, None)
-        meta.stage_status.pop("awaiting_gpu_capacity", None)
-        logger.info(
-            "Ecosystem run %s — GPU offload: %s (vram_free_mb=%s). Repos to scan: %d.",
-            meta.run_id,
-            gpu.offload_mode,
-            gpu.vram_free_mb,
-            len(cfg.repos),
-        )
-
-    meta.extra["gpu_offload_mode"] = gpu.offload_mode
-    meta.extra["gpu_num_layers"] = gpu.num_gpu_layers
-    meta.extra["gpu_vram_free_mb"] = gpu.vram_free_mb
-    record_run_progress(meta)
-
-    all_units: list[CodeUnit] = []
-    repo_roots: dict[str, str] = {}
-    repo_files: dict[str, list] = {}
-    graph = GraphBuilder(cfg.graph_db_path)
-    settings = get_settings()
+    # Everything from the capacity request on runs inside the try, so a failure in setup
+    # (progress write, opening the graph DB, settings) still releases capacity and records
+    # the run as finished.
+    graph: GraphBuilder | None = None
     try:
+        if skip_gpu:
+            os.environ.setdefault("AI_AUDIT_SKIP_GPU_SCHEDULER", "1")
+            gpu = scheduler.wait_for_capacity()
+            logger.info(
+                "Ecosystem run %s — GPU scheduler skipped (cloud/API path). Repos: %d.",
+                meta.run_id,
+                len(cfg.repos),
+            )
+        else:
+            meta.current_stage = "awaiting_gpu_capacity"
+            record_run_progress(meta)
+            _apply_gpu_wait_progress(
+                meta,
+                scheduler.wait_progress_payload(
+                    vram=get_vram_info(),
+                    services=[],
+                    reason="awaiting_gpu_capacity",
+                    queue_ahead=None,
+                ),
+            )
+            gpu = scheduler.wait_for_capacity(
+                on_wait_update=lambda s: _apply_gpu_wait_progress(meta, s),
+            )
+            for k in _WAIT_PROGRESS_EXTRA_KEYS:
+                meta.extra.pop(k, None)
+            meta.stage_status.pop("awaiting_gpu_capacity", None)
+            logger.info(
+                "Ecosystem run %s — GPU offload: %s (vram_free_mb=%s). Repos to scan: %d.",
+                meta.run_id,
+                gpu.offload_mode,
+                gpu.vram_free_mb,
+                len(cfg.repos),
+            )
+
+        meta.extra["gpu_offload_mode"] = gpu.offload_mode
+        meta.extra["gpu_num_layers"] = gpu.num_gpu_layers
+        meta.extra["gpu_vram_free_mb"] = gpu.vram_free_mb
+        record_run_progress(meta)
+
+        all_units: list[CodeUnit] = []
+        repo_roots: dict[str, str] = {}
+        repo_files: dict[str, list] = {}
+        graph = GraphBuilder(cfg.graph_db_path)
+        settings = get_settings()
         require_auth(cfg.auth_mode, cfg.auth_code_env, provided_code=os.getenv("AI_AUDIT_AUTH_CODE_INPUT", ""))
         auth_token = os.getenv("AI_AUDIT_AUTH_TOKEN", "")
         if auth_token:
@@ -371,7 +375,8 @@ def run() -> None:
         scheduler.release_capacity()
         record_run_finish(meta, "ecosystem-audit")
         run_json_path = write_run_metadata(meta, output_dir=cfg.output_dir)
-        graph.close()
+        if graph is not None:
+            graph.close()
         report_dir = Path(cfg.output_dir).resolve()
         if meta.status in ("success", "partial_success"):
             logger.info(

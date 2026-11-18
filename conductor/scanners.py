@@ -23,6 +23,20 @@ class ScannerResult:
     findings: list[Finding]
     tool_versions: str
     exit_codes: dict[str, int]
+    # Non-empty when the scanner run itself failed (crash, timeout, missing output), so
+    # callers can tell "no findings" from "the scan did not run".
+    error: str = ""
+
+
+SCANNER_TOOLS = ("semgrep", "gitleaks", "osv")
+DEFAULT_TIMEOUT_S = 1800
+
+
+def _timeout_s() -> int:
+    try:
+        return max(1, int(os.getenv("AI_AUDIT_SCANNER_TIMEOUT_S", str(DEFAULT_TIMEOUT_S))))
+    except ValueError:
+        return DEFAULT_TIMEOUT_S
 
 
 def fingerprint(category: str, file: str, symbol: str) -> str:
@@ -37,24 +51,48 @@ def run_scanners(repo_path: str | Path, output_dir: str | Path) -> ScannerResult
     script = Path(__file__).resolve().parents[1] / "scripts" / "security" / "run-scanners.sh"
     env = os.environ.copy()
     env["SECURITY_OUT"] = str(output_dir.resolve())
+    errors: list[str] = []
+    run_rc: int | None = None
     if script.exists():
-        subprocess.run(
-            ["bash", str(script), str(repo_path)],
-            check=False,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
+        # Outputs of an earlier run must not stand in for this one if it fails.
+        for name in (*(f"{t}.sarif" for t in SCANNER_TOOLS), "exit-codes.txt"):
+            (output_dir / name).unlink(missing_ok=True)
+        log_path = output_dir / "run-scanners.log"
+        try:
+            with log_path.open("w", encoding="utf-8") as log:
+                proc = subprocess.run(
+                    ["bash", str(script), str(repo_path)],
+                    check=False,
+                    env=env,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=_timeout_s(),
+                )
+            run_rc = proc.returncode
+            if run_rc != 0:
+                errors.append(f"run-scanners.sh exited {run_rc}")
+        except subprocess.TimeoutExpired:
+            run_rc = 124
+            errors.append(f"run-scanners.sh timed out after {_timeout_s()}s")
+        if errors:
+            tail = log_path.read_text(encoding="utf-8", errors="replace")[-2000:] if log_path.exists() else ""
+            logger.error("%s on %s: %s", errors[-1], repo_path, tail)
+        for tool in SCANNER_TOOLS:
+            if not (output_dir / f"{tool}.sarif").exists():
+                errors.append(f"{tool}.sarif missing")
+        if not (output_dir / "exit-codes.txt").exists():
+            errors.append("exit-codes.txt missing")
     else:
         logger.warning("run-scanners.sh missing; writing empty SARIF")
-        for name in ("semgrep", "gitleaks", "osv"):
+        for name in SCANNER_TOOLS:
             (output_dir / f"{name}.sarif").write_text(
                 '{"version":"2.1.0","runs":[]}\n', encoding="utf-8"
             )
 
     findings: list[Finding] = []
     counts: dict[str, int] = {}
-    for tool in ("semgrep", "gitleaks", "osv"):
+    for tool in SCANNER_TOOLS:
         path = output_dir / f"{tool}.sarif"
         tool_findings = sarif_to_findings(path, source=tool, repo=repo_path.name)
         counts[tool] = len(tool_findings)
@@ -75,6 +113,10 @@ def run_scanners(repo_path: str | Path, output_dir: str | Path) -> ScannerResult
                     exit_codes[k.strip()] = int(v.strip())
                 except ValueError:
                     pass
+    if run_rc is not None and (run_rc != 0 or errors):
+        exit_codes["run-scanners"] = run_rc if run_rc != 0 else 1
+    if errors:
+        logger.warning("scanner run on %s incomplete: %s", repo_path, "; ".join(errors))
 
     return ScannerResult(
         output_dir=output_dir,
@@ -82,6 +124,7 @@ def run_scanners(repo_path: str | Path, output_dir: str | Path) -> ScannerResult
         findings=findings,
         tool_versions=versions,
         exit_codes=exit_codes,
+        error="; ".join(errors),
     )
 
 
@@ -93,13 +136,14 @@ def sarif_to_findings(path: Path, *, source: str, repo: str) -> list[Finding]:
     except json.JSONDecodeError:
         return []
     out: list[Finding] = []
+    seen: dict[str, int] = {}
     for run in data.get("runs") or []:
         rules = {
             r.get("id"): r
             for r in ((run.get("tool") or {}).get("driver") or {}).get("rules") or []
             if isinstance(r, dict) and r.get("id")
         }
-        for i, result in enumerate(run.get("results") or []):
+        for result in run.get("results") or []:
             if not isinstance(result, dict):
                 continue
             rule_id = str(result.get("ruleId") or "unknown")
@@ -118,7 +162,17 @@ def sarif_to_findings(path: Path, *, source: str, repo: str) -> list[Finding]:
             region = phys.get("region") or {}
             file_path = str(art.get("uri") or "")
             line = int(region.get("startLine") or 0)
-            fid = f"{source}-{rule_id}-{fingerprint(source, file_path, rule_id)}-{i}"
+            # Content-addressed id: stable when other results come and go, and distinct
+            # across runs. The ordinal only separates exact duplicates.
+            fps = result.get("partialFingerprints") or result.get("fingerprints") or {}
+            content = (
+                json.dumps(fps, sort_keys=True) if isinstance(fps, dict) and fps
+                else f"{line}:{region.get('startColumn') or 0}:{msg.get('text') or ''}"
+            )
+            base = f"{source}-{rule_id}-{fingerprint(source, file_path, f'{rule_id}|{content}')}"
+            n = seen.get(base, 0)
+            seen[base] = n + 1
+            fid = f"{base}-{n}"
             out.append(
                 Finding(
                     id=fid,

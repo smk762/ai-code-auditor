@@ -12,7 +12,9 @@ Environment variables:
     RAG_INGEST_URL          Ingest endpoint (default: http://127.0.0.1:9050/ingest).
                             ``MIMIRI_URL`` is honoured as a deprecated alias.
     INGEST_SHARED_SECRET    HMAC secret matching the ingest service config.
-    QDRANT_COLLECTION       Collection to upsert into (default: project_docs).
+    QDRANT_COLLECTION       Must name the collection the shared RAG client writes to
+                            (``AI_AUDIT_RAG_COLLECTION``, default audit_docs); any other is refused,
+                            since the client cannot send to it.
 """
 from __future__ import annotations
 
@@ -54,6 +56,11 @@ def _ingest_document(
     """One document through the shared client (current rag-ingest protocol: docs + nonce + signature)."""
     from auditor.rag_client import post_documents
 
+    client_collection = os.getenv("AI_AUDIT_RAG_COLLECTION", "audit_docs")  # what post_documents sends
+    if collection != client_collection:
+        print(f"  ERROR {doc_id}: collection {collection!r} requested, but the RAG client writes to "
+              f"{client_collection!r} (set AI_AUDIT_RAG_COLLECTION instead); not sent")
+        return False
     if dry_run:
         print(f"  [dry-run] Would POST {len(text)} chars → {doc_id}")
         return True

@@ -78,6 +78,14 @@ def is_medium_plus(sev: str) -> bool:
     return sev.upper() in ("MEDIUM", "HIGH", "CRITICAL")
 
 
+def unchanged(unit, wanted: dict | None) -> bool:
+    """Same unit as in round 1: same line span *and* same source (a body edited in place keeps its
+    span, and its round-1 findings would be judged against code they were not written for)."""
+    if not wanted or (unit.start_line, unit.end_line) != (wanted["start_line"], wanted["end_line"]):
+        return False
+    return bool(unit.raw_text_hash) and unit.raw_text_hash == wanted.get("raw_text_hash")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base", required=True, help="round-1 output directory")
@@ -97,8 +105,7 @@ def main() -> int:
         briefs[repo.name] = build_repo_briefing(repo.name, root)
         for f in scan_repo(repo):
             for u in extract_code_units(repo.name, f):
-                w = wanted.get(u.id)
-                if w and (u.start_line, u.end_line) == (w["start_line"], w["end_line"]):
+                if unchanged(u, wanted.get(u.id)):
                     units[u.id], roots[u.id] = u, str(root)
     print(f"matched {len(units)}/{len(wanted)} round-1 units unchanged")
 

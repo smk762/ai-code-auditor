@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -67,6 +68,9 @@ class GpuCapacity:
     # Human-readable label for logging / metadata
     offload_mode: str  # "full" | "partial" | "cpu_heavy"
     services: list[ServiceStatus] = field(default_factory=list)
+    # Gothmog capacity token for this grant (None when gothmog is not in use). Pass it to
+    # ``GpuScheduler.release_capacity`` so one run never frees another run's reservation.
+    token: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -89,10 +93,13 @@ def get_vram_info() -> VramInfo | None:
         if result.returncode != 0:
             logger.warning("nvidia-smi failed: %s", result.stderr.strip())
             return None
-        line = result.stdout.strip().splitlines()[0]
-        free_mb, total_mb = (int(x.strip()) for x in line.split(","))
+        lines = result.stdout.strip().splitlines()
+        if not lines:
+            logger.warning("nvidia-smi printed no VRAM rows")
+            return None
+        free_mb, total_mb = (int(x.strip()) for x in lines[0].split(","))
         return VramInfo(free_mb=free_mb, total_mb=total_mb)
-    except (FileNotFoundError, ValueError, subprocess.TimeoutExpired) as exc:
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         logger.warning("Could not read VRAM info: %s", exc)
         return None
 
@@ -189,6 +196,10 @@ def compute_num_gpu_layers(vram_free_mb: int, layer_cfg: dict[str, Any]) -> tupl
 # Scheduler
 # ---------------------------------------------------------------------------
 
+class _TransientGothmogError(requests.exceptions.HTTPError):
+    """A 502/504 from gothmog (or a proxy in front of it): worth retrying."""
+
+
 def _load_config(path: Path = _CONFIG_PATH) -> dict[str, Any]:
     if not path.exists():
         logger.warning("gpu_scheduler.yaml not found at %s, using defaults", path)
@@ -214,7 +225,21 @@ class GpuScheduler:
             self.gothmog_api_key = os.environ.get("GOTHMOG_API_KEY", "").strip()
         else:
             self.gothmog_api_key = str(self._cfg.get("gothmog_api_key", "")).strip()
-        self._capacity_token_id: str | None = None
+        # Every token granted by gothmog and not yet released. A shared scheduler (or a retry
+        # that re-acquires) can hold several; each is released on its own.
+        self._capacity_tokens: list[str] = []
+        self._tokens_lock = threading.Lock()
+        # Transient gothmog failures (connection errors, timeouts, 502/504) are retried with
+        # exponential backoff from this many seconds, capped at retry_interval_s, up to
+        # ``gothmog_max_transient_retries`` in a row before the error is raised.
+        self.gothmog_backoff_s: float = float(self._cfg.get("gothmog_backoff_s", 10))
+        self.gothmog_max_transient_retries: int = int(self._cfg.get("gothmog_max_transient_retries", 6))
+
+    @property
+    def _capacity_token_id(self) -> str | None:
+        """Most recently granted token still held (kept for older callers and logs)."""
+        with self._tokens_lock:
+            return self._capacity_tokens[-1] if self._capacity_tokens else None
 
     def wait_progress_payload(
         self,
@@ -299,7 +324,10 @@ class GpuScheduler:
 
         Gothmog returns 503 when capacity is not yet available.  We sleep
         ``retry_interval_s`` between attempts so the audit pipeline never
-        races with imogen/vidita for the GPU.
+        races with imogen/vidita for the GPU. Connection errors, timeouts and
+        502/504 from a proxy are transient: they are retried with a bounded
+        exponential backoff, and only raised after
+        ``gothmog_max_transient_retries`` consecutive failures.
         """
         url = self.gothmog_url.rstrip("/") + "/v1/gpu/capacity/acquire"
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -312,6 +340,7 @@ class GpuScheduler:
         }
 
         attempt = 0
+        transient = 0
         while True:
             attempt += 1
             logger.info(
@@ -345,45 +374,83 @@ class GpuScheduler:
                         on_wait_update(snap)
                     time.sleep(self.retry_interval_s)
                     continue
+                if resp.status_code in (502, 504):
+                    raise _TransientGothmogError(f"HTTP {resp.status_code} from {url}")
                 resp.raise_for_status()
                 data = resp.json()
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, _TransientGothmogError) as exc:
+                transient += 1
+                if transient > self.gothmog_max_transient_retries:
+                    logger.error(
+                        "gothmog capacity acquire failed %d times in a row: %s", transient, exc,
+                    )
+                    raise
+                delay = min(float(self.retry_interval_s), self.gothmog_backoff_s * (2 ** (transient - 1)))
+                logger.warning(
+                    "gothmog capacity acquire hit a transient error (%s); retry %d/%d in %.0fs",
+                    exc, transient, self.gothmog_max_transient_retries, delay,
+                )
+                time.sleep(delay)
+                continue
             except requests.exceptions.HTTPError:
                 raise
             except Exception as exc:
                 logger.error("gothmog capacity acquire failed: %s", exc)
                 raise
 
-            self._capacity_token_id = data.get("token")
+            token = data.get("token")
+            if token:
+                with self._tokens_lock:
+                    self._capacity_tokens.append(str(token))
             vram_free = int(data.get("vram_free_mb", 0))
             logger.info(
                 "GPU capacity granted by gothmog — token=%s vram_free_mb=%d",
-                self._capacity_token_id,
+                token,
                 vram_free,
             )
             return GpuCapacity(
                 vram_free_mb=vram_free,
                 num_gpu_layers=-1,   # gothmog asserts GPU is idle; run all layers on GPU
                 offload_mode="gothmog_managed",
+                token=str(token) if token else None,
             )
 
-    def release_capacity(self) -> None:
-        """Release the gothmog capacity token (best-effort; call in finally)."""
-        if not self._capacity_token_id or not self.gothmog_url:
+    def release_capacity(self, token: str | None = None) -> None:
+        """Release gothmog capacity tokens (best-effort; call in finally).
+
+        With ``token`` (``GpuCapacity.token``) only that grant is released, so a run sharing
+        this scheduler never frees another run's reservation. Without it, every token this
+        scheduler still holds is released.
+        """
+        if not self.gothmog_url:
             return
-        url = (
-            self.gothmog_url.rstrip("/")
-            + f"/v1/gpu/capacity/tokens/{self._capacity_token_id}"
-        )
+        with self._tokens_lock:
+            if token is None:
+                to_release = list(self._capacity_tokens)
+                self._capacity_tokens.clear()
+            elif token in self._capacity_tokens:
+                self._capacity_tokens.remove(token)
+                to_release = [token]
+            else:
+                to_release = []
         headers: dict[str, str] = {}
         if self.gothmog_api_key:
             headers["Authorization"] = f"Bearer {self.gothmog_api_key}"
-        try:
-            requests.delete(url, headers=headers, timeout=10)
-            logger.info("GPU capacity token %s released.", self._capacity_token_id)
-        except Exception as exc:
-            logger.warning("Failed to release GPU capacity token: %s", exc)
-        finally:
-            self._capacity_token_id = None
+        for tok in to_release:
+            url = self.gothmog_url.rstrip("/") + f"/v1/gpu/capacity/tokens/{tok}"
+            try:
+                resp = requests.delete(url, headers=headers, timeout=10)
+            except Exception as exc:
+                logger.warning("Failed to release GPU capacity token %s: %s", tok, exc)
+                continue
+            if 200 <= resp.status_code < 300:
+                logger.info("GPU capacity token %s released.", tok)
+            else:
+                logger.warning(
+                    "gothmog refused to release GPU capacity token %s: HTTP %d; "
+                    "the reservation stays held until gothmog expires it",
+                    tok, resp.status_code,
+                )
 
     # ------------------------------------------------------------------
     def _check_once(self, attempt: int) -> tuple[GpuCapacity | None, dict[str, Any]]:

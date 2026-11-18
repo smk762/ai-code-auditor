@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -32,6 +33,15 @@ from auditor.config import _bool_env
 logger = logging.getLogger(__name__)
 
 _ZERO_SHA = "0" * 40
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+def _require_sha(name: str, value: str) -> str:
+    """*value* if empty or a commit SHA, else ValueError: event refs reach git, and a value
+    such as ``--output=/path`` must never be read as an option."""
+    if value and not _SHA_RE.match(value):
+        raise ValueError(f"merge event {name} {value[:60]!r} is not a commit SHA")
+    return value
 
 
 def _int_env(name: str, default: int) -> int:
@@ -192,8 +202,8 @@ def run_merge_refresh(
 
     run_id = f"merge-{repo_cfg.name}-{int(time.time())}"
     sync_info: dict[str, Any] = {"skipped": not sync_mirror}
-    before = event.before
-    after = event.after
+    before = _require_sha("before", event.before)
+    after = _require_sha("after", event.after)
 
     if sync_mirror:
         # Capture tip before fetch when webhook did not supply SHAs.
@@ -218,8 +228,9 @@ def run_merge_refresh(
     if not after:
         after = _git_rev(repo_path, "HEAD")
     if not before or before == _ZERO_SHA:
-        # Fall back to previous tip if possible.
-        parent = _git_rev(repo_path, "HEAD~1")
+        # Fall back to the parent of the commit being audited, not of the mirror's HEAD
+        # (which may be another branch or already past *after*).
+        parent = _git_rev(repo_path, f"{after}~1") if after else ""
         before = parent or before
 
     diff_text = ""

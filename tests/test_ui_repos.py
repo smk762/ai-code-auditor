@@ -253,3 +253,19 @@ def test_github_work_counts_open_and_blocked_prs_and_issues(tmp_path: Path) -> N
     assert w["by_repo"]["a"] == {"prs": {"open": 2, "blocked": 1}, "issues": {"open": 2, "blocked": 1}}
     assert w["by_repo"]["b"]["issues"] == {"open": 1, "blocked": 0}
     assert w["failed"] == {"c"}
+
+
+def test_commit_time_never_passes_an_option_to_git(tmp_path) -> None:
+    import subprocess
+
+    from auditor.ui_repos import _commit_time
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t",
+                    "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+    target = tmp_path / "clobbered"
+    assert _commit_time(tmp_path, f"--output={target}") is None
+    assert not target.exists()
+    head = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    assert _commit_time(tmp_path, head)

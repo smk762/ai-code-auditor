@@ -55,6 +55,12 @@ def estimate_usd(params: dict[str, Any], output_tokens: int, *, batch: bool = Tr
     return cost_usd(params["model"], int(chars / CHARS_PER_TOKEN), output_tokens, batch=batch)
 
 
+def _gone(exc: BaseException) -> bool:
+    """The API says this batch (or its results) will never be retrievable: deleted, expired, or
+    owned by another key or workspace (404 / 403), as opposed to a transient failure."""
+    return getattr(exc, "status_code", None) in (403, 404)
+
+
 @dataclass
 class Request:
     custom_id: str
@@ -164,6 +170,9 @@ class Runner:
             time.sleep(self.poll_s)
         for entry in self.client.messages.batches.results(batch_id):
             cid, res = entry.custom_id, entry.result
+            prior = self._stored(cid)
+            if prior is not None and prior.error is None:
+                continue  # recorded (and charged) by a harvest that was interrupted mid-stream
             if res.type == "succeeded":
                 r = self._record(cid, res.message, notes.get(cid, "wiki"), batch=True)
                 stats.cost_usd += r.cost
@@ -179,7 +188,18 @@ class Runner:
         """Harvest batches submitted by an earlier, interrupted run. Returns how many."""
         done = 0
         for batch_id, info in list(self._load_state()["batches"].items()):
-            if self._harvest(batch_id, info.get("notes", {}), StageStats()):
+            try:
+                harvested = self._harvest(batch_id, info.get("notes", {}), StageStats())
+            except Exception as exc:  # noqa: BLE001 — only a batch that is gone for good is dropped
+                if not _gone(exc):
+                    raise  # transient: keep it, so a rerun harvests it rather than paying again
+                logger.warning("batch %s can no longer be fetched (%s); dropping it from %s",
+                               batch_id, exc, self.state_path.name)
+                state = self._load_state()
+                state["batches"].pop(batch_id, None)
+                self._save_state(state)
+                continue
+            if harvested:
                 done += 1
         return done
 

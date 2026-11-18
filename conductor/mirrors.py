@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -141,6 +142,23 @@ def checkout_scan_branch(repo: Path, preferred: str = "dev", report: dict[str, s
     return (cur.stdout or "HEAD").strip()
 
 
+_SCP_URL = re.compile(r"^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._~/-]+$")
+# Clone only over https/ssh, whatever transport a URL names (no ext::, file://, local paths).
+_CLONE_PROTOCOLS = ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
+                    "-c", "protocol.ssh.allow=always"]
+
+
+def _clone_url_error(url: str) -> str:
+    """Why *url* may not be cloned, or '' when it is an https/ssh remote."""
+    if url.startswith("-"):
+        return "url starts with '-'"
+    if url.startswith(("https://", "ssh://")) and not any(c.isspace() for c in url):
+        return ""
+    if _SCP_URL.match(url):
+        return ""
+    return "only https:// and ssh remotes may be cloned"
+
+
 def load_mirrors_config(path: str | Path = "config/repo_mirrors.yaml") -> dict[str, Any]:
     p = Path(path)
     if not p.exists():
@@ -155,10 +173,12 @@ def _sync_mirror_item(
 ) -> MirrorSyncResult:
     """Clone/fetch one mirrors.yaml entry and check out *preferred*."""
     name = str(item.get("name") or "")
-    path = Path(item.get("path") or "")
+    raw_path = str(item.get("path") or "").strip()
     url = str(item.get("url") or "").strip()
-    if not path:
+    if not raw_path:
+        # Path("") is Path("."), the process CWD: never sync or clone there.
         return MirrorSyncResult(name=name, path="", ok=False, action="skip", error="empty path")
+    path = Path(raw_path)
     try:
         if path.exists() and (path / ".git").exists():
             rep: dict[str, str] = {}
@@ -171,9 +191,13 @@ def _sync_mirror_item(
                        "checkout-failed": f"could not check out {checked}; left as-is"}.get(update, ""),
             )
         if url:
+            bad = _clone_url_error(url)
+            if bad:
+                return MirrorSyncResult(name=name, path=str(path), ok=False, action="skip",
+                                        error=f"refusing to clone: {bad}")
             path.parent.mkdir(parents=True, exist_ok=True)
             clone = subprocess.run(
-                ["git", "clone", "--branch", preferred, url, str(path)],
+                ["git", *_CLONE_PROTOCOLS, "clone", "--branch", preferred, "--", url, str(path)],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -181,7 +205,7 @@ def _sync_mirror_item(
             if clone.returncode != 0:
                 # Preferred branch may not exist yet — clone default then checkout
                 subprocess.run(
-                    ["git", "clone", url, str(path)],
+                    ["git", *_CLONE_PROTOCOLS, "clone", "--", url, str(path)],
                     capture_output=True,
                     text=True,
                     check=False,

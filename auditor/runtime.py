@@ -9,7 +9,11 @@ from pathlib import Path
 
 
 def setup_logging(level: str = "INFO", log_file_path: str = "", output_dir: str = "reports") -> None:
-    numeric_level = getattr(logging, level.upper(), logging.INFO)
+    # getLevelName maps a level name to its int; anything else (or a non-level attribute of the
+    # logging module such as "basicConfig") falls back to INFO.
+    numeric_level = logging.getLevelName(str(level).upper())
+    if not isinstance(numeric_level, int):
+        numeric_level = logging.INFO
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     if log_file_path:
         safe_path = _safe_log_path(log_file_path, output_dir)
@@ -24,10 +28,10 @@ def setup_logging(level: str = "INFO", log_file_path: str = "", output_dir: str 
 
 def _safe_log_path(log_file_path: str, output_dir: str) -> Path:
     out = Path(output_dir).resolve()
-    candidate = Path(log_file_path)
-    if not candidate.is_absolute():
-        candidate = (out / candidate).resolve()
-    if out not in candidate.parents and candidate != out:
+    # Always resolve (absolute inputs too: joining an absolute path replaces ``out``), so ``..``
+    # segments and symlinks can't lead outside output_dir; the directory itself is no log file.
+    candidate = (out / log_file_path).resolve()
+    if out not in candidate.parents:
         raise ValueError("log_file_path must stay within output_dir for security")
     return candidate
 

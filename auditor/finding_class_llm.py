@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -177,11 +178,23 @@ def frozen_system(output_dir: str | Path, gold: list[dict[str, Any]] | None = No
 
 
 def save_gold_preds(output_dir: str | Path, rows: list[dict[str, Any]], model: str, preds: list[str]) -> None:
+    """Store *model*'s gold-set answers next to the other models'. The file holds every model,
+    so the read-modify-write is locked against a concurrent run and the write is atomic: an
+    interrupted save leaves the previous file whole."""
+    import fcntl
+
     path = classes_dir(output_dir) / GOLD_PREDS_FILE
-    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    data[model] = {r["id"]: p for r, p in zip(rows, preds, strict=True)}
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
+    with open(path.with_name(path.name + ".lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data[model] = {r["id"]: p for r, p in zip(rows, preds, strict=True)}
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
 
 def consensus_predictor(output_dir: str | Path) -> Callable[[dict[str, Any]], str] | None:

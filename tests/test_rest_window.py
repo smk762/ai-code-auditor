@@ -51,3 +51,18 @@ def test_rest_tz_env_overrides_file(tmp_path, monkeypatch):
     monkeypatch.setenv("AI_AUDIT_REST_TZ", "Mars/Olympus")
     with pytest.raises(ValueError, match="AI_AUDIT_REST_TZ"):
         load_rest_windows(cfg_file)
+
+
+def test_unquoted_yaml_times_load(tmp_path):
+    import pytest
+
+    from conductor.rest_window import load_rest_windows
+
+    cfg_file = tmp_path / "rest.yaml"
+    cfg_file.write_text("timezone: UTC\nwindows:\n  - {name: nightly, start: 22:30, end: 06:00}\n")
+    cfg = load_rest_windows(cfg_file)
+    assert (cfg.start, cfg.end) == (time(22, 30), time(6, 0))
+
+    cfg_file.write_text("timezone: UTC\nwindows:\n  - {name: nightly, start: '25:00', end: '06:00'}\n")
+    with pytest.raises(ValueError, match="quote it"):
+        load_rest_windows(cfg_file)

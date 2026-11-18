@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -198,9 +199,12 @@ def _detect_language(repo_path: Path) -> str | None:
 def suggest_test_commands(repo_path: Path, file_path: str = "") -> tuple[str, list[str]]:
     """Return ``(tool, commands)`` agents should run to verify a fix.
 
-    Does not execute tests — only suggests commands based on project type.
+    Does not execute tests — only suggests commands based on project type. Paths come from
+    the audited (untrusted) repo, so every one is shell-quoted.
     """
-    rel = (file_path or "").lstrip("./")
+    rel = file_path or ""
+    while rel.startswith("./"):  # a literal "./" prefix only: lstrip("./") ate ".github/" and "../"
+        rel = rel[2:]
     from auditor import validate_node
 
     if rel.endswith(validate_node.CODE_EXTS):
@@ -208,13 +212,13 @@ def suggest_test_commands(repo_path: Path, file_path: str = "") -> tuple[str, li
         checks = validate_node.project_checks(root) if root is not None else []
         if checks:
             sub = root.relative_to(repo_path.resolve()).as_posix()
-            prefix = f"cd {sub} && " if sub != "." else ""
+            prefix = f"cd {shlex.quote(sub)} && " if sub != "." else ""
             return validate_node.TOOL, [prefix + "npm ci", *(prefix + "npm " + " ".join(a) for _, a in checks)]
     lang = _detect_language(repo_path)
     if lang == "python":
         cmds = ["pytest -x --tb=short -q"]
         if rel.endswith(".py"):
-            cmds.insert(0, f"pytest {rel} -q --tb=short")
+            cmds.insert(0, f"pytest {shlex.quote(rel)} -q --tb=short")
         return "pytest", cmds
     if lang == "node":
         return "npm_test", ["npm test -- --passWithNoTests"]
@@ -223,7 +227,7 @@ def suggest_test_commands(repo_path: Path, file_path: str = "") -> tuple[str, li
         if rel.endswith(".go"):
             parent = str(Path(rel).parent).replace("\\", "/")
             if parent and parent != ".":
-                cmds.insert(0, f"go test ./{parent}/...")
+                cmds.insert(0, f"go test {shlex.quote(f'./{parent}/...')}")
         return "go_test", cmds
     if lang == "rust":
         return "cargo_test", ["cargo test"]
@@ -585,10 +589,22 @@ def _expand_self_refs(specs: list[str], own: str, extras: dict, seen: frozenset[
     return out
 
 
-def _requirement_lines(path: Path, depth: int = 0) -> list[str]:
+def _repo_boundary(path: Path) -> Path:
+    """The repository holding *path*: the nearest ancestor with a ``.git``, else the file's dir."""
+    start = path.resolve().parent
+    for d in (start, *start.parents):
+        if (d / ".git").exists():
+            return d
+    return start
+
+
+def _requirement_lines(path: Path, depth: int = 0, root: Path | None = None) -> list[str]:
     """Lines of a requirements file with ``-r`` includes inlined (relative to the file).
 
-    Lines that install the project itself (``.``, ``-e .``) and constraint files are dropped."""
+    Lines that install the project itself (``.``, ``-e .``) and constraint files are dropped.
+    An include that is absolute or resolves outside the repository (*root*, by default the
+    repo holding *path*) is skipped: the audited repo must not make us read host files."""
+    root = (root or _repo_boundary(path)).resolve()
     out: list[str] = []
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -600,8 +616,13 @@ def _requirement_lines(path: Path, depth: int = 0) -> list[str]:
             continue
         m = re.match(r"^(?:-r|--requirement)[ =]?\s*(\S+)$", s)
         if m:
+            inc = m.group(1)
+            target = (path.parent / inc).resolve()
+            if Path(inc).is_absolute() or not target.is_relative_to(root):
+                logger.warning("skipping requirements include outside the repo: %s (in %s)", inc, path.name)
+                continue
             if depth < 5:
-                out += _requirement_lines(path.parent / m.group(1), depth + 1)
+                out += _requirement_lines(target, depth + 1, root)
             continue
         out.append(s)
     return out

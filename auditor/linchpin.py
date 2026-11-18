@@ -418,6 +418,8 @@ def _next_action(n: _Node, reasons: list[str], cycle: str, cycles: list[dict[str
 
 
 def _and(items: list[str]) -> str:
+    if not items:
+        return ""
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
@@ -476,7 +478,14 @@ def apply_labels(
         ledger = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         ledger = {}
-    applied: dict[str, str] = dict(ledger.get("applied") or {}) if ledger.get("label", label) == label else {}
+    old_label = ledger.get("label", label)
+    applied: dict[str, str] = dict(ledger.get("applied") or {}) if old_label == label else {}
+    # Items labelled under an earlier label name: still ours to take off (#8d81471265).
+    stale: dict[str, dict[str, str]] = {
+        str(k): dict(v) for k, v in (ledger.get("stale") or {}).items() if isinstance(v, dict) and k != label
+    }
+    if old_label != label and ledger.get("applied"):
+        stale.setdefault(old_label, {}).update(ledger["applied"])
     want = {
         f"{lp['slug']}#{lp['number']}": lp
         for lp in report.get("linchpins") or [] if not lp.get("external")
@@ -510,9 +519,30 @@ def apply_labels(
                 out["errors"].append({"ref": _slug_ref(slug, int(n)), "error": str(exc)[:200]})
         except (urllib.error.URLError, OSError, ValueError) as exc:
             out["errors"].append({"ref": _slug_ref(slug, int(n)), "error": str(exc)[:200]})
+    for old, keys in sorted(stale.items()):
+        old_enc = urllib.parse.quote(old, safe="")
+        for key in sorted(keys):
+            slug, n = key.rsplit("#", 1)
+            try:
+                if not dry_run:
+                    call("DELETE", f"/repos/{slug}/issues/{n}/labels/{old_enc}", None)
+                    keys.pop(key, None)
+                out["removed"].append(_slug_ref(slug, int(n)))
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    keys.pop(key, None)
+                    out["removed"].append(_slug_ref(slug, int(n)))
+                else:
+                    out["errors"].append({"ref": _slug_ref(slug, int(n)), "error": str(exc)[:200]})
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                out["errors"].append({"ref": _slug_ref(slug, int(n)), "error": str(exc)[:200]})
+    stale = {k: v for k, v in stale.items() if v}
     if not dry_run:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"label": label, "applied": applied}, indent=2), encoding="utf-8")
+        data: dict[str, Any] = {"label": label, "applied": applied}
+        if stale:
+            data["stale"] = stale
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
         tmp.replace(path)
     return out

@@ -498,3 +498,10 @@ def test_evidence_window_counts_only_recent_resolutions() -> None:
     assert m["rate_since_bar"] == pytest.approx(2 / 3, abs=1e-4)
     w = m["window"]
     assert (w["days"], w["resolutions"], w["lint_only"], w["waived"], w["rate"]) == (tm.GATE_WINDOW_DAYS, 1, 0, 0, 0.0)
+
+
+def test_rel_path_keeps_dotfiles_and_dot_dirs():
+    assert tm.rel_path("argus-x", ".github/workflows/ci.yml") == ".github/workflows/ci.yml"
+    assert tm.rel_path("argus-x", ".env") == ".env"
+    assert tm.rel_path("argus-x", "././src/a.py") == "src/a.py"
+    assert tm.rel_path("argus-x", "/home/smk/argus-x/.github/ci.yml") == ".github/ci.yml"

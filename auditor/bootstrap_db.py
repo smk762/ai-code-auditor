@@ -52,8 +52,10 @@ def ensure_database_exists() -> None:
             if exists:
                 logger.info("bootstrap_db: database %r already exists", db_name)
             else:
-                # Quote the name to handle hyphens / mixed case safely.
-                conn.execute(text(f'CREATE DATABASE "{db_name}"'))
+                # Quote with the dialect's preparer (doubles embedded quotes) and bypass
+                # text() so a ':' in the name is not taken for a bind parameter.
+                quoted = conn.dialect.identifier_preparer.quote_identifier(db_name)
+                conn.exec_driver_sql(f"CREATE DATABASE {quoted}")
                 logger.info("bootstrap_db: created database %r", db_name)
     finally:
         engine.dispose()

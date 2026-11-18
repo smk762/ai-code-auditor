@@ -259,3 +259,49 @@ def test_publish_refuses_tampered_or_leaky_bundles(wiki: Path, tmp_path: Path) -
     (deny).write_text("Jarrah\nCLI\n")  # a term that now appears in the bundle
     with pytest.raises(RuntimeError, match="opsec gate failed"):
         pub.publish(b, repo=_bare(tmp_path), checkout=tmp_path / "co2", denylist_path=deny, visibility=VIS.get)
+
+
+# ── pack regressions ─────────────────────────────────────────────────────────
+
+def test_scrubber_replaces_longest_names_first() -> None:
+    # "foo" listed before "foo-bar": replacing it first left "<desc>-bar", leaking the longer name's tail
+    scrub = public.Scrubber(["nas", "nas-box"], {"foo": "an external service", "foo-bar": "an external Bar service"})
+    out = scrub("calls foo-bar and foo, stored on nas-box and nas")
+    assert out == "calls an external Bar service and an external service, stored on an internal host and an internal host"
+
+
+def test_gate_refuses_a_private_argus_repo_named_on_a_public_page(wiki: Path) -> None:
+    (wiki / "wiki" / "argus-good" / "interfaces.md").write_text("# Interfaces\n\nTalks to argus-private.\n")
+    rep = public.export(wiki, denylist_path=wiki.parent / "deny.txt", visibility=VIS.get)
+    assert "argus-good" not in rep.exported
+    assert [(r.repo, r.reason, r.match) for r in rep.refused if r.repo == "argus-good"] == \
+        [("argus-good", "private repo named", "argus-private")]
+
+
+def test_export_refuses_to_replace_a_dir_that_is_not_a_bundle(wiki: Path) -> None:
+    precious = wiki / "precious"
+    precious.mkdir()
+    (precious / "keep.txt").write_text("not a bundle")
+    with pytest.raises(RuntimeError, match="not a previous wiki export bundle"):
+        public.export(wiki, precious, denylist_path=wiki.parent / "deny.txt", visibility=VIS.get)
+    assert (precious / "keep.txt").read_text() == "not a bundle"
+    public.export(wiki, denylist_path=wiki.parent / "deny.txt", visibility=VIS.get)
+    rep = public.export(wiki, denylist_path=wiki.parent / "deny.txt", visibility=VIS.get)  # a previous bundle is replaced
+    assert rep.exported == {"argus-good": ["overview", "interfaces"]}
+    assert [p.name for p in wiki.iterdir() if p.name.startswith(".wiki_public")] == []  # no staging left behind
+
+
+def test_publish_pushes_a_bundle_committed_locally_before_the_remote_branch_existed(wiki: Path, tmp_path: Path) -> None:
+    import subprocess
+
+    from wiki import publish as pub
+
+    deny = wiki.parent / "deny.txt"
+    public.export(wiki, denylist_path=deny, visibility=VIS.get)
+    remote, co = _bare(tmp_path), tmp_path / "co"
+    first = pub.publish(wiki / "wiki_public", repo=remote, checkout=co, push=False, denylist_path=deny, visibility=VIS.get)
+    assert first["changed"] and not first["pushed"]
+    again = pub.publish(wiki / "wiki_public", repo=remote, checkout=co, push=True, denylist_path=deny, visibility=VIS.get)
+    assert again["pushed"]
+    remote_head = subprocess.run(["git", "-C", remote, "rev-parse", "main"], capture_output=True, text=True).stdout.strip()
+    assert remote_head == first["commit"]

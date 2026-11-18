@@ -112,7 +112,10 @@ def build(cls: str, children: list[dict[str, Any]], prev: dict[str, Any] | None 
     # Code findings first: a docs page is a poor example of the pattern a guard has to match.
     ranked = sorted(children, key=lambda x: (not _is_code(x), -_SEV_ORDER.get(str((x.get("priority") or {}).get("severity", "")).upper(), 2),
                                              -float((x.get("priority") or {}).get("score") or 0), x["work_item_id"]))
-    top_sev = str((ranked[0].get("priority") or {}).get("severity") or "MEDIUM") if ranked else "MEDIUM"
+    # The pack's severity is its worst child's, code or not; the code-first order is only for examples.
+    worst = max(children, key=lambda x: _SEV_ORDER.get(str((x.get("priority") or {}).get("severity", "")).upper(), 2),
+                default=None)
+    top_sev = str((worst.get("priority") or {}).get("severity") or "MEDIUM") if worst else "MEDIUM"
     prev_gov = (prev or {}).get("governance") or {}
     guards = dict(prev_gov.get("class_guard") or {})
     base = public_base_url.rstrip("/")
@@ -267,13 +270,18 @@ def _git(mirror: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _export(mirror: Path, rev: str, dest: Path) -> bool:
-    r = subprocess.run(["git", "archive", "--format=tar", rev], cwd=mirror, capture_output=True, timeout=300,
-                       check=False)
-    if r.returncode != 0:
+    """Extract *rev* of *mirror* into *dest*; False (never an exception) when that fails."""
+    try:
+        r = subprocess.run(["git", "archive", "--format=tar", rev], cwd=mirror, capture_output=True, timeout=300,
+                           check=False)
+        if r.returncode != 0:
+            return False
+        dest.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(fileobj=BytesIO(r.stdout)) as tf:
+            tf.extractall(dest, filter="data")
+    except (subprocess.TimeoutExpired, OSError, tarfile.TarError) as exc:
+        logger.warning("class guard: could not export %s at %s: %s", mirror, rev, exc)
         return False
-    dest.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(fileobj=BytesIO(r.stdout)) as tf:
-        tf.extractall(dest, filter="data")
     return True
 
 

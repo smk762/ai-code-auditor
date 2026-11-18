@@ -422,6 +422,15 @@ CITE = re.compile(r"\[([\w./@+-]+?\.\w+):L(\d+)(?:-L?(\d+))?\]")
 _NAMED = re.compile(r"`([A-Za-z_][\w.]*)(?:\(\))?`")
 
 
+def _cited_file(root: Path, path: str) -> Path | None:
+    """The cited file, only if it lies inside the scan root (an absolute or ``..`` path never does)."""
+    if Path(path).is_absolute():
+        return None
+    base = root.resolve()
+    f = (root / path).resolve()
+    return f if f.is_relative_to(base) and f.is_file() else None
+
+
 def check_citations(md: str, repo) -> dict:
     """valid: file exists + range in bounds. anchored: overlaps an AST unit.
     named/matched: when a backticked identifier precedes the citation on the same line
@@ -437,8 +446,8 @@ def check_citations(md: str, repo) -> dict:
         path, a = m.group(1), int(m.group(2))
         b = int(m.group(3) or a)
         if path not in text_cache:
-            f = root / path
-            if f.is_file():
+            f = _cited_file(root, path)
+            if f is not None:
                 text_cache[path] = f.read_text(encoding="utf-8", errors="replace").splitlines()
                 units_cache[path] = [(u.start_line, u.end_line)
                                      for u in extract_code_units(repo.name, f)]
@@ -491,8 +500,8 @@ def cited_code(md: str, repo, pad: int = 3, cap_chars: int = 120_000) -> str:
         ranges.setdefault(m.group(1), []).append((a, int(m.group(3) or a)))
     parts, size = [], 0
     for path, rs in sorted(ranges.items()):
-        f = root / path
-        if not f.is_file():
+        f = _cited_file(root, path)
+        if f is None:
             parts.append(f"\n===== {path} (FILE DOES NOT EXIST) =====")
             continue
         lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -561,8 +570,14 @@ def stage_pages(repo_names: list[str], arm_names: list[str], run: Path, concurre
     print(f"pages: {len(jobs)} draft calls + {len(verify_arms) * len(PAGES) * len(repo_names)} "
           f"check-and-fix calls", flush=True)
 
+    pages_path = run / "pages.jsonl"
+    pages_path.parent.mkdir(parents=True, exist_ok=True)
+    pages_path.write_text("".join(json.dumps(r) + "\n" for r in results))
+
     def log(rec):
         results.append(rec)
+        with pages_path.open("a") as fh:  # persisted per record: a later failure keeps paid-for results
+            fh.write(json.dumps(rec) + "\n")
         if "error" in rec:
             info = rec["error"][:60]
         else:
@@ -613,8 +628,9 @@ def stage_pages(repo_names: list[str], arm_names: list[str], run: Path, concurre
     rest = [j for j in jobs if first[(j[0].name, j[1])] is not j]
     for phase in (list(first.values()), rest):
         with ThreadPoolExecutor(concurrency) as pool:
-            for fut in as_completed([pool.submit(draft, j) for j in phase]):
-                log(fut.result())
+            futs = {pool.submit(draft, j): j for j in phase}
+            for fut in as_completed(futs):
+                log(_job_result(fut, repo=futs[fut][0].name, arm=futs[fut][1], page=futs[fut][2]))
 
     if verify_arms:
         by_key = {(r["repo"], r["arm"], r["page"]): r for r in results}
@@ -623,11 +639,20 @@ def stage_pages(repo_names: list[str], arm_names: list[str], run: Path, concurre
                  for n in repo_names for a in verify_arms for p in PAGES
                  if "error" not in by_key.get((n, VERIFY_BASE[a], p), {"error": 1})]
         with ThreadPoolExecutor(concurrency) as pool:
-            for fut in as_completed([pool.submit(verify, j) for j in vjobs]):
-                log(fut.result())
+            futs = {pool.submit(verify, j): j for j in vjobs}
+            for fut in as_completed(futs):
+                log(_job_result(fut, repo=futs[fut][0].name, arm=futs[fut][1], page=futs[fut][2]))
 
-    (run / "pages.jsonl").write_text("\n".join(json.dumps(r) for r in results))
+    pages_path.write_text("\n".join(json.dumps(r) for r in results))
     return results
+
+
+def _job_result(fut, **ident) -> dict:
+    """The job's record, or an error record (zero cost) if it raised, so one bad job never aborts a stage."""
+    try:
+        return fut.result()
+    except Exception as exc:  # noqa: BLE001 — recorded per job
+        return {**ident, "error": f"{type(exc).__name__}: {exc}"[:500], "cost": 0.0, "latency_s": 0.0}
 
 
 # ---------------------------------------------------------------- stage 3: judge
@@ -682,14 +707,19 @@ def stage_judge(run: Path, concurrency: int, seed: int = 7, judge_arms: list[str
     for j in jobs:
         first.setdefault(j[0].name, j)
     rest = [j for j in jobs if first[j[0].name] is not j]
+    judgements = run / "judgements.jsonl"
+    judgements.write_text("")
     for phase in (list(first.values()), rest):
         with ThreadPoolExecutor(concurrency) as pool:
-            for fut in as_completed([pool.submit(work, j) for j in phase]):
-                rec = fut.result()
+            futs = {pool.submit(work, j): j for j in phase}
+            for fut in as_completed(futs):
+                rec = _job_result(fut, repo=futs[fut][0].name, page=futs[fut][1], labels=futs[fut][3])
                 results.append(rec)
-                print(f"  judged {rec['repo']:14} {rec['page']:12} ${rec['cost']:.3f} "
+                with judgements.open("a") as fh:  # persisted per record: a later failure keeps paid-for verdicts
+                    fh.write(json.dumps(rec) + "\n")
+                print(f"  judged {rec['repo']:14} {rec['page']:12} ${rec.get('cost', 0.0):.3f} "
                       f"{rec.get('error', '')}", flush=True)
-    (run / "judgements.jsonl").write_text("\n".join(json.dumps(r) for r in results))
+    judgements.write_text("\n".join(json.dumps(r) for r in results))
     return results
 
 

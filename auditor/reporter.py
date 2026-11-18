@@ -76,6 +76,10 @@ def write_architecture_violations(violations: list[RuleViolation], output_dir: s
     call_graph_violations = by_rule.get("call_graph_violation", [])
     ui_violations = by_rule.get("ui_in_worker", [])
     competing_violations = by_rule.get("competing_providers", [])
+    known = {"service_boundary", "dependency_direction", "domain_boundary_violation",
+             "call_graph_violation", "ui_in_worker", "competing_providers"}
+    # A new rule (or a typo in one) still counts toward the total, so it must be listed too.
+    other_violations = [v for rule, vs in by_rule.items() if rule not in known for v in vs]
 
     lines = [
         "# Architecture Violations",
@@ -86,6 +90,7 @@ def write_architecture_violations(violations: list[RuleViolation], output_dir: s
         f"  - Domain boundary violations (misplaced logic): {len(boundary_violations)}",
         f"  - UI in worker violations: {len(ui_violations)}",
         f"  - Competing provider paths: {len(competing_violations)}",
+        *([f"  - Other violations: {len(other_violations)}"] if other_violations else []),
         "",
     ]
 
@@ -158,6 +163,18 @@ def write_architecture_violations(violations: list[RuleViolation], output_dir: s
     if graph_violations:
         lines += ["## Graph Rule Violations", ""]
         for v in graph_violations:
+            lines += [
+                f"### {v.rule_name}",
+                f"- Severity: {v.severity}",
+                f"- Path: {v.violating_path}",
+                f"- Entities: {', '.join(v.entities)}",
+                f"- Evidence: {v.evidence}",
+                "",
+            ]
+
+    if other_violations:
+        lines += ["## Other Violations", ""]
+        for v in other_violations:
             lines += [
                 f"### {v.rule_name}",
                 f"- Severity: {v.severity}",

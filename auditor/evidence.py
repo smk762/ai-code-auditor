@@ -139,6 +139,15 @@ def _copy_into(src_tree: Path, dst_tree: Path, files: list[str]) -> None:
             shutil.copyfile(src, dst)
 
 
+def _inside(path: Path, parent: Path) -> str | None:
+    """*path* relative to *parent*, both resolved, or None when it isn't inside (a symlinked tree
+    or an escaping path must become a note, not a ValueError that aborts the whole repro)."""
+    try:
+        return str(path.resolve().relative_to(parent.resolve()))
+    except ValueError:
+        return None
+
+
 def parse_pytest_outcomes(output: str) -> dict[str, str]:
     """Test id -> outcome from ``pytest -rA`` short-summary lines. A collection error names a
     file, not a test, so it carries no test id and is reported separately."""
@@ -183,7 +192,11 @@ def python_repro(tree: Path, fresh_base: Callable[[], Path | None], tests: list[
     tree_r = tree.resolve()
     by_root: dict[Path, list[str]] = {}
     for t in py_tests:
-        by_root.setdefault(project_root(tree, t), []).append(t)
+        root = project_root(tree, t).resolve()
+        if _inside(root, tree_r) is None:
+            res.notes.append(f"{t}: its project root is outside the tree, not run")
+            continue
+        by_root.setdefault(root, []).append(t)
     groups: list[tuple[Path, list[str], bool]] = []
     for root, files in sorted(by_root.items()):
         if _has_project(root):
@@ -195,9 +208,16 @@ def python_repro(tree: Path, fresh_base: Callable[[], Path | None], tests: list[
             groups += [(root, fs, True) for _, fs in sorted(per_dir.items())]
     base = None
     for root, files, loose in groups:
-        label = root_label = str(root.relative_to(tree_r)) if root != tree_r else "."
-        runnable = [str((tree / f).resolve().relative_to(root)) for f in files
-                    if not f.endswith("conftest.py") and re.search(r"(^|/)(test_[^/]*|[^/]*_test)\.py$", f)]
+        label = root_label = _inside(root, tree_r) if root != tree_r else "."
+        runnable = []
+        for f in files:
+            if f.endswith("conftest.py") or not re.search(r"(^|/)(test_[^/]*|[^/]*_test)\.py$", f):
+                continue
+            rel = _inside(tree / f, root)
+            if rel is None:
+                res.notes.append(f"{f}: resolves outside its project {label}, not run")
+                continue
+            runnable.append(rel)
         if not runnable:
             continue
         if loose:
@@ -216,7 +236,7 @@ def python_repro(tree: Path, fresh_base: Callable[[], Path | None], tests: list[
         if base is None:
             res.notes.append("no dev tree to compare against")
             break
-        base_root = base.resolve() / root.relative_to(tree_r)
+        base_root = base.resolve() / root_label
         _copy_into(tree, base, material)
         stub_version_files(base_root)
         base_out, out_b = _pytest(base_root, python, runnable, timeout_s)
@@ -283,10 +303,14 @@ def node_repro(tree: Path, fresh_base: Callable[[], Path | None], tests: list[st
         if root is None:
             res.notes.append(f"{t}: no package.json above it")
             continue
+        root = root.resolve()
+        if _inside(root, tree_r) is None:
+            res.notes.append(f"{t}: its package root is outside the tree, not run")
+            continue
         by_root.setdefault(root, []).append(t)
     base = None
     for root, files in sorted(by_root.items()):
-        label = str(root.relative_to(tree_r)) if root != tree_r else "."
+        label = _inside(root, tree_r) if root != tree_r else "."
         try:
             script = str((json.loads((root / "package.json").read_text()).get("scripts") or {}).get("test") or "")
         except (OSError, ValueError):
@@ -299,7 +323,15 @@ def node_repro(tree: Path, fresh_base: Callable[[], Path | None], tests: list[st
             res.notes.append(f"{label}: npm ci failed: {err[:200]}")
             continue
         _link_modules(root, modules)
-        runnable = [str((tree / f).resolve().relative_to(root)) for f in files]
+        runnable = []
+        for f in files:
+            rel = _inside(tree / f, root)
+            if rel is None:
+                res.notes.append(f"{f}: resolves outside its project {label}, not run")
+            else:
+                runnable.append(rel)
+        if not runnable:
+            continue
         patched, out_p = _vitest(root, runnable, timeout_s)
         if not patched:
             res.notes.append(f"{label}: the patch's tests produced no results on the patched tree")
@@ -309,7 +341,7 @@ def node_repro(tree: Path, fresh_base: Callable[[], Path | None], tests: list[st
         if base is None:
             res.notes.append("no dev tree to compare against")
             break
-        base_root = base.resolve() / root.relative_to(tree_r)
+        base_root = base.resolve() / label
         _copy_into(tree, base, material)
         base_modules, _ = ensure_node_modules(base_root, cache_dir)
         if base_modules is None:

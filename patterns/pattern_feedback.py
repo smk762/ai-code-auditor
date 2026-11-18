@@ -83,9 +83,13 @@ def append_architecture_rule_for_extraction(candidate: dict, rules_path: str = "
     path = Path(rules_path)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     data = (yaml.safe_load(text) or {}) if text else {}
-    rules = data.get("rules", [])
+    if not isinstance(data, dict):
+        raise TypeError(f"{rules_path}: expected a mapping at the top level")
+    rules = data.get("rules") or []  # a bare ``rules:`` parses to None
+    if not isinstance(rules, list):
+        raise TypeError(f"{rules_path}: 'rules' must be a list")
     generated = _rule_for_extraction(candidate)
-    if any(r.get("name") == generated["name"] for r in rules):
+    if any(isinstance(r, dict) and r.get("name") == generated["name"] for r in rules):
         return path
 
     expected = {**data, "rules": [*rules, generated]}

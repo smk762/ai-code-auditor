@@ -12,6 +12,6 @@ def discover_schemas(repo_path: str) -> dict[str, dict]:
             continue
         try:
             schemas[str(path)] = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):  # JSONDecodeError and UnicodeDecodeError are ValueErrors
             continue
     return schemas

@@ -55,6 +55,8 @@ Start:
 """
 from __future__ import annotations
 
+import asyncio
+import hmac
 import json
 import logging
 import os
@@ -63,6 +65,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -73,7 +76,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Qu
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -130,6 +133,11 @@ def slow_requests() -> dict[str, dict[str, Any]]:
         return {k: dict(v) for k, v in sorted(_slow_requests.items())}
 
 
+def _secret_equal(given: str, expected: str) -> bool:
+    """Constant-time compare, so response time doesn't leak how much of a secret matched."""
+    return hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8"))
+
+
 def _require_mutating_auth(
     authorization: str | None = Header(default=None),
     x_auth_code: str | None = Header(default=None, alias="X-Auth-Code"),
@@ -146,13 +154,13 @@ def _require_mutating_auth(
     if not cfg.auth_mode and not api_token:
         return
 
-    if api_token and (x_api_token or "").strip() == api_token:
+    if api_token and _secret_equal((x_api_token or "").strip(), api_token):
         return
 
     if cfg.auth_mode:
         expected_env = cfg.auth_code_env or "AI_AUDIT_AUTH_CODE"
         expected = os.getenv(expected_env, "")
-        if expected and (x_auth_code or "") == expected:
+        if expected and _secret_equal(x_auth_code or "", expected):
             return
 
     bearer = (authorization or "").strip()
@@ -224,15 +232,17 @@ def _db_update_status(run_id: str, status: str) -> None:
 
 
 def _db_claim_pending_run(run_id: str) -> bool:
-    """Set ``pending`` → ``running``.  False if missing, not pending, or lost the race to cancel."""
+    """Set ``pending`` → ``running``.  False if missing, not pending, or lost the race to cancel.
+
+    One conditional UPDATE, so a cancel that lands mid-claim is never overwritten and two
+    workers can't both claim the run."""
     with db_session() as session:
-        row = session.execute(
-            select(AuditRun).where(AuditRun.run_id == run_id)
-        ).scalar_one_or_none()
-        if row is None or row.status != "pending":
-            return False
-        row.status = "running"
-        return True
+        result = session.execute(
+            update(AuditRun)
+            .where(AuditRun.run_id == run_id, AuditRun.status == "pending")
+            .values(status="running")
+        )
+        return result.rowcount == 1
 
 
 def _db_finish_run_cancelled(run_id: str, note: str = "Run cancelled.") -> None:
@@ -328,29 +338,39 @@ def _run_pipeline(run_id: str) -> None:
     stderr = ""
     rc: int | None = None
 
+    proc: subprocess.Popen | None = None
     try:
         if not _db_claim_pending_run(run_id):
             return
 
-        if _cancel_event.is_set():
-            # HTTP handler already moved the row to ``cancelled``.
-            return
-
-        proc = subprocess.Popen(
-            [sys.executable, str(pipeline_script)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-        )
+        # Check, spawn and publish under the lock cancel_run takes, so a cancel either stops
+        # the spawn or finds the process to terminate; never neither.
         with _active_run_lock:
+            if _cancel_event.is_set():
+                # HTTP handler already moved the row to ``cancelled``.
+                return
+            proc = subprocess.Popen(
+                [sys.executable, str(pipeline_script)],
+                stdout=subprocess.DEVNULL,  # unused; only stderr is kept (for the error tail)
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
             _active_process = proc
+            if _cancel_event.is_set():
+                proc.terminate()
         _stdout, stderr = proc.communicate()
         rc = proc.returncode
-    except Exception as exc:
+    except BaseException as exc:
         logger.exception("Audit pipeline thread raised: %s", exc)
+        if proc is not None and proc.poll() is None:
+            # don't leave the pipeline running untracked and uncancellable
+            proc.kill()
+            proc.wait()
         if not _cancel_event.is_set():
             _db_update_status(run_id, "failed")
+        if not isinstance(exc, Exception):
+            raise
     finally:
         with _active_run_lock:
             _active_process = None
@@ -428,15 +448,21 @@ def start_run() -> JSONResponse:
         run_id = f"ecosystem-audit-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
         _active_run_id = run_id
 
-    _db_insert_pending(run_id)
-
-    t = threading.Thread(
-        target=_run_pipeline,
-        args=(run_id,),
-        daemon=True,
-        name=f"audit-{run_id[-12:]}",
-    )
-    t.start()
+    try:
+        _db_insert_pending(run_id)
+        t = threading.Thread(
+            target=_run_pipeline,
+            args=(run_id,),
+            daemon=True,
+            name=f"audit-{run_id[-12:]}",
+        )
+        t.start()
+    except Exception:
+        # Nothing will run, so free the slot; else every later start gets 409 until a restart.
+        with _active_run_lock:
+            if _active_run_id == run_id:
+                _active_run_id = None
+        raise
 
     return JSONResponse({"run_id": run_id})
 
@@ -453,7 +479,7 @@ def list_runs(limit: int = Query(default=20, ge=1, le=200)) -> JSONResponse:
         if live:
             runs = [r for r in runs if r["run_id"] != active]
             runs.insert(0, live)
-    return JSONResponse(runs)
+    return JSONResponse(runs[:limit])
 
 
 @app.get("/audit/runs/{run_id}/repos")
@@ -464,22 +490,34 @@ def list_run_repos(run_id: str) -> JSONResponse:
     return JSONResponse(_db_list_repo_runs(run_id))
 
 
+# An SSE stream closes after this long with a ``timeout`` event; the client reconnects.
+STREAM_MAX_S = 1800.0
+
+
 @app.get("/audit/runs/{run_id}/stream")
 def stream_run(
     run_id: str,
+    request: Request,
     interval: float = Query(default=1.0, ge=0.25, le=5.0, description="Poll interval in seconds."),
 ) -> StreamingResponse:
     """Server-Sent Events: repeated ``snapshot`` events with the same JSON as ``GET /audit/runs/{run_id}``.
 
     Emits ``snapshot`` whenever the payload changes, then ``terminal`` when the run is no longer
     ``pending`` or ``running``, then closes the stream. Sends ``error`` and closes if the run id
-    is unknown.
-    """
+    is unknown, and ``timeout`` after ``STREAM_MAX_S`` (reconnect to keep watching).
 
-    def event_generator():
+    The generator is async: it sleeps on the event loop and borrows a worker thread only for each
+    DB read, so open streams don't hold the threadpool the sync endpoints share.
+    """
+    import anyio
+
+    async def event_generator():
         last_payload: str | None = None
+        deadline = time.monotonic() + STREAM_MAX_S
         while True:
-            row = _db_get_run(run_id)
+            if await request.is_disconnected():
+                return
+            row = await anyio.to_thread.run_sync(_db_get_run, run_id)
             if row is None:
                 yield f"event: error\ndata: {json.dumps({'detail': f'Run {run_id!r} not found.'})}\n\n"
                 return
@@ -494,7 +532,10 @@ def stream_run(
             if row["status"] not in ("pending", "running"):
                 yield f"event: terminal\ndata: {json.dumps({'status': row['status']})}\n\n"
                 return
-            time.sleep(interval)
+            if time.monotonic() >= deadline:
+                yield f"event: timeout\ndata: {json.dumps({'status': row['status']})}\n\n"
+                return
+            await asyncio.sleep(interval)
 
     return StreamingResponse(
         event_generator(),
@@ -573,13 +614,18 @@ def delete_run(run_id: str) -> None:
     return None
 
 
+# get_report: how far a report's mtime may sit past the run sentinel's, or before the run's start
+_REPORT_MTIME_SLACK_S = 5.0
+_REPORT_START_SLACK_S = 60.0
+
+
 @app.get("/audit/reports/{run_id}", response_class=PlainTextResponse)
 def get_report(run_id: str) -> str:
     """Return the combined markdown reports for a completed run.
 
     Reports live in the configured output_dir (default: ``reports/``).
     They reflect the most recent completed run — if the requested run_id
-    matches, return them; if it is older, return 410 Gone.
+    matches, return them; if a later run has overwritten them, return 410 Gone.
     """
     out = Path(_output_dir())
 
@@ -608,20 +654,34 @@ def get_report(run_id: str) -> str:
             detail=f"Run status is {st!r}; report is not available from this endpoint.",
         )
 
-    # Check that on-disk reports belong to this run (the JSON sentinel file).
+    from auditor.db import as_utc
+    from auditor.ui_runs import REPORTS_BY_PIPELINE
+
+    gone = HTTPException(
+        status_code=410,
+        detail=(
+            f"Reports for {run_id!r} are no longer on disk "
+            "(overwritten by a later run). Check S3 archive if configured."
+        ),
+    )
+    # The pipeline writes its run sentinel after its reports, so a report belongs to this run only
+    # if it was written after the run started and no later than the sentinel. A newer file is a
+    # later run's (an older sentinel can outlive its reports); an older one is a stale leftover.
     sentinel = out / f"run_{run_id}.json"
     if not sentinel.exists():
-        raise HTTPException(
-            status_code=410,
-            detail=(
-                f"Reports for {run_id!r} are no longer on disk "
-                "(overwritten by a later run). Check S3 archive if configured."
-            ),
-        )
+        raise gone
+    newest = sentinel.stat().st_mtime + _REPORT_MTIME_SLACK_S
+    started = as_utc(datetime.fromisoformat(row["started_at"])) if row.get("started_at") else None
+    oldest = started.timestamp() - _REPORT_START_SLACK_S if started else float("-inf")
 
-    md_files = sorted(out.glob("*.md"))
-    if not md_files:
+    # Only this pipeline's known report names: no directory listing per request.
+    names = REPORTS_BY_PIPELINE.get(row.get("pipeline") or "", REPORTS_BY_PIPELINE["ecosystem-audit"])
+    on_disk = [p for p in (out / n for n in names) if p.is_file()]
+    if not on_disk:
         raise HTTPException(status_code=404, detail="No markdown reports found.")
+    md_files = [p for p in on_disk if oldest <= p.stat().st_mtime <= newest]
+    if not md_files:
+        raise gone
 
     sections: list[str] = []
     for f in md_files:
@@ -1291,11 +1351,12 @@ def schedule_merge_refresh(request: _MergeRefreshRequest) -> JSONResponse:
 
     Close pushes to the same repo are coalesced for ``AI_AUDIT_MERGE_DEBOUNCE_S``
     (default 900s). Distinct repos wait ``AI_AUDIT_MERGE_GLOBAL_GAP_S`` (default 120s)
-    between runs. Pass ``force=true`` to skip the per-repo quiet window.
+    between runs. Pass ``force=true`` to skip the per-repo quiet window; it never overrides
+    ``AI_AUDIT_MERGE_HOOK_ENABLED=0``.
     """
     from auditor.merge_hook import MergeEvent, get_scheduler, merge_hook_enabled
 
-    if not merge_hook_enabled() and not request.force:
+    if not merge_hook_enabled():
         raise HTTPException(status_code=503, detail="Merge hook disabled (AI_AUDIT_MERGE_HOOK_ENABLED=0)")
 
     event = MergeEvent(
@@ -1354,7 +1415,7 @@ async def github_merge_webhook(
 
     try:
         payload = json.loads(body.decode("utf-8") or "{}")
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:  # JSONDecodeError, and UnicodeDecodeError for a non-UTF-8 body
         raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
 
     if not isinstance(payload, dict):
@@ -1424,6 +1485,8 @@ def audit_diff(request: _DiffAuditRequest) -> JSONResponse:
     from auditor.agent_pack import emit_packs_from_findings
     from conductor.publish import public_base_url
 
+    # one id per invocation, so two diff audits of a repo never share (or overwrite) a run's packs
+    diff_run_id = f"diff-{request.repo}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
     packs = []
     try:
         packs = emit_packs_from_findings(
@@ -1431,7 +1494,7 @@ def audit_diff(request: _DiffAuditRequest) -> JSONResponse:
             output_dir=_output_dir(),
             repo_path=resolve_repo_path(repo),
             kind="diff_audit",
-            run_id=f"diff-{request.repo}",
+            run_id=diff_run_id,
             directly_changed=sorted(result.impact.directly_changed),
             transitively_affected=sorted(result.impact.transitively_affected),
             public_base_url=public_base_url(),
@@ -1442,6 +1505,7 @@ def audit_diff(request: _DiffAuditRequest) -> JSONResponse:
 
     return JSONResponse({
         "repo": result.repo,
+        "run_id": diff_run_id,
         "files_changed": len(result.impact.directly_changed),
         "files_affected": len(result.impact.transitively_affected),
         "directly_changed": sorted(result.impact.directly_changed),
@@ -1485,18 +1549,19 @@ def _base_fields(base: Any, repo: str, output_dir: str | Path) -> dict[str, Any]
 
 
 def _patch_paths(patch_file: Path, cwd: Path) -> list[str]:
-    """Paths a unified diff touches (new side), from ``git apply --numstat``."""
-    r = subprocess.run(["git", "apply", "--numstat", str(patch_file)], cwd=cwd, capture_output=True, text=True)
+    """Paths a unified diff touches (new side), from ``git apply --numstat -z``.
+
+    ``-z`` records are NUL-terminated and never C-quoted, so names with non-ASCII characters,
+    tabs, newlines or `` => `` come back exactly. A git failure raises instead of reading as
+    "the patch touches nothing"."""
+    r = subprocess.run(["git", "apply", "--numstat", "-z", str(patch_file)], cwd=cwd, capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"git apply --numstat failed: {r.stderr.decode('utf-8', 'replace').strip()[:400]}")
     out: list[str] = []
-    for ln in r.stdout.splitlines():
-        parts = ln.split("\t", 2)
-        if len(parts) != 3:
-            continue
-        path = parts[2]
-        if " => " in path:  # rename: "dir/{old => new}.py" or "old => new"
-            m = re.match(r"^(.*)\{.* => (.*)\}(.*)$", path)
-            path = (m.group(1) + m.group(2) + m.group(3)) if m else path.split(" => ", 1)[1]
-        out.append(path.replace("//", "/"))
+    for rec in r.stdout.split(b"\0"):
+        parts = rec.split(b"\t", 2)
+        if len(parts) == 3 and parts[2]:
+            out.append(os.fsdecode(parts[2]))
     return out
 
 
@@ -1848,6 +1913,7 @@ def repos_status() -> JSONResponse:
     the remote branch hasn't been fetched) report ``diff_error`` instead of
     crashing the whole response.
     """
+    from auditor.diff_auditor import git_ref_arg
     from auditor.git_ops import get_current_branch, is_working_tree_clean, is_in_conflict_state
     from auditor.repo_resolver import resolve_repo_path, select_branch
 
@@ -1880,16 +1946,17 @@ def repos_status() -> JSONResponse:
             results.append(entry)
             continue
 
-        entry["branch"]    = get_current_branch(repo_path)
-        entry["is_clean"]  = is_working_tree_clean(repo_path)
-        entry["in_conflict"] = is_in_conflict_state(repo_path)
-
-        base = select_branch(repo, repo_path)
-        entry["base_branch"] = base
-
         try:
+            # inside the try: one broken checkout must not 500 the whole response
+            entry["branch"]    = get_current_branch(repo_path)
+            entry["is_clean"]  = is_working_tree_clean(repo_path)
+            entry["in_conflict"] = is_in_conflict_state(repo_path)
+
+            base = select_branch(repo, repo_path)
+            entry["base_branch"] = base
+
             r = subprocess.run(
-                ["git", "-C", str(repo_path), "diff", "--shortstat", f"{base}...HEAD"],
+                ["git", "-C", str(repo_path), "diff", "--shortstat", f"{git_ref_arg(base)}...HEAD"],
                 capture_output=True, text=True, timeout=15,
             )
             if r.returncode != 0:
@@ -2041,6 +2108,27 @@ class _GitPushRequest(BaseModel):
     remote: str = "origin"
 
 
+_PUSH_BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
+_PUSH_REMOTE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def _push_args(branch: str, remote: str) -> tuple[str, str]:
+    """*branch* and *remote* if they can only mean a plain branch and a configured remote's name.
+
+    Refuses option-like values (``--force``), refspecs (``+main``, ``:main``, ``a:b``) and URLs,
+    so a request can't force-push, delete a remote branch or push somewhere else."""
+    from auditor.diff_auditor import git_ref_arg
+
+    if branch:
+        git_ref_arg(branch)
+        if not _PUSH_BRANCH.fullmatch(branch):
+            raise RuntimeError(f"invalid branch name {branch!r}")
+    git_ref_arg(remote)
+    if not _PUSH_REMOTE.fullmatch(remote):
+        raise RuntimeError(f"remote must be a configured remote's name, not {remote!r}")
+    return branch, remote
+
+
 @app.post("/audit/git/branch", dependencies=[Depends(_require_mutating_auth)])
 def git_create_branch(request: _GitBranchRequest) -> JSONResponse:
     """Create (and check out) a ``repair/<slug>`` branch for *repo*.
@@ -2139,6 +2227,11 @@ def git_push(request: _GitPushRequest) -> JSONResponse:
     from auditor.git_ops import push_repair_branch, GitError
     from auditor.repo_resolver import resolve_repo_path
 
+    try:
+        branch, remote = _push_args(request.branch, request.remote)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     cfg = load_ecosystem_config()
     repo_cfg = next((r for r in cfg.repos if r.name == request.repo), None)
     if repo_cfg is None:
@@ -2148,8 +2241,8 @@ def git_push(request: _GitPushRequest) -> JSONResponse:
         repo_path = resolve_repo_path(repo_cfg)
         result = push_repair_branch(
             repo_path,
-            branch=request.branch or None,
-            remote=request.remote,
+            branch=branch or None,
+            remote=remote,
         )
     except GitError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2243,7 +2336,8 @@ def list_agent_packs(
         "status_counts": idx_meta.get("status_counts", {}),
         "packs": packs,
         # Always serve current discovery (older INDEX.json files point specialist at kind=architecture).
-        "discovery": {**PACK_DISCOVERY, "index_file": f"{out}/agent_packs/INDEX.json"},
+        # index_file stays relative to the output root (PACK_DISCOVERY's), never the server's path
+        "discovery": dict(PACK_DISCOVERY),
     })
 
 
@@ -2418,6 +2512,13 @@ def get_agent_pack_brief(pack_id: str) -> PlainTextResponse:
     return PlainTextResponse(pack.to_brief_md())
 
 
+def _ingest_timeout_s() -> int:
+    try:
+        return max(1, int(os.getenv("AI_AUDIT_INGEST_TIMEOUT_S", "600")))
+    except ValueError:
+        return 600
+
+
 @app.post("/audit/ingest", dependencies=[Depends(_require_mutating_auth)])
 def trigger_ingest() -> JSONResponse:
     """Push the latest audit briefings to the RAG ingest service (audit_docs collection)."""
@@ -2425,15 +2526,23 @@ def trigger_ingest() -> JSONResponse:
     if not script.exists():
         raise HTTPException(status_code=500, detail="ingest_ecosystem_to_rag.py not found.")
 
-    result = subprocess.run(
-        [sys.executable, str(script)],
-        capture_output=True,
-        text=True,
-        env=os.environ.copy(),
-    )
+    timeout_s = _ingest_timeout_s()
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            text=True,
+            env=os.environ.copy(),
+            timeout=timeout_s,  # a hung RAG service must not hold this worker forever
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.error("RAG ingest timed out after %ss", timeout_s)
+        raise HTTPException(status_code=504, detail=f"Ingest timed out after {timeout_s}s.") from exc
     if result.returncode != 0:
+        # stderr can name internal hosts, paths or credentialed URLs: log it, don't return it
+        logger.error("RAG ingest failed (exit %s): %s", result.returncode, result.stderr[-4000:])
         raise HTTPException(
             status_code=500,
-            detail=f"Ingest failed (exit {result.returncode}): {result.stderr[-2000:]}",
+            detail=f"Ingest failed (exit {result.returncode}); see the audit-api log.",
         )
     return JSONResponse({"status": "ok", "output": result.stdout[-2000:]})

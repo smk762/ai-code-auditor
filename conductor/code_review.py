@@ -96,25 +96,27 @@ def review_draft_pr(
             findings_count = 0
             break
 
-        parsed = result
-        verdict = "needs_fix"
-        # parse_worker_json already applied; look for verdict in raw
-        from conductor.missions import parse_worker_json
-
         again = parse_worker_json(result.raw or result.summary, task.id)
-        findings_count = len(again.findings or result.findings)
-        raw_lower = (result.raw or "").lower()
-        if "\"verdict\": \"clean\"" in raw_lower or '"verdict":"clean"' in raw_lower:
-            verdict = "clean"
-        elif result.status == "ESCALATE" or "escalate" in raw_lower:
-            verdict = "escalate"
-        elif findings_count == 0 and result.status == "COMPLETED":
-            verdict = "clean"
-
-        if verdict == "clean":
+        findings = again.findings or result.findings
+        findings_count = len(findings)
+        # The verdict comes from the reviewer's structured JSON, never from a substring of
+        # its prose ("no need to escalate", "privilege escalation", ...).
+        declared = _declared_verdict(result.raw or result.summary)
+        if declared == "clean":
             status = "clean"
             break
-        if verdict == "escalate" or rounds_left <= 0:
+        if declared == "escalate" or result.status == "ESCALATE":
+            status = "escalate"
+            break
+        if result.status not in ("COMPLETED", "PARTIAL"):
+            # The review never ran (FAILED, timeout, unparseable): don't send the author
+            # blind fix rounds, say so.
+            status = "review_failed"
+            break
+        if not findings:
+            status = "clean" if result.status == "COMPLETED" else "escalate"
+            break
+        if rounds_left <= 0:
             status = "escalate"
             break
 
@@ -128,7 +130,7 @@ def review_draft_pr(
             intensity=intensity,
             prompt=(
                 f"Address reviewer findings on {draft.url}:\n"
-                f"{json_dumps(again.findings or result.findings)}\n"
+                f"{json_dumps(findings)}\n"
                 "Smallest patch only."
             ),
         )
@@ -145,6 +147,23 @@ def review_draft_pr(
             fix_rounds=fix_rounds,
         ),
     )
+
+
+def _declared_verdict(raw: str) -> str:
+    """The reviewer's explicit ``verdict`` field (clean|needs_fix|escalate), or ''."""
+    import json
+    import re
+
+    m = re.search(r"\{[\s\S]*\}", raw or "")
+    if not m:
+        return ""
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("verdict") or "").strip().lower()
 
 
 def json_dumps(obj: Any) -> str:

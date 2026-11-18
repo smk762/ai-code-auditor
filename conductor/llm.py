@@ -69,7 +69,8 @@ def completion(
     """
     models = load_conductor_models()
     chosen = model or models.conductor
-    is_anthropic = chosen.startswith("anthropic/") or chosen.startswith("claude")
+    is_anthropic = _is_anthropic(chosen)
+    requested_temperature = temperature
     if is_anthropic:
         # Current Claude models reject sampling params with a 400 ("`temperature` is
         # deprecated for this model"), so never send it on the Anthropic path.
@@ -102,6 +103,12 @@ def completion(
         if not use_fallbacks:
             raise
         for fb in models.fallbacks:
+            fb_anthropic = _is_anthropic(fb)
+            # Same rules as the primary path: Claude rejects sampling params, and
+            # every Anthropic call is budget-checked and recorded in the ledger.
+            fb_temperature = None if fb_anthropic else requested_temperature
+            if fb_anthropic:
+                get_ledger().check(lane)
             try:
                 import litellm  # type: ignore
 
@@ -109,13 +116,19 @@ def completion(
                     model=fb,
                     messages=messages,
                     max_tokens=max_tokens,
-                    **({"temperature": temperature} if temperature is not None else {}),
+                    **({"temperature": fb_temperature} if fb_temperature is not None else {}),
                 )
-                logger.warning("primary model %s failed (%s); used fallback %s", chosen, exc, fb)
-                return str(resp.choices[0].message.content or "")
             except Exception:
                 continue
+            if fb_anthropic:
+                _record_litellm_usage(lane, fb, resp, note)
+            logger.warning("primary model %s failed (%s); used fallback %s", chosen, exc, fb)
+            return str(resp.choices[0].message.content or "")
         raise
+
+
+def _is_anthropic(model: str) -> bool:
+    return model.startswith("anthropic/") or model.startswith("claude")
 
 
 def _record_litellm_usage(lane: str, model: str, resp: Any, note: str = "") -> None:
@@ -211,4 +224,15 @@ def _requests_completion(
         timeout=120,
     )
     resp.raise_for_status()
-    return str(resp.json()["choices"][0]["message"]["content"] or "")
+    data = resp.json()
+    usage = data.get("usage") or {}
+    try:
+        # OpenAI-style usage names; the ledger reads Anthropic names.
+        get_ledger().record_usage(
+            lane, name,
+            {"input_tokens": usage.get("prompt_tokens", 0), "output_tokens": usage.get("completion_tokens", 0)},
+            note=note,
+        )
+    except Exception:  # noqa: BLE001 — never fail a paid call over bookkeeping
+        logger.exception("spend ledger record failed")
+    return str(data["choices"][0]["message"]["content"] or "")

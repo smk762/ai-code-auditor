@@ -53,3 +53,14 @@ def test_usage_endpoints() -> None:
     assert page.status_code == 200 and "Claude API usage" in page.text
     assert client.get("/audit/usage.json?range=14d").json()["range"] == "14d"
     assert client.get("/audit/usage.json?range=bogus").status_code == 400
+
+
+def test_next_reset_clamps_to_month_end():
+    from datetime import date
+
+    from auditor.usage_dashboard import _next_reset
+
+    assert _next_reset(date(2026, 1, 31)) == date(2026, 2, 28)
+    assert _next_reset(date(2028, 1, 30)) == date(2028, 2, 29)
+    assert _next_reset(date(2026, 3, 31)) == date(2026, 4, 30)
+    assert _next_reset(date(2026, 12, 15)) == date(2027, 1, 15)

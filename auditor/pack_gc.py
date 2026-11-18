@@ -105,6 +105,8 @@ class Mirror:
         return bool(self.path and self.ref)
 
     def files(self) -> set[str]:
+        if not self.ok:  # never run git in the process CWD or against the index
+            return set()
         if self._files is None:
             r = self._git("ls-tree", "-r", "--name-only", self.ref)
             self._files = set(r.stdout.splitlines()) if r.returncode == 0 else set()
@@ -112,12 +114,16 @@ class Mirror:
 
     def lines(self, path: str) -> list[str] | None:
         """The file's lines at the ref, or None when it can't be read."""
+        if not self.ok:
+            return None
         if path not in self._text:
             r = self._git("show", f"{self.ref}:{path}")
             self._text[path] = r.stdout.splitlines() if r.returncode == 0 else None
         return self._text[path]
 
     def last_change(self, path: str) -> datetime | None:
+        if not self.ok:
+            return None
         r = self._git("log", "-1", "--format=%cI", self.ref, "--", path)
         try:
             return datetime.fromisoformat(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
@@ -221,10 +227,15 @@ def _judge(p: PackView, seq: list[Scan], m: Mirror | None, *, now: datetime, mis
     later = [s for s in seq if seen and s.at > seen]
     if p.kind in SCAN_KINDS:
         recent = later[-misses:]
-        if len(recent) >= misses and not any(_reported(p, s) for s in recent):
+        # misses < 1 would make zero scans "enough"; seen None leaves nothing to count from.
+        if misses >= 1 and seen and len(recent) >= misses and not any(_reported(p, s) for s in recent):
             changed = m.last_change(p.path) if m is not None and m.ok else None
-            how = ("the file changed since" if changed and seen and changed > seen else "the file is unchanged "
-                   "(detector drift)")
+            if changed is None:  # no usable mirror or history: don't claim either way
+                how = "file history unavailable"
+            elif changed > seen:
+                how = "the file changed since"
+            else:
+                how = "the file is unchanged (detector drift)"
             return close("not_rescanned", f"not reported by the last {misses} nightly scans since "
                          f"{seen:%Y-%m-%d}; {how}")
         return None

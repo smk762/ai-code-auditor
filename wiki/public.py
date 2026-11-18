@@ -18,7 +18,8 @@ internal INDEX (dropped claims, citation stats, cited-file hashes).
 
 The opsec gate fails closed: a page is refused whole, never redacted, if it contains a private
 or link-local IP, a home or mount path, an email address, a LAN hostname, the name of a private
-ecosystem repo that isn't an argus repo, or any term from the private deny-list (a file outside
+ecosystem repo (argus ones included: a private or unlooked-up argus repo is no more public than any
+other), or any term from the private deny-list (a file outside
 the repo; the export refuses to run without it). Refused pages are listed in a report written
 *outside* the bundle, since the report quotes what leaked. A repo with any refused page is left
 out entirely rather than shipped half-documented.
@@ -136,10 +137,14 @@ class Scrubber:
     private: dict[str, str]  # private repo name → neutral description
 
     def __call__(self, text: str) -> str:
-        for name, desc in self.private.items():
-            text = re.sub(rf"(?i)(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])", desc, text)
-        for term in self.denylist:
-            text = re.sub(rf"(?i)(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])", "an internal host", text)
+        # one pass, longest first: replacing "foo" before "foo-bar" would leave "<desc>-bar", leaking
+        # the rest of the longer name (and a replacement is never rescanned for another term)
+        lookup = {t.lower(): "an internal host" for t in self.denylist if t}
+        lookup |= {n.lower(): desc for n, desc in self.private.items() if n}
+        if lookup:
+            alt = "|".join(re.escape(t) for t in sorted(lookup, key=len, reverse=True))
+            text = re.sub(rf"(?i)(?<![A-Za-z0-9])(?:{alt})(?![A-Za-z0-9])",
+                          lambda m: lookup[m.group(0).lower()], text)
         text = _PATHS.sub("<path>", text)
         text = _LAN_HOST.sub("<host>", text)
         for m in list(_IPV4.finditer(text)):
@@ -182,13 +187,19 @@ def public_inputs(denylist_path: str | Path | None = None,
     token = github_token()
     lookup = visibility or (lambda r: github_visibility(r, token))
     vis = {r.name: lookup(r.name) for r in load_ecosystem_config().repos if r.enabled}
-    private_names = sorted(n for n, v in vis.items() if v != "public" and not n.startswith("argus-"))
+    private_names = private_repo_names(vis)
     raw = ECOSYSTEM_DOC.read_text(encoding="utf-8") if ECOSYSTEM_DOC.is_file() else ""
     scrub = scrubber_for(denylist, private_names, raw)
     return scrub, scrub(public_ecosystem_doc(raw, private_names)), vis
 
 
 # ── scope ────────────────────────────────────────────────────────────────────
+
+def private_repo_names(vis: dict[str, str | None]) -> list[str]:
+    """Every repo the gate must not let a public page name: anything not reported public by GitHub,
+    argus-* included (a private argus repo, or one whose lookup failed, is still private)."""
+    return sorted(n for n, v in vis.items() if v != "public")
+
 
 def github_visibility(repo: str, token: str = "") -> str | None:
     """'public' / 'private' from the GitHub API; None if the lookup fails (treated as private)."""
@@ -238,6 +249,25 @@ def _pypi_name(repo_path: str | None) -> str | None:
         return None
 
 
+GENERATOR = "ai-code-auditor wiki export"
+
+
+def _check_replaceable(dest: Path) -> None:
+    """Refuse to replace anything but nothing, an empty dir or a previous bundle (never a caller's tree)."""
+    if not dest.exists():
+        return
+    if not dest.is_dir():
+        raise RuntimeError(f"refusing to replace {dest}: not a directory")
+    if not any(dest.iterdir()):
+        return
+    try:
+        generator = json.loads((dest / "manifest.json").read_text(encoding="utf-8")).get("generator")
+    except (OSError, ValueError, AttributeError):
+        generator = None
+    if generator != GENERATOR:
+        raise RuntimeError(f"refusing to replace {dest}: it is not a previous wiki export bundle")
+
+
 def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_path: str | Path | None = None,
            visibility: Callable[[str], str | None] | None = None) -> ExportReport:
     from auditor.config import load_ecosystem_config
@@ -247,13 +277,14 @@ def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_pa
     src = Path(output_dir) / "wiki"
     dest = Path(out or Path(output_dir) / "wiki_public")
     denylist = load_denylist(denylist_path)  # fail closed before touching anything
+    _check_replaceable(dest)
     from auditor.merge_poll import github_token
 
     token = github_token()
     lookup = visibility or (lambda r: github_visibility(r, token))
     repos = {r.name: r for r in load_ecosystem_config().repos if r.enabled}
     vis = {name: lookup(name) for name in sorted(repos)}
-    private_names = sorted(n for n, v in vis.items() if v != "public" and not n.startswith("argus-"))
+    private_names = private_repo_names(vis)
 
     report = ExportReport(out_dir=str(dest))
     staged: dict[str, dict[str, Any]] = {}
@@ -296,12 +327,15 @@ def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_pa
                         "github": f"https://github.com/{OWNER}/{name}", "pypi": _pypi_name(repos[name].path),
                         "pages": pages}
 
-    # write the bundle from scratch so removed repos and pages disappear (--delete semantics)
+    # write the bundle from scratch so removed repos and pages disappear (--delete semantics), in a
+    # staging sibling that replaces ``dest`` only once it has passed the final gate
+    final = dest
+    dest = dest.parent / f".{final.name}.staging-{os.getpid()}"
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
     manifest: dict[str, Any] = {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                                "generator": "ai-code-auditor wiki export", "repos": {}}
+                                "generator": GENERATOR, "repos": {}}
     hashes: dict[str, str] = {}
     for name, r in staged.items():
         (dest / name).mkdir()
@@ -328,6 +362,13 @@ def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_pa
         if f.is_file() and (hit := gate(f.read_text(encoding="utf-8"), denylist, private_names)):
             shutil.rmtree(dest)
             raise RuntimeError(f"opsec gate failed on the written bundle ({f.name}: {hit[0]}); bundle removed")
+    _check_replaceable(final)  # still only a previous bundle (or nothing) after the build
+    old = final.parent / f".{final.name}.old-{os.getpid()}"
+    if final.exists():
+        os.replace(final, old)
+    os.replace(dest, final)
+    if old.exists():
+        shutil.rmtree(old)
     report_path = Path(output_dir) / "wiki_public_report.json"  # outside the bundle: it quotes what leaked
     report_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
     return report

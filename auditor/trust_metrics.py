@@ -95,7 +95,10 @@ def rel_path(repo: str, path: str) -> str:
     marker = f"/{repo}/"
     if marker in p:
         return p.rsplit(marker, 1)[1]
-    return p.lstrip("./")
+    # Strip a literal "./" prefix only: lstrip("./") would eat the dot of ".github/" or ".env".
+    while p.startswith("./"):
+        p = p[2:]
+    return p.lstrip("/")
 
 
 def _rate(num: int, den: int) -> float | None:
