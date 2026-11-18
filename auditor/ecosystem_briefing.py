@@ -12,6 +12,7 @@ start; per-file prompts get a compact repo-scoped summary.
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,11 +41,16 @@ def _load_repo_roles() -> dict[str, dict[str, str]]:
         return roles
     text = _ECOSYSTEM_MD.read_text(encoding="utf-8")
     # Prefer the scanned-repos section so other markdown tables are ignored.
+    # Headings are matched as whole lines, so "### Repos", "## Repository layout" or
+    # a mention in prose never select the wrong section.
     section = text
-    for marker in ("## Repos (scanned)", "## Repos"):
-        if marker in text:
-            section = text.split(marker, 1)[1]
-            section = section.split("\n## ", 1)[0]
+    for heading in (r"^## Repos \(scanned\)[ \t]*$", r"^## Repos[ \t]*$"):
+        m = re.search(heading, text, re.MULTILINE)
+        if m:
+            section = text[m.end():]
+            end = re.search(r"^## ", section, re.MULTILINE)
+            if end:
+                section = section[: end.start()]
             break
     skip_repos = {"repo", "name", "---"}
     skip_labels = {"label", "area", "---"}
@@ -74,27 +80,67 @@ def _get_repo_roles() -> dict[str, dict[str, str]]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _fit_lines(head: list[str], body: list[str], tail: list[str], max_chars: int,
+               omitted_marker) -> str:
+    """Join head + as many whole body lines as fit + tail, within ``max_chars``.
+
+    Head and tail are always kept whole (never cut mid-line); body lines are added
+    in order while they fit, and ``omitted_marker(n)`` names how many were left out.
+    """
+    kept: list[str] = []
+    for i, line in enumerate(body):
+        left = len(body) - i - 1
+        trial = head + kept + [line] + ([omitted_marker(left)] if left else []) + tail
+        if len("\n".join(trial)) > max_chars:
+            break
+        kept.append(line)
+    omitted = len(body) - len(kept)
+    marker = [omitted_marker(omitted)] if omitted else []
+    return "\n".join(head + kept + marker + tail)
+
+
 def build_ecosystem_overview(max_chars: int = 2000) -> str:
-    """Return a compact summary of the full ecosystem (used once per pipeline run)."""
+    """Return a compact summary of the full ecosystem (used once per pipeline run).
+
+    The header and the pipeline/contract footer are always kept; repo lines fill the
+    remaining budget as whole lines, with a "… and N more repos" marker when some
+    don't fit.
+    """
     roles = _get_repo_roles()
     if not roles:
         return ""
-    lines = [
+    head = [
         "## Ecosystem Overview",
         "This codebase is the Argus suite (argus-*) plus shared deps agent-composer and voluptas.",
         "",
     ]
-    for repo, info in roles.items():
-        lines.append(f"- **{repo}** ({info['label']}): {info['role']}")
-    lines += [
+    body = [f"- **{repo}** ({info['label']}): {info['role']}" for repo, info in roles.items()]
+    tail = [
         "",
         "Pipeline: quarry → curator/lens/studio → forge/proof; darkroom → voluptas (ComfyUI).",
         "Shared AI/RAG: argus-* → agent-composer (rag-chat, rag-ingest, Qdrant).",
         "Night auditor publishes mithrandir status from Dragon; scan branch is dev.",
         "argus-cortex owns taxonomy/wire schemas; do not reimplement in demo UIs.",
     ]
-    result = "\n".join(lines)
-    return result[:max_chars]
+    return _fit_lines(head, body, tail, max_chars, lambda n: f"- … and {n} more repos")
+
+
+# Directories never searched for endpoints: VCS, envs, caches and build output.
+_ENDPOINT_SKIP_DIRS = frozenset({
+    ".git", "node_modules", ".venv", "venv", "env", ".tox", "__pycache__",
+    "build", "dist", "site-packages", ".mypy_cache", ".pytest_cache",
+})
+
+
+def _discover_repo_endpoints(repo_path: Path) -> list[str]:
+    """Endpoints in the repo's own .py files: deduplicated, sorted, env/build dirs pruned."""
+    found: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(repo_path):
+        dirnames[:] = sorted(d for d in dirnames if d not in _ENDPOINT_SKIP_DIRS)
+        for name in sorted(filenames):
+            if name.endswith(".py"):
+                found.update(discover_api_endpoints(Path(dirpath) / name))
+    return sorted(found)
 
 
 def build_repo_briefing(
@@ -109,41 +155,39 @@ def build_repo_briefing(
     discovered API endpoints, and relevant security notes.
     """
     roles = _get_repo_roles()
-    lines: list[str] = ["## Repo Context"]
+    head: list[str] = ["## Repo Context"]
 
     # Role
     info = roles.get(repo_name)
     if info:
-        lines.append(f"**{repo_name}** — {info['label']}: {info['role']}")
+        head.append(f"**{repo_name}** — {info['label']}: {info['role']}")
     else:
-        lines.append(f"**{repo_name}** — role not recorded in ecosystem.md")
+        head.append(f"**{repo_name}** — role not recorded in ecosystem.md")
 
+    # Security notes derived from role: the most audit-relevant part, so they are
+    # budgeted first and never cut by long dependency or endpoint lists.
+    _add_security_notes(repo_name, info, head)
+
+    body: list[str] = []
     # Graph relationships
     if graph is not None:
         deps = graph.query_dependencies(repo_name)
         callers = graph.query_callers(repo_name)
         if deps:
-            lines.append(f"Depends on: {', '.join(deps)}")
+            body.append(f"Depends on: {', '.join(deps)}")
         if callers:
-            lines.append(f"Called by: {', '.join(callers)}")
+            body.append(f"Called by: {', '.join(callers)}")
 
     # API endpoints
-    endpoints: list[str] = []
-    for path in repo_path.rglob("*.py"):
-        if any(p in path.parts for p in {".git", "node_modules", ".venv", "__pycache__"}):
-            continue
-        endpoints.extend(discover_api_endpoints(path))
+    endpoints = _discover_repo_endpoints(repo_path)
     if endpoints:
         sample = endpoints[:12]
-        lines.append(f"Exposes endpoints: {', '.join(sample)}")
+        body.append(f"Exposes endpoints: {', '.join(sample)}")
         if len(endpoints) > 12:
-            lines.append(f"  … and {len(endpoints) - 12} more")
+            body.append(f"  … and {len(endpoints) - 12} more")
 
-    # Security notes derived from role
-    _add_security_notes(repo_name, info, lines)
-
-    result = "\n".join(lines)
-    return result[:max_chars]
+    return _fit_lines(head, body, [], max_chars,
+                      lambda n: f"… truncated ({n} more line{'s' if n != 1 else ''})")
 
 
 def build_file_briefing(
