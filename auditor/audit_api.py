@@ -1525,18 +1525,19 @@ def _base_fields(base: Any, repo: str, output_dir: str | Path) -> dict[str, Any]
 
 
 def _patch_paths(patch_file: Path, cwd: Path) -> list[str]:
-    """Paths a unified diff touches (new side), from ``git apply --numstat``."""
-    r = subprocess.run(["git", "apply", "--numstat", str(patch_file)], cwd=cwd, capture_output=True, text=True)
+    """Paths a unified diff touches (new side), from ``git apply --numstat -z``.
+
+    ``-z`` records are NUL-terminated and never C-quoted, so names with non-ASCII characters,
+    tabs, newlines or `` => `` come back exactly. A git failure raises instead of reading as
+    "the patch touches nothing"."""
+    r = subprocess.run(["git", "apply", "--numstat", "-z", str(patch_file)], cwd=cwd, capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"git apply --numstat failed: {r.stderr.decode('utf-8', 'replace').strip()[:400]}")
     out: list[str] = []
-    for ln in r.stdout.splitlines():
-        parts = ln.split("\t", 2)
-        if len(parts) != 3:
-            continue
-        path = parts[2]
-        if " => " in path:  # rename: "dir/{old => new}.py" or "old => new"
-            m = re.match(r"^(.*)\{.* => (.*)\}(.*)$", path)
-            path = (m.group(1) + m.group(2) + m.group(3)) if m else path.split(" => ", 1)[1]
-        out.append(path.replace("//", "/"))
+    for rec in r.stdout.split(b"\0"):
+        parts = rec.split(b"\t", 2)
+        if len(parts) == 3 and parts[2]:
+            out.append(os.fsdecode(parts[2]))
     return out
 
 

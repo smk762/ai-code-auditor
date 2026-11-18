@@ -295,3 +295,26 @@ def test_repos_status_never_passes_an_option_as_the_base(monkeypatch: pytest.Mon
     r = TestClient(audit_api.app, raise_server_exceptions=False).get("/audit/repos/status")
     assert not target.exists()
     assert r.status_code == 200 and "invalid git ref" in r.json()[0]["diff_error"]
+
+
+# ── _patch_paths: exact names, and a failure is not "no files" ──────────────
+
+def test_patch_paths_returns_real_names(tmp_path) -> None:
+    import subprocess
+
+    _git_repo(tmp_path)
+    names = ["café.py", "x => y.py", "dir/{a => b}.py", "tab\there.py", "plain.py"]
+    for n in names:
+        (tmp_path / n).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / n).write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-N", "."], check=True)
+    patch = tmp_path.parent / f"{tmp_path.name}.patch"
+    patch.write_bytes(subprocess.run(["git", "-C", str(tmp_path), "diff"], capture_output=True, check=True).stdout)
+    assert sorted(audit_api._patch_paths(patch, tmp_path)) == sorted(names)
+
+
+def test_patch_paths_raises_when_git_fails(tmp_path) -> None:
+    bad = tmp_path / "bad.patch"
+    bad.write_text("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\nthis is not a hunk line\n")
+    with pytest.raises(RuntimeError):
+        audit_api._patch_paths(bad, tmp_path)
