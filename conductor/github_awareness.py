@@ -153,6 +153,24 @@ def _tokens(text: str) -> set[str]:
     return set(_TOKEN_RE.findall((text or "").lower()))
 
 
+def _norm_path(p: str) -> str:
+    p = (p or "").replace("\\", "/").lower()
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
+def _same_file(a: str, b: str) -> bool:
+    """Normalised paths *a* and *b* name the same file: equal, or one is a path-segment
+    suffix of the other (a checkout prefix). A bare basename matches only when one side
+    has no directory, so ``pkg/__init__.py`` never matches ``other/__init__.py``."""
+    if a == b:
+        return True
+    if a.endswith("/" + b) or b.endswith("/" + a):
+        return True
+    return False
+
+
 def overlap_reason(
     *,
     title: str,
@@ -161,18 +179,15 @@ def overlap_reason(
     min_token_overlap: int = 3,
 ) -> str | None:
     """Return a human reason if this finding likely duplicates an open PR/issue."""
-    file_name = Path(file_path).name.lower() if file_path else ""
-    file_norm = file_path.replace("\\", "/").lower()
+    file_norm = _norm_path(file_path)
     title_tokens = _tokens(title)
 
     for it in awareness.items:
         # Same file already in an open PR
         for f in it.files:
-            fn = f.replace("\\", "/").lower()
-            if file_norm and (file_norm == fn or file_norm.endswith("/" + fn) or fn.endswith(file_norm)):
+            fn = _norm_path(f)
+            if file_norm and _same_file(file_norm, fn):
                 return f"open {it.kind}#{it.number} already touches {Path(f).name}"
-            if file_name and Path(f).name.lower() == file_name:
-                return f"open {it.kind}#{it.number} already touches {file_name}"
 
         # Title / body token overlap
         hay = _tokens(it.haystack())
