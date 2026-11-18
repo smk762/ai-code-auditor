@@ -42,6 +42,25 @@ from auditor.repo_resolver import resolve_repo_path, resolve_scan_root
 
 _DEFAULT_INGEST_URL = "http://127.0.0.1:9050/ingest"
 _DEFAULT_COLLECTION = "project_docs"
+_REPO_BRIEFING_CHARS = 4000
+_REPO_DOC_MAX_CHARS = 6000  # briefing plus its endpoint list
+
+
+def _with_endpoints(briefing: str, endpoints: list[str], max_chars: int = _REPO_DOC_MAX_CHARS) -> str:
+    """Append the endpoint list, keeping the whole document within ``max_chars``.
+
+    Endpoints that do not fit are summarised as "… and N more"."""
+    unique = sorted(set(endpoints))
+    if not unique:
+        return briefing
+    doc = briefing + "\n\nAll discovered endpoints:"
+    for i, endpoint in enumerate(unique):
+        line = f"\n  {endpoint}"
+        more = f"\n  … and {len(unique) - i - 1} more" if i < len(unique) - 1 else ""
+        if len(doc) + len(line) + len(more) > max_chars:
+            return doc + f"\n  … and {len(unique) - i} more"
+        doc += line
+    return doc
 
 
 def _ingest_document(
@@ -109,7 +128,7 @@ def main() -> None:
     for repo in cfg.repos:
         print(f"Ingesting briefing for {repo.name} …")
         repo_path = resolve_repo_path(repo)
-        briefing = build_repo_briefing(repo.name, repo_path, graph=graph, max_chars=4000)
+        briefing = build_repo_briefing(repo.name, repo_path, graph=graph, max_chars=_REPO_BRIEFING_CHARS)
 
         # Append endpoint list if the repo is available. Honour subpath so
         # the briefing only includes APIs from areas the rest of the auditor
@@ -122,8 +141,7 @@ def main() -> None:
                     continue
                 endpoints.extend(discover_api_endpoints(py_file))
 
-        if endpoints:
-            briefing += "\n\nAll discovered endpoints:\n" + "\n".join(f"  {e}" for e in sorted(set(endpoints)))
+        briefing = _with_endpoints(briefing, endpoints)
 
         meta = {
             "type": "repo_briefing",
