@@ -407,7 +407,48 @@ def gc_metric(packs: Iterable[PackView]) -> dict[str, Any]:
             "reopened_ids": back[:50]}
 
 
-def recurrence_metric(packs: list[PackView], scans: list[Scan]) -> dict[str, Any]:
+def _patched(p: PackView) -> bool:
+    """Resolved with a validated patch, so the fix ships only when that patch reaches dev."""
+    note = next((str(h.get("note") or "") for h in reversed(p.history) if h.get("status") == "resolved"), "")
+    return note.startswith("validate_patch passed")
+
+
+Changes = list[tuple[datetime, set[str]]]
+
+
+def fix_landings(packs: Iterable[PackView], changes_by_repo: dict[str, Changes],
+                 prs: list[dict[str, Any]] | None = None, *,
+                 since: datetime | None = None) -> dict[str, datetime | None]:
+    """When each patch-resolved finding pack's fix reached dev: the merge of a PR that names the
+    pack, else the first commit on dev's first-parent line to change the pack's file after the
+    resolution. None means it hasn't landed. Packs resolved before ``since`` (where the history
+    read starts) or in repos with no history are left out, and recurrence then dates them by the
+    resolution as before.
+
+    The file rule can be early (an unrelated change to the same file lands first), never late."""
+    named: dict[str, datetime] = {}
+    for pr in prs or []:
+        merged = _parse_ts(pr.get("merged_at"))
+        for i in pr.get("pack_ids") or []:
+            if merged and (i not in named or merged < named[i]):
+                named[i] = merged
+    out: dict[str, datetime | None] = {}
+    for p in packs:
+        if not p.is_finding or p.status != "resolved" or not p.path or not _patched(p):
+            continue
+        t = p.last_resolved_at()
+        changes = changes_by_repo.get(p.repo)
+        if t is None or changes is None or (since is not None and t < since):
+            continue
+        if p.id in named:
+            out[p.id] = named[p.id]
+            continue
+        out[p.id] = next((when for when, paths in changes if when > t and p.path in paths), None)
+    return out
+
+
+def recurrence_metric(packs: list[PackView], scans: list[Scan],
+                      landed: dict[str, datetime | None] | None = None) -> dict[str, Any]:
     """Resolved finding packs whose issue came back after the resolution.
 
     Evidence is a later pack linked by ``recurrence_of`` (definitive), a later pack in the same
@@ -420,7 +461,12 @@ def recurrence_metric(packs: list[PackView], scans: list[Scan]) -> dict[str, Any
 
     A recurrence is ``disputed`` when the pack was closed without a patch as already handled
     or not a bug (the agent and the scanner disagree), else ``regressed`` (a fix that didn't
-    hold). ``rate`` counts regressions only."""
+    hold). ``rate`` counts regressions only.
+
+    A patch-resolved pack is judged from when its fix reached dev (``landed``, see
+    ``fix_landings``), not from when ``validate_patch`` passed: until the patch merges and the
+    mirror syncs, every scan still reads the unfixed code. Those are ``unlanded``, counted apart
+    from pending: a pack that stays unlanded is a resolution whose fix never shipped."""
     linked: dict[str, list[PackView]] = defaultdict(list)
     by_file: dict[tuple[str, str], list[PackView]] = defaultdict(list)
     for p in packs:
@@ -442,6 +488,7 @@ def recurrence_metric(packs: list[PackView], scans: list[Scan]) -> dict[str, Any
 
     resolved: list[tuple[PackView, datetime]] = []
     pending = 0
+    unlanded: list[tuple[PackView, datetime]] = []
     cands: list[tuple[float, int, tuple, str]] = []
     for p in packs:
         if not p.is_finding or p.status != "resolved" or not p.path:
@@ -449,6 +496,12 @@ def recurrence_metric(packs: list[PackView], scans: list[Scan]) -> dict[str, Any
         t = p.last_resolved_at()
         if t is None:
             continue
+        if landed is not None and p.id in landed:
+            if (lt := landed[p.id]) is None:
+                unlanded.append((p, t))
+                continue
+            # a scan of the landing commit itself already reads the fix
+            t = max(t, lt - timedelta(seconds=1))
         i = len(resolved)
         resolved.append((p, t))
         for q in linked.get(p.id, []):
@@ -494,6 +547,10 @@ def recurrence_metric(packs: list[PackView], scans: list[Scan]) -> dict[str, Any
                              "resolved_at": t.isoformat(), "resolve_note": note[:160], "evidence": evidence})
     return {
         "observed": observed, "regressed": regressed, "disputed": disputed, "pending": pending,
+        "unlanded": len(unlanded),
+        "unlanded_by_repo": dict(sorted(Counter(p.repo for p, _ in unlanded).items())),
+        "unlanded_oldest": [{"pack_id": p.id, "repo": p.repo, "path": p.path, "resolved_at": t.isoformat()}
+                            for p, t in sorted(unlanded, key=lambda x: x[1])[:20]],
         "rate": _rate(regressed, observed),
         "dispute_rate": _rate(disputed, observed),
         "by_repo": {r: {**c, "rate": _rate(c["regressed"], c["observed"])} for r, c in sorted(by_repo.items())},
@@ -715,6 +772,20 @@ class MirrorCommits:
                 out.append({"sha": parts[0], "parents": parts[1].split(), "date": parts[2], "message": parts[3]})
         return out
 
+    def path_changes(self, since: str) -> Changes:
+        """Commits on the ref's first-parent line since ``since``, oldest first, with the files each
+        changed against its first parent: when each change reached dev."""
+        if not self.ref:
+            return []
+        r = self._git("log", self.ref, "--first-parent", "--diff-merges=first-parent", f"--since={since}",
+                      "--name-only", "--format=%x1e%cI")
+        out: Changes = []
+        for rec in r.stdout.split("\x1e") if r.returncode == 0 else []:
+            lines = [x for x in rec.strip("\n").splitlines() if x.strip()]
+            if lines and (when := _parse_ts(lines[0])):
+                out.append((when, set(lines[1:])))
+        return out[::-1]  # git lists the first-parent line newest first
+
     def merged_by(self, merge: dict[str, Any]) -> list[str]:
         """The commits a merge brought in (``first-parent..second-parent``)."""
         if len(merge["parents"]) < 2:
@@ -825,14 +896,15 @@ def fetch_agent_prs(graphql: Callable[[str, dict[str, Any]], dict[str, Any]], ow
 
 def compute(packs: list[PackView], scans: list[Scan], prs: list[dict[str, Any]] | None,
             git_log: GitLog | None, *, now: datetime | None = None,
-            pack_commits: dict[str, Any] | None = None) -> dict[str, Any]:
+            pack_commits: dict[str, Any] | None = None,
+            landed: dict[str, datetime | None] | None = None) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     events = resolution_events(packs)
     report = {
         "generated_at": now.isoformat(),
         "false_resolve": false_resolve_metric(events, now=now),
         "reopen": reopen_metric(packs),
-        "recurrence": recurrence_metric(packs, scans),
+        "recurrence": recurrence_metric(packs, scans, landed),
         "scan_persistence": scan_persistence_metric(scans, packs),
         "gc": gc_metric(packs),
         "pack_commits": pack_commits,
@@ -862,6 +934,7 @@ def headline(report: dict[str, Any]) -> dict[str, Any]:
         "reopen_rate": report["reopen"]["rate"],
         "recurrence_rate": report["recurrence"]["rate"],
         "recurrence_observed": report["recurrence"]["observed"],
+        "unlanded_fixes": report["recurrence"].get("unlanded"),
         "dispute_rate": report["recurrence"]["dispute_rate"],
         "waiver_rate": report["false_resolve"]["waiver_rate"],
         "gc_closed": report["gc"]["closed"],
@@ -937,7 +1010,15 @@ def build(output_dir: str | Path, *, session=None, refresh_github: bool = False,
     except Exception as exc:  # noqa: BLE001 — a mirror problem leaves this metric empty, not the report
         logger.warning("pack commit metric failed: %s", exc)
         pc = None
-    report = compute(packs, scans, prs, git_log, now=now, pack_commits=pc)
+    try:
+        since = now_ - timedelta(days=lookback_days())
+        changes = {r: MirrorCommits(p).path_changes(since.isoformat()) for r, p in paths.items()
+                   if (p / ".git").exists()}
+        landed = fix_landings(packs, changes, prs, since=since)
+    except Exception as exc:  # noqa: BLE001 — without history, recurrence dates fixes by resolution
+        logger.warning("fix landing lookup failed: %s", exc)
+        landed = None
+    report = compute(packs, scans, prs, git_log, now=now, pack_commits=pc, landed=landed)
     report["headline"]["open_finding_packs"] = sum(1 for p in packs if p.is_finding and p.status == "open"
                                                    and not p.duplicate_of)
     return report
