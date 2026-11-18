@@ -9,9 +9,12 @@ pages can't use those URLs directly.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import tempfile
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -55,10 +58,66 @@ def has_mark(repo: str) -> bool:
     return repo.startswith("argus-") and repo.removeprefix("argus-") in MARKS
 
 
+_SVG_NS = "http://www.w3.org/2000/svg"
+# Marks are plain shapes. Anything that can link, animate, embed or carry styles/script is out.
+_ALLOWED_TAGS = frozenset({
+    "svg", "g", "path", "circle", "ellipse", "rect", "line", "polyline", "polygon", "title", "desc",
+    "defs", "lineargradient", "radialgradient", "stop", "clippath", "symbol",
+})
+_ALLOWED_ATTRS = frozenset({
+    "viewbox", "version", "width", "height", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry",
+    "fx", "fy", "d", "points", "fill", "fill-rule", "fill-opacity", "stroke", "stroke-width",
+    "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset",
+    "stroke-opacity", "opacity", "transform", "id", "class", "clip-path", "clip-rule", "offset",
+    "stop-color", "stop-opacity", "gradientunits", "gradienttransform", "preserveaspectratio", "role",
+    "aria-label", "aria-hidden", "focusable", "vector-effect", "shape-rendering",
+})
+# url(...) is only allowed as a same-document reference such as url(#grad).
+_BAD_VALUE = re.compile(r"javascript:|data:|url\(\s*['\"]?\s*[^#'\s]", re.IGNORECASE)
+
+
 def _safe(svg: bytes) -> bool:
-    head = svg.lstrip()[:200].lower()
-    return (head.startswith(b"<svg") or head.startswith(b"<?xml")) and b"<script" not in svg.lower() \
-        and not re.search(rb"\son\w+\s*=", svg, re.IGNORECASE) and len(svg) <= MAX_SVG_BYTES
+    """A plain SVG mark: parsed (never pattern-matched) and checked against an allowlist.
+
+    DTDs and entities are refused outright, so nothing can expand into markup after the check."""
+    if len(svg) > MAX_SVG_BYTES:
+        return False
+    lowered = svg.lower()
+    if b"<!doctype" in lowered or b"<!entity" in lowered:
+        return False
+    try:
+        root = ET.fromstring(svg)
+    except ET.ParseError:
+        return False
+    for el in root.iter():
+        if not isinstance(el.tag, str):
+            return False
+        ns, _, local = el.tag.rpartition("}")
+        if ns and ns.lstrip("{") != _SVG_NS:
+            return False
+        if local.lower() not in _ALLOWED_TAGS:
+            return False
+        for name, value in el.attrib.items():
+            if "}" in name or name.lower() not in _ALLOWED_ATTRS or _BAD_VALUE.search(value):
+                return False
+    return root.tag.rpartition("}")[2].lower() == "svg"
+
+
+def _write_cache(cache: Path, data: bytes) -> None:
+    """Best-effort atomic cache write: a temp file in the same dir, then os.replace."""
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=cache.parent, prefix=f".{cache.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, cache)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+    except OSError as exc:
+        logger.warning("brand mark cache %s not written: %s", cache, exc)
 
 
 def _mirror_dir() -> Path | None:
@@ -82,7 +141,17 @@ def mark_svg(output_dir: str | Path, package: str, variant: str = "light") -> by
         return data if _safe(data) else None
     cache = Path(output_dir) / "_brand" / name
     if cache.is_file():
-        return cache.read_bytes()
+        try:
+            cached = cache.read_bytes()
+        except OSError:
+            cached = b""
+        if _safe(cached):
+            return cached
+        logger.warning("brand mark cache %s failed the check; refetching", cache)
+        try:
+            cache.unlink(missing_ok=True)
+        except OSError:
+            pass
     url = f"https://raw.githubusercontent.com/{CORTEX_SLUG}/dev/brand/packages/{package}/{name}"
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ai-code-auditor"}),
@@ -94,6 +163,5 @@ def mark_svg(output_dir: str | Path, package: str, variant: str = "light") -> by
     if not _safe(data):
         logger.warning("brand mark %s rejected (not a plain SVG)", name)
         return None
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_bytes(data)
+    _write_cache(cache, data)
     return data
