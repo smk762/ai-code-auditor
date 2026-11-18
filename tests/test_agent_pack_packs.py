@@ -178,3 +178,9 @@ def test_scalar_rationale_and_symbols_are_not_split_into_characters(tmp_path: Pa
     cand2 = dict(cand, id="ex-3", source_units=[{"path": "p.py", "symbols": ["a", 7]}])
     [pack2] = emit_packs_from_extraction_candidates([cand2], output_dir=tmp_path)
     assert pack2.location["symbol"] == "a,7"
+
+
+def test_non_utf8_pack_file_reads_as_unreadable(tmp_path: Path) -> None:
+    bad = tmp_path / "pack-x.yaml"
+    bad.write_bytes(b"work_item_id: pack-x\ntitle: caf\xe9\n")
+    assert agent_pack._read_pack_yaml(bad) is None
