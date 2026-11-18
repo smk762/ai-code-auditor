@@ -18,5 +18,13 @@ def load_env_file() -> None:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        value = value.strip().strip('"').strip("'")
+        if key.startswith("export ") or key.startswith("export\t"):
+            key = key[len("export"):].strip()
+        if not key:
+            continue
+        value = value.strip()
+        # Remove exactly one matched pair of surrounding quotes; a lone or mismatched
+        # quote is part of the value.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
         os.environ.setdefault(key, value)
