@@ -134,7 +134,8 @@ def snapshot(repo, dest: Path) -> dict:
         import shutil
         shutil.rmtree(out)
     out.mkdir(parents=True)
-    data = subprocess.run(["git", "archive", "--format=tar", ref], cwd=src, capture_output=True, check=True).stdout
+    # Export the resolved sha, not the ref: a fetch in between would move origin/<branch>.
+    data = subprocess.run(["git", "archive", "--format=tar", sha], cwd=src, capture_output=True, check=True).stdout
     with tarfile.open(fileobj=io.BytesIO(data)) as tf:
         tf.extractall(out, filter="data")
     return {"path": out, "sha": sha, "ref": ref, "git": src}
@@ -232,8 +233,16 @@ def prechecks(root: Path) -> dict:
                     pub_defs += 1
                     pub_doc += bool(ast.get_docstring(n))
             if f.name == "__init__.py" and "/" in rel and rel.count("/") <= 2:
-                init_all[rel] = any(isinstance(n, ast.Assign) and any(
-                    isinstance(t, ast.Name) and t.id == "__all__" for t in n.targets) for n in tree.body)
+                # `__all__ = [...]`, `__all__: list[str] = [...]` and `__all__ += [...]` all define it.
+                init_all[rel] = any(
+                    isinstance(t, ast.Name) and t.id == "__all__"
+                    for n in tree.body
+                    for t in (
+                        n.targets if isinstance(n, ast.Assign)
+                        else [n.target] if isinstance(n, (ast.AnnAssign, ast.AugAssign))
+                        else []
+                    )
+                )
 
     def undocumented(items: dict[str, str], key=lambda k: k) -> dict[str, str]:
         return {k: v for k, v in sorted(items.items()) if key(k) not in doc_text}
