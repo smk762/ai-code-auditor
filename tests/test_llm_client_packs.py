@@ -62,3 +62,47 @@ def test_quality_rules_ignore_substrings(text):
 def test_quality_rules_report_matching_lines():
     kinds = _kinds("a = 1\n# TODO: fix\nb = 2\nprint(b)\n")
     assert kinds == {"TODO marker found": 11, "Debug print statement present": 13}
+
+
+def _ollama(endpoint: str, num_gpu_layers: int = -1):
+    from auditor.config import ModelProviderConfig
+    from auditor.llm_client import LLMClient
+
+    cfg = ModelProviderConfig(provider="ollama", model="m", endpoint=endpoint, temperature=0.1)
+    return LLMClient(provider_config=cfg, num_gpu_layers=num_gpu_layers)
+
+
+@pytest.mark.parametrize("gpu", [-1, 12])
+def test_ollama_temperature_goes_in_options(monkeypatch, gpu):
+    c = _ollama(f"http://packs-temp-{gpu}/api/generate", num_gpu_layers=gpu)
+    seen: dict = {}
+    monkeypatch.setattr(c, "_do_generate", lambda payload, headers: seen.update(payload) or "[]")
+    assert c.generate("hi") == "[]"
+    assert "temperature" not in seen
+    assert seen["options"]["temperature"] == 0.1
+    assert seen["options"].get("num_gpu") == (gpu if gpu >= 0 else None)
+
+
+@pytest.mark.parametrize("body", [ValueError("not json"), {"models": ["qwen3:8b"]}, ["x"]])
+def test_ollama_health_check_malformed_tags_is_unhealthy(monkeypatch, body):
+    import auditor.llm_client as llm_mod
+
+    class Resp:
+        def raise_for_status(self) -> None: ...
+
+        def json(self):
+            if isinstance(body, Exception):
+                raise body
+            return body
+
+    monkeypatch.setattr(llm_mod.requests, "get", lambda url, timeout: Resp())
+    ok, msg = _ollama("http://packs-health/api/generate").health_check()
+    assert ok is False and msg
+
+
+def test_file_briefing_is_relative_to_the_repo_root(tmp_path):
+    root = tmp_path / "mirrors" / "repo"
+    unit = CodeUnit(id="u", repo="repo", file_path=str(root / "pkg" / "a.py"), symbol="f",
+                    kind="function", language="python", start_line=1, end_line=2, raw_text="x")
+    prompt = _ollama("http://packs-brief/api/generate").build_prompt(unit, repo_path=str(root))
+    assert "Auditing: pkg/a.py" in prompt
