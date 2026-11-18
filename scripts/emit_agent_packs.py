@@ -45,17 +45,18 @@ from patterns.service_role_violations import detect_competing_providers, detect_
 OWNED_KINDS = frozenset({"world_model", "architecture", "extraction"})
 
 
-def remove_owned_packs(out: Path) -> int:
-    """Delete the packs this script re-emits (YAML + brief), so stale ones don't linger."""
+def remove_owned_packs(out: Path, keep: frozenset[str] | set[str] = frozenset()) -> int:
+    """Delete the packs this script re-emits (YAML + brief), except those in *keep* (the ids this
+    run emitted), so stale ones don't linger."""
     import yaml
 
     removed = 0
     for path in (out / "agent_packs").glob("pack-*.yaml"):
         try:
-            kind = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("kind")
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         except (OSError, yaml.YAMLError):
             continue
-        if kind in OWNED_KINDS:
+        if data.get("kind") in OWNED_KINDS and data.get("work_item_id", path.stem) not in keep:
             path.unlink(missing_ok=True)
             path.with_suffix(".md").unlink(missing_ok=True)
             removed += 1
@@ -74,35 +75,8 @@ def _load_packs(out: Path) -> list:
     return packs
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--limit", type=int, default=40, help="Max specialist packs from violations")
-    parser.add_argument(
-        "--ingest-rag",
-        action="store_true",
-        help="(default; kept for compatibility) ingest slim pack docs into RAG",
-    )
-    parser.add_argument("--no-rag", action="store_true", help="Skip RAG ingest")
-    parser.add_argument(
-        "--quick",
-        action="store_true",
-        help="Skip per-repo call-graph / role scans (graph rules only)",
-    )
-    parser.add_argument(
-        "--no-world",
-        action="store_true",
-        help="Skip compressed world-model packs",
-    )
-    args = parser.parse_args()
-
-    cfg = load_ecosystem_config()
-    base = public_base_url()
-    out = Path(cfg.output_dir)
-    ingest_rag = pack_rag_ingest_enabled(False if args.no_rag else True)
-    lifecycle = snapshot_pack_lifecycle(out)
-    removed = remove_owned_packs(out)
-    print(f"Replacing {removed} world-model/architecture/extraction packs; finding packs are kept")
-
+def _emit_owned(args, cfg, out: Path, base: str) -> set[str]:
+    """Emit the world-model, architecture and extraction packs; the ids emitted."""
     print("=== 1. Compressed world model ===")
     world: list = []
     if not args.no_world:
@@ -180,6 +154,46 @@ def main() -> None:
         limit=args.limit,
     )
     print(f"  extraction packs: {len(extraction)}")
+    return {p.work_item_id for p in (*world, *arch, *extraction)}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--limit", type=int, default=40, help="Max specialist packs from violations")
+    parser.add_argument(
+        "--ingest-rag",
+        action="store_true",
+        help="(default; kept for compatibility) ingest slim pack docs into RAG",
+    )
+    parser.add_argument("--no-rag", action="store_true", help="Skip RAG ingest")
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Skip per-repo call-graph / role scans (graph rules only)",
+    )
+    parser.add_argument(
+        "--no-world",
+        action="store_true",
+        help="Skip compressed world-model packs",
+    )
+    args = parser.parse_args()
+
+    cfg = load_ecosystem_config()
+    base = public_base_url()
+    out = Path(cfg.output_dir)
+    ingest_rag = pack_rag_ingest_enabled(False if args.no_rag else True)
+    lifecycle = snapshot_pack_lifecycle(out)
+
+    try:
+        emitted = _emit_owned(args, cfg, out, base)
+    except BaseException:
+        # nothing was deleted, and re-emitted packs kept their status (write_pack carries it over):
+        # just make the index match what is on disk
+        rebuild_index(out, public_base_url=base)
+        raise
+    # only now, after every stage succeeded, drop owned packs this run no longer produces
+    removed = remove_owned_packs(out, keep=emitted)
+    print(f"Removed {removed} stale world-model/architecture/extraction packs; finding packs are kept")
 
     restored = restore_pack_lifecycle(out, lifecycle, public_base_url=base)
     if restored:
