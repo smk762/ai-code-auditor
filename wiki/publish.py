@@ -46,9 +46,17 @@ def verify_bundle(bundle: Path, *, denylist_path: str | Path | None = None,
     actual = bundle_hash_of(bundle)
     if manifest.get("bundle_sha256") != actual:
         raise RuntimeError(f"bundle hash mismatch: manifest {manifest.get('bundle_sha256')} vs files {actual}")
+    if not isinstance(manifest.get("repos"), dict):
+        raise RuntimeError("bundle manifest has no 'repos' mapping")
     denylist = load_denylist(denylist_path)
     for f in sorted(bundle.rglob("*")):
-        if f.is_file() and (hit := gate(f.read_text(encoding="utf-8"), denylist, private_names or [])):
+        if not f.is_file():
+            continue
+        try:
+            text = f.read_bytes().decode("utf-8")
+        except UnicodeDecodeError:  # the export writes only text; anything else can't be gated, so it fails closed
+            raise RuntimeError(f"opsec gate failed on {f.relative_to(bundle)}: not UTF-8 text, cannot be gated") from None
+        if hit := gate(text, denylist, private_names or []):
             raise RuntimeError(f"opsec gate failed on {f.relative_to(bundle)}: {hit[0]}")
     return manifest
 
@@ -88,7 +96,7 @@ def publish(bundle_dir: str | Path, *, repo: str = DEFAULT_REPO, checkout: str |
     except (OSError, ValueError):
         current = None
     result: dict[str, Any] = {"repo": repo, "checkout": str(co), "bundle_sha256": manifest["bundle_sha256"],
-                              "repos": sorted(manifest.get("repos") or {}), "changed": current != manifest["bundle_sha256"],
+                              "repos": sorted(manifest["repos"]), "changed": current != manifest["bundle_sha256"],
                               "pushed": False}
     if result["changed"]:
         for child in co.iterdir():  # replace the content wholesale (removed repos/pages disappear)
@@ -101,8 +109,9 @@ def publish(bundle_dir: str | Path, *, repo: str = DEFAULT_REPO, checkout: str |
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(f, dest)
         _git(co, "add", "-A")
-        lines = "\n".join(f"- {name} @ {str(info.get('sha') or '')[:10]}" for name, info in sorted(manifest["repos"].items()))
-        message = (f"docs: export {manifest.get('generated_at', '')[:10]} ({len(manifest['repos'])} repos)\n\n"
+        repos = manifest["repos"]  # a mapping: verify_bundle refused anything else before the checkout was touched
+        lines = "\n".join(f"- {name} @ {str((info or {}).get('sha') or '')[:10]}" for name, info in sorted(repos.items()))
+        message = (f"docs: export {str(manifest.get('generated_at') or '')[:10]} ({len(repos)} repos)\n\n"
                    f"bundle_sha256: {manifest['bundle_sha256']}\n\n{lines}\n")
         _git(co, "-c", f"user.name={BOT_NAME}", "-c", f"user.email={BOT_EMAIL}", "commit", "-q", "-m", message)
     result["commit"] = _git(co, "rev-parse", "HEAD", check=False) or None
