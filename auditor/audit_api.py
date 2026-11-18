@@ -1888,6 +1888,7 @@ def repos_status() -> JSONResponse:
     the remote branch hasn't been fetched) report ``diff_error`` instead of
     crashing the whole response.
     """
+    from auditor.diff_auditor import git_ref_arg
     from auditor.git_ops import get_current_branch, is_working_tree_clean, is_in_conflict_state
     from auditor.repo_resolver import resolve_repo_path, select_branch
 
@@ -1920,16 +1921,17 @@ def repos_status() -> JSONResponse:
             results.append(entry)
             continue
 
-        entry["branch"]    = get_current_branch(repo_path)
-        entry["is_clean"]  = is_working_tree_clean(repo_path)
-        entry["in_conflict"] = is_in_conflict_state(repo_path)
-
-        base = select_branch(repo, repo_path)
-        entry["base_branch"] = base
-
         try:
+            # inside the try: one broken checkout must not 500 the whole response
+            entry["branch"]    = get_current_branch(repo_path)
+            entry["is_clean"]  = is_working_tree_clean(repo_path)
+            entry["in_conflict"] = is_in_conflict_state(repo_path)
+
+            base = select_branch(repo, repo_path)
+            entry["base_branch"] = base
+
             r = subprocess.run(
-                ["git", "-C", str(repo_path), "diff", "--shortstat", f"{base}...HEAD"],
+                ["git", "-C", str(repo_path), "diff", "--shortstat", f"{git_ref_arg(base)}...HEAD"],
                 capture_output=True, text=True, timeout=15,
             )
             if r.returncode != 0:
@@ -2081,6 +2083,27 @@ class _GitPushRequest(BaseModel):
     remote: str = "origin"
 
 
+_PUSH_BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
+_PUSH_REMOTE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def _push_args(branch: str, remote: str) -> tuple[str, str]:
+    """*branch* and *remote* if they can only mean a plain branch and a configured remote's name.
+
+    Refuses option-like values (``--force``), refspecs (``+main``, ``:main``, ``a:b``) and URLs,
+    so a request can't force-push, delete a remote branch or push somewhere else."""
+    from auditor.diff_auditor import git_ref_arg
+
+    if branch:
+        git_ref_arg(branch)
+        if not _PUSH_BRANCH.fullmatch(branch):
+            raise RuntimeError(f"invalid branch name {branch!r}")
+    git_ref_arg(remote)
+    if not _PUSH_REMOTE.fullmatch(remote):
+        raise RuntimeError(f"remote must be a configured remote's name, not {remote!r}")
+    return branch, remote
+
+
 @app.post("/audit/git/branch", dependencies=[Depends(_require_mutating_auth)])
 def git_create_branch(request: _GitBranchRequest) -> JSONResponse:
     """Create (and check out) a ``repair/<slug>`` branch for *repo*.
@@ -2179,6 +2202,11 @@ def git_push(request: _GitPushRequest) -> JSONResponse:
     from auditor.git_ops import push_repair_branch, GitError
     from auditor.repo_resolver import resolve_repo_path
 
+    try:
+        branch, remote = _push_args(request.branch, request.remote)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     cfg = load_ecosystem_config()
     repo_cfg = next((r for r in cfg.repos if r.name == request.repo), None)
     if repo_cfg is None:
@@ -2188,8 +2216,8 @@ def git_push(request: _GitPushRequest) -> JSONResponse:
         repo_path = resolve_repo_path(repo_cfg)
         result = push_repair_branch(
             repo_path,
-            branch=request.branch or None,
-            remote=request.remote,
+            branch=branch or None,
+            remote=remote,
         )
     except GitError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

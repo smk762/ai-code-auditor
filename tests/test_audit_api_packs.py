@@ -225,3 +225,73 @@ def test_stream_ends_after_its_maximum_duration(monkeypatch: pytest.MonkeyPatch)
 
     events = asyncio.run(asyncio.wait_for(drain(), 10))
     assert len(events) <= 20 and events[-1].startswith("event: timeout")
+
+
+# ── git arguments from requests or config never become options ──────────────
+
+@pytest.mark.parametrize("body", [
+    {"branch": "+main"},
+    {"branch": "+HEAD:refs/heads/main"},
+    {"branch": ":main"},
+    {"branch": "--force"},
+    {"branch": "a..b"},
+    {"remote": "https://evil.example/x.git"},
+    {"remote": "--receive-pack=touch /tmp/pwned"},
+    {"remote": "../other"},
+])
+def test_push_refuses_refspecs_options_and_urls(body: dict) -> None:
+    r = TestClient(audit_api.app).post("/audit/git/push", json={"repo": "no-such-repo", **body})
+    assert r.status_code == 400
+
+
+def test_push_accepts_plain_branch_and_remote() -> None:
+    r = TestClient(audit_api.app).post("/audit/git/push",
+                                       json={"repo": "no-such-repo", "branch": "repair/fix-1", "remote": "origin"})
+    assert r.status_code == 404  # got past validation to the repo lookup
+
+
+def _one_repo_config(monkeypatch: pytest.MonkeyPatch, repo_path) -> None:
+    from types import SimpleNamespace
+
+    from auditor import repo_resolver
+
+    cfg = SimpleNamespace(repos=[SimpleNamespace(name="r1", enabled=True)])
+    monkeypatch.setattr(audit_api, "load_ecosystem_config", lambda: cfg)
+    monkeypatch.setattr(repo_resolver, "resolve_repo_path", lambda repo: repo_path)
+
+
+def test_repos_status_reports_a_broken_repo_instead_of_failing(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from auditor import git_ops
+
+    _one_repo_config(monkeypatch, tmp_path)
+
+    def broken(path):
+        raise git_ops.GitError("not a git repository")
+
+    monkeypatch.setattr(git_ops, "get_current_branch", broken)
+    r = TestClient(audit_api.app, raise_server_exceptions=False).get("/audit/repos/status")
+    assert r.status_code == 200
+    assert "not a git repository" in r.json()[0]["diff_error"]
+
+
+def _git_repo(path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(["git", "-C", str(path), "-c", "user.name=t", "-c", "user.email=t@t",
+                    "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+
+
+def test_repos_status_never_passes_an_option_as_the_base(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from auditor import git_ops, repo_resolver
+
+    _git_repo(tmp_path)
+    _one_repo_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(git_ops, "get_current_branch", lambda p: "dev")
+    monkeypatch.setattr(git_ops, "is_working_tree_clean", lambda p: True)
+    monkeypatch.setattr(git_ops, "is_in_conflict_state", lambda p: False)
+    target = tmp_path / "clobbered"
+    monkeypatch.setattr(repo_resolver, "select_branch", lambda repo, path: f"--output={target}")
+    r = TestClient(audit_api.app, raise_server_exceptions=False).get("/audit/repos/status")
+    assert not target.exists()
+    assert r.status_code == 200 and "invalid git ref" in r.json()[0]["diff_error"]
