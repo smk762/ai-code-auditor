@@ -125,7 +125,8 @@ def test_fetch_timeout_is_bounded(repos, monkeypatch) -> None:
     assert isinstance(fetch_timeouts[0], (int, float)) and 0 < fetch_timeouts[0] < float("inf")
 
 
-@pytest.mark.parametrize("ttl,timeout", [("soon", "20s"), ("-1", "0"), ("nan", "inf")])
+@pytest.mark.parametrize("ttl,timeout", [("soon", "20s"), ("-1", "0"), ("nan", "inf")],
+                         ids=["words", "negative_and_zero", "nan_and_inf"])
 def test_malformed_fetch_env_falls_back_to_defaults(repos, monkeypatch, ttl, timeout) -> None:
     _, mirror, _ = repos
     monkeypatch.setenv("AI_AUDIT_VALIDATE_FETCH_TTL_S", ttl)
@@ -150,7 +151,7 @@ def test_relative_origin_url_is_resolved_against_the_mirror(repos, tmp_path, mon
 
 
 @pytest.mark.parametrize("url", ["https://github.com/o/r.git", "git@github.com:o/r.git", "/srv/r.git",
-                                 "file:///srv/r.git"])
+                                 "file:///srv/r.git"], ids=["https", "scp", "absolute", "file"])
 def test_remote_urls_other_than_relative_paths_are_untouched(url) -> None:
     assert validate_base._fetchable_url(url, Path("/m/top")) == url
 
