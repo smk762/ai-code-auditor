@@ -138,7 +138,12 @@ def search(query: str, *, repo: str | None = None, kind: str | None = None, tags
         except Exception:  # noqa: BLE001
             detail = (resp.text or "")[:300]
         raise RuntimeError(f"rag-chat search HTTP {resp.status_code}: {detail}")
-    return resp.json()
+    try:
+        return resp.json()
+    except ValueError as exc:  # a proxy or misrouted RAG_CHAT_URL answering 2xx with HTML
+        raise RuntimeError(
+            f"rag-chat search returned non-JSON from {target}: {(resp.text or '')[:300]}"
+        ) from exc
 
 
 # ── Retiring docs ────────────────────────────────────────────────────────────
@@ -153,8 +158,8 @@ LEDGER_FILE = "rag_ingested.json"
 
 
 def delete_url() -> str:
-    url = ingest_url()
-    return (url[: -len("/ingest")] if url.endswith("/ingest") else url.rstrip("/")) + "/delete"
+    url = ingest_url().rstrip("/")
+    return (url[: -len("/ingest")] if url.endswith("/ingest") else url) + "/delete"
 
 
 def delete_documents(doc_ids: list[str], *, source: str = SOURCE, session: Any = None,
@@ -205,6 +210,25 @@ def _ledger_path(output_dir: str | os.PathLike | None) -> Path:
     return Path(output_dir) / LEDGER_FILE
 
 
+def _read_ledger(path: Path) -> dict[str, Any]:
+    """The ledger's contents. A read error raises (so a transient failure never leads to an
+    overwrite that wipes every other scope); a corrupt or non-object file is moved aside to
+    ``<name>.corrupt-<ts>`` before starting over, so its ids can still be recovered by hand."""
+    if not path.is_file():
+        return {}
+    text = path.read_text(encoding="utf-8")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        return data
+    aside = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+    os.replace(path, aside)
+    logger.warning("RAG ledger %s was not a JSON object; moved it to %s and started a new one", path, aside)
+    return {}
+
+
 def update_ledger(output_dir: str | os.PathLike | None, scope: str, *, add: set[str] | frozenset = frozenset(),
                   remove: set[str] | frozenset = frozenset()) -> set[str]:
     """Atomically add/remove ids for ``scope``; returns the ids recorded before the change."""
@@ -214,17 +238,17 @@ def update_ledger(output_dir: str | os.PathLike | None, scope: str, *, add: set[
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path.with_suffix(".lock"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-        except (OSError, ValueError):
-            data = {}
+        data = _read_ledger(path)
         before = set(data.get(scope) or [])
         after = (before - set(remove)) | set(add)
         if after != before:
             data[scope] = sorted(after)
             tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
-            tmp.replace(path)
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(json.dumps(data, indent=1, sort_keys=True))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
     return before
 
 
