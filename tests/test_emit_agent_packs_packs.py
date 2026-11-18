@@ -72,3 +72,14 @@ def test_a_successful_run_drops_only_owned_packs_it_no_longer_emits(env, monkeyp
     monkeypatch.setattr(mod, "ArchitectureEngine", lambda **kw: SimpleNamespace(evaluate=lambda: []))
     mod.main()
     assert sorted(p.name for p in packs.iterdir()) == ["pack-n.md", "pack-n.yaml", "pack-w.md", "pack-w.yaml"]
+
+
+def test_sample_printing_survives_none_valued_index_fields(env, monkeypatch) -> None:
+    mod, _, _ = env
+    refreshed = []
+    monkeypatch.setattr(mod, "ArchitectureEngine", lambda **kw: SimpleNamespace(evaluate=lambda: []))
+    entry = {"id": "pack-x", "kind": "nightly", "title": None, "severity": None, "repo": None}
+    monkeypatch.setattr(mod, "list_packs", lambda *a, **kw: [entry])
+    monkeypatch.setattr("auditor.pack_savings.refresh_quietly", lambda out: refreshed.append(out) or {})
+    mod.main()
+    assert refreshed  # the trailing pack-savings refresh still ran
