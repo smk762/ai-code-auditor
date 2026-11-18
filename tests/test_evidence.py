@@ -143,16 +143,28 @@ def _trees(tmp_path: Path, patched_files: dict[str, str]) -> tuple[Path, Path]:
 
 
 def _fresh(base: Path, tmp_path: Path):
-    """Each call site gets its own copy of the dev tree, like the endpoint's repro tree."""
+    """Each call gets its own fresh copy of the dev tree, like the endpoint's repro tree."""
+    import itertools
     import shutil
 
-    target = tmp_path / "repro_base"
+    counter = itertools.count()
 
     def make() -> Path:
-        if not target.exists():
-            shutil.copytree(base, target)
+        target = tmp_path / f"repro_base_{next(counter)}"
+        shutil.copytree(base, target)
         return target
     return make
+
+
+def test_fresh_gives_each_call_its_own_clean_tree(tmp_path: Path) -> None:
+    base = tmp_path / "dev"
+    _write(base, {"a.txt": "dev\n"})
+    make = _fresh(base, tmp_path)
+    first = make()
+    (first / "a.txt").write_text("dirtied\n")
+    second = make()
+    assert second != first
+    assert (second / "a.txt").read_text() == "dev\n"
 
 
 def test_python_repro_finds_the_failing_then_passing_test(tmp_path: Path, host_python) -> None:
