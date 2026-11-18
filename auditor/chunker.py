@@ -38,12 +38,22 @@ def _whole_file_unit(repo_name: str, file_path: Path, text: str, language: str) 
     )
 
 
+def _is_docstring(node: ast.stmt) -> bool:
+    return (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str))
+
+
 def _extract_python_units(repo_name: str, file_path: Path, text: str) -> list[CodeUnit]:
-    line_count = text.count("\n") + 1
+    # Line numbers must agree with the AST, which breaks lines only on \n, \r\n and \r
+    # (str.splitlines() also breaks on form feeds, \x1c-\x1e, \x85, \u2028, \u2029).
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    source_lines = text.split("\n")
+    line_count = len(source_lines)
     units: list[CodeUnit] = []
     try:
         tree = ast.parse(text, filename=str(file_path))
-    except SyntaxError:
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        # Unparsable (NUL bytes, absurd nesting): audit the file whole instead of failing.
         return [_whole_file_unit(repo_name, file_path, text, "python")]
 
     imports: list[str] = []
@@ -53,12 +63,15 @@ def _extract_python_units(repo_name: str, file_path: Path, text: str) -> list[Co
         if isinstance(node, ast.ImportFrom) and node.module:
             imports.append(node.module)
 
-    for node in tree.body:
+    residual: list[ast.stmt] = []
+    for i, node in enumerate(tree.body):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            start = getattr(node, "lineno", 1)
+            # Decorators (routes, auth, @dataclass) belong to the unit; node.lineno is
+            # the def/class line, after them.
+            start = min([node.lineno] + [d.lineno for d in node.decorator_list])
             end = getattr(node, "end_lineno", line_count)
             symbol = node.name
-            snippet = "\n".join(text.splitlines()[start - 1 : end])
+            snippet = "\n".join(source_lines[start - 1 : end])
             unit_id = _hash_text(f"{repo_name}:{file_path}:{symbol}:{start}:{end}")
             units.append(
                 CodeUnit(
@@ -75,7 +88,33 @@ def _extract_python_units(repo_name: str, file_path: Path, text: str) -> list[Co
                     raw_text_hash=_hash_text(snippet),
                 )
             )
+        elif not isinstance(node, (ast.Import, ast.ImportFrom)) and not (i == 0 and _is_docstring(node)):
+            residual.append(node)
 
     if not units:
         units.append(_whole_file_unit(repo_name, file_path, text, "python"))
+    elif residual:
+        # Module-level code outside any def/class (config, secrets, route registration,
+        # import-time calls, __main__ blocks) is audited as one module unit.
+        start = residual[0].lineno
+        end = getattr(residual[-1], "end_lineno", None) or residual[-1].lineno
+        snippet = "\n".join(
+            "\n".join(source_lines[n.lineno - 1 : (getattr(n, "end_lineno", None) or n.lineno)])
+            for n in residual
+        )
+        units.append(
+            CodeUnit(
+                id=_hash_text(f"{repo_name}:{file_path}:<module>:{start}:{end}"),
+                repo=repo_name,
+                file_path=str(file_path),
+                symbol="<module>",
+                kind="module",
+                language="python",
+                start_line=start,
+                end_line=end,
+                ast_features={"imports": imports},
+                raw_text=snippet,
+                raw_text_hash=_hash_text(snippet),
+            )
+        )
     return units
