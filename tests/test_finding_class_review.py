@@ -95,3 +95,13 @@ def test_gold_uses_the_adjudicated_label(tmp_path: Path) -> None:
     assert rows["a"]["label"] == "ssrf"                     # never disputed: unchanged
     assert {r["id"] for r in fc.load_gold(tmp_path, reviewed=False)} == {"a", "b", "c", "d"}
     assert not list(tmp_path.glob("finding_classes_review*"))  # the review file is never read as gold
+
+
+def test_load_reviews_skips_corrupt_lines_and_append_heals_a_torn_tail(tmp_path: Path):
+    rv._append(tmp_path, {"id": "a", "final": "injection"})
+    p = rv.review_path(tmp_path)
+    with p.open("a", encoding="utf-8") as f:
+        f.write("[1, 2]\n{\"second\": \"x\"}\n{\"id\": \"b\", \"fin")  # no id, wrong type, torn write
+    rv._append(tmp_path, {"id": "c", "second": "data_integrity"})
+    reviews = rv.load_reviews(tmp_path)
+    assert reviews == {"a": {"final": "injection"}, "c": {"second": "data_integrity"}}

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import random
 from collections import Counter
 from collections.abc import Callable
@@ -31,6 +32,8 @@ UNCLEAR = "unclear"
 EXTRA = ("logic_error",)          # a valid label with no taxonomy entry (no guard, no title rule)
 DESC_SHOW = 700
 
+logger = logging.getLogger(__name__)
+
 
 def review_path(directory: Path | None = None) -> Path:
     return (directory or eval_dir()) / REVIEW_NAME
@@ -42,10 +45,18 @@ def load_reviews(directory: Path | None = None) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     if not p.exists():
         return out
-    for line in p.read_text(encoding="utf-8").splitlines():
+    for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
-        e = json.loads(line)
+        # One torn or hand-mangled line must not make every other review unreadable.
+        try:
+            e = json.loads(line)
+        except ValueError:
+            logger.warning("%s:%d: skipping unparseable review line", p, n)
+            continue
+        if not isinstance(e, dict) or not isinstance(e.get("id"), str):
+            logger.warning("%s:%d: skipping review line without an id", p, n)
+            continue
         cell = out.setdefault(e["id"], {})
         if "second" in e:
             cell["second"] = e["second"]
@@ -72,8 +83,15 @@ def apply_reviews(rows: list[dict[str, Any]], reviews: dict[str, dict[str, Any]]
 def _append(directory: Path | None, entry: dict[str, Any]) -> None:
     p = review_path(directory)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({**entry, "at": datetime.now(UTC).isoformat(timespec="seconds")}) + "\n")
+    line = json.dumps({**entry, "at": datetime.now(UTC).isoformat(timespec="seconds")}) + "\n"
+    with p.open("ab") as f:
+        # a torn last line (killed mid-append) must not swallow this entry too
+        if f.tell() > 0:
+            with p.open("rb") as r:
+                r.seek(-1, 2)
+                if r.read(1) != b"\n":
+                    line = "\n" + line
+        f.write(line.encode("utf-8"))  # one write per entry
 
 
 def _order_key(rid: str) -> str:
