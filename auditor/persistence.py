@@ -24,17 +24,21 @@ def record_run_start(run_id: str, pipeline: str) -> None:
                 )
             )
         else:
+            # A restart is a new attempt: no finish time from the last one, and the
+            # pipeline actually running it.
             row.status = "running"
             row.started_at = utcnow()
+            row.finished_at = None
+            row.pipeline = pipeline
 
 
 def record_run_progress(metadata: RunMetadata) -> None:
     """Merge live progress into ``audit_runs.metadata_json`` without finishing the run."""
     with db_session() as session:
         row = session.execute(select(AuditRun).where(AuditRun.run_id == metadata.run_id)).scalar_one_or_none()
-        if row is None:
-            return
-        row.metadata_json = asdict(metadata)
+        if row is None or row.finished_at is not None:
+            return  # a late tick must not overwrite a finished (or cancelled) run's final metadata
+        row.metadata_json = {**(row.metadata_json or {}), **asdict(metadata)}
 
 
 def record_run_finish(metadata: RunMetadata, pipeline: str) -> None:

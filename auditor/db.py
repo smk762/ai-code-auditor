@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 from auditor.settings import get_settings, normalize_database_url
@@ -29,6 +29,7 @@ class AuditRun(Base):
 
 class RepoRun(Base):
     __tablename__ = "repo_runs"
+    __table_args__ = (UniqueConstraint("run_id", "repo_name", name="uq_repo_runs_run_id_repo_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("audit_runs.run_id"), index=True)
@@ -69,6 +70,9 @@ class AuthAuditEvent(Base):
 
 class PipelineCheckpoint(Base):
     __tablename__ = "pipeline_checkpoints"
+    __table_args__ = (
+        UniqueConstraint("pipeline", "run_id", "repo_name", name="uq_pipeline_checkpoints_pipeline_run_id_repo_name"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     pipeline: Mapped[str] = mapped_column(String(64), index=True)
