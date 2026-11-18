@@ -49,3 +49,49 @@ def test_scan_repo_respects_subpath(tmp_path: Path) -> None:
     names = {f.name for f in files}
     assert "main.py" in names
     assert "skip.py" not in names
+
+
+def test_scan_repo_under_an_ignored_ancestor_dir_still_finds_files(tmp_path: Path) -> None:
+    root = tmp_path / "build" / "mirror"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "app.py").write_text("x = 1")
+    (root / "dist").mkdir()
+    (root / "dist" / "bundle.js").write_text("x")
+    files = scan_repo(RepoConfig(name="under-build", path=str(root)))
+    assert [f.name for f in files] == ["app.py"]
+
+
+def test_scan_repo_skips_symlinks_that_leave_the_repo(tmp_path: Path) -> None:
+    outside = tmp_path / "secret.txt"
+    outside.write_text("TOKEN")
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "real.py").write_text("x = 1")
+    (root / "leak.py").symlink_to(outside)
+    (root / "alias.py").symlink_to(root / "real.py")  # stays inside: kept
+    names = {f.name for f in scan_repo(RepoConfig(name="links", path=str(root)))}
+    assert names == {"real.py", "alias.py"}
+
+
+def _fake_git_repo(tmp_path: Path, monkeypatch, checked_out: str, branches: set[str]):
+    import auditor.repo_scanner as rs
+
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(rs, "scan_repo", lambda repo: [])
+    monkeypatch.setattr(rs, "resolve_repo_path", lambda repo: tmp_path)
+    monkeypatch.setattr(rs, "detect_checked_out_branch", lambda p: checked_out)
+    monkeypatch.setattr(rs, "select_branch", lambda repo, p: "dev")
+    monkeypatch.setattr(rs, "branch_exists", lambda p, b: b in branches)
+    monkeypatch.setattr(rs, "diff_files", lambda p, base, head: frozenset({"f.py"}))
+    return rs.scan_repo_with_context(RepoConfig(name="r", path=str(tmp_path)))
+
+
+@pytest.mark.parametrize("checked_out", ["main", "master"])
+def test_production_checkout_is_not_a_feature_branch(tmp_path: Path, monkeypatch, checked_out) -> None:
+    ctx = _fake_git_repo(tmp_path, monkeypatch, checked_out, {"dev", checked_out})
+    assert [(d.base, d.head) for d in ctx.diffs] == [(checked_out, "dev")]
+
+
+def test_feature_checkout_still_diffs_against_dev(tmp_path: Path, monkeypatch) -> None:
+    ctx = _fake_git_repo(tmp_path, monkeypatch, "feat/x", {"dev", "main"})
+    assert [(d.base, d.head) for d in ctx.diffs] == [("dev", "feat/x"), ("main", "dev")]

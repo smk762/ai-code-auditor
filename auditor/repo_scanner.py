@@ -57,8 +57,9 @@ def scan_repo_with_context(repo: RepoConfig) -> ScanContext:
     # Resolve the canonical integration branch (dev → main → master).
     integration = select_branch(repo, repo_path)
 
-    # 1. feature branch → dev (only when we're NOT already on the integration branch)
-    if checked_out and checked_out != integration:
+    # 1. feature branch → dev (only on a feature branch: never when the tree is on the
+    #    integration branch or a production branch such as main/master)
+    if checked_out and checked_out not in {integration, *BRANCH_PREFERENCE}:
         changed = diff_files(repo_path, base=integration, head=checked_out)
         diffs.append(BranchDiff(base=integration, head=checked_out, changed_files=changed))
         logger.debug(
@@ -88,10 +89,19 @@ def scan_repo(repo: RepoConfig) -> list[Path]:
         logger.warning("repo '%s': path not found, skipping (%s)", repo.name, root)
         return []
 
+    real_root = root.resolve()
     results: list[Path] = []
     for path in root.rglob("*"):
-        if any(part in IGNORE_DIRS for part in path.parts):
+        # Only components below the scan root count: a repo mirrored under e.g.
+        # /srv/build/ must not have every file ignored.
+        if any(part in IGNORE_DIRS for part in path.relative_to(root).parts):
             continue
-        if path.is_file() and path.suffix in SOURCE_EXTENSIONS:
-            results.append(path)
+        if not (path.suffix in SOURCE_EXTENSIONS and path.is_file()):
+            continue
+        if path.is_symlink() and not path.resolve().is_relative_to(real_root):
+            # A symlink to a file outside the repo (~/.ssh/..., /etc/...) must never
+            # be read and sent to the audit backend.
+            logger.warning("repo '%s': skipping symlink outside the repo: %s", repo.name, path)
+            continue
+        results.append(path)
     return results
