@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -107,7 +108,8 @@ def run_diff_audit(
 
     # 1. Parse diff → changed files
     file_diffs = parse_diff(diff_text)
-    changed = diff_changed_files(file_diffs)
+    # Paths come from the caller's diff text: never read anything outside the repo.
+    changed = _contained_paths(repo_path, diff_changed_files(file_diffs))
 
     if not changed:
         return DiffAuditResult(
@@ -127,13 +129,13 @@ def run_diff_audit(
 
     # 3. Extract CodeUnits from every affected file
     all_units: list[CodeUnit] = []
-    for rel_path in all_paths:
+    for rel_path in _contained_paths(repo_path, all_paths):
         abs_path = repo_path / rel_path
         if abs_path.is_file():
             all_units.extend(extract_code_units(repo.name, abs_path))
 
     # 4. Filter to units whose line range overlaps with a changed hunk
-    relevant_units = _filter_units_to_hunks(all_units, file_diffs)
+    relevant_units = _filter_units_to_hunks(all_units, file_diffs, repo_root=repo_path)
 
     # 5. LLM analysis on relevant units
     briefing = build_repo_briefing(repo.name, repo_path, graph=graph)
@@ -153,7 +155,7 @@ def run_diff_audit(
     # 6. Static analysis on the directly changed files only
     changed_abs = [
         str(repo_path / p)
-        for p in impact.directly_changed
+        for p in _contained_paths(repo_path, sorted(impact.directly_changed))
         if (repo_path / p).is_file()
     ]
     findings.extend(run_static_checks_on_files(repo.name, changed_abs, root=str(repo_path)))
@@ -169,9 +171,34 @@ def run_diff_audit(
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _contained_paths(repo_path: Path, paths: list[str]) -> list[str]:
+    """Keep only repo-relative paths that stay inside *repo_path*.
+
+    Absolute paths, ``..`` segments and anything resolving (e.g. via a symlink)
+    outside the repository root are dropped with a warning.
+    """
+    root = repo_path.resolve()
+    kept: list[str] = []
+    for p in paths:
+        pure = Path(p)
+        if not p or pure.is_absolute() or ".." in pure.parts:
+            logger.warning("diff audit: ignoring path outside the repo: %r", p)
+            continue
+        try:
+            inside = (root / pure).resolve().is_relative_to(root)
+        except (OSError, RuntimeError):
+            inside = False
+        if not inside:
+            logger.warning("diff audit: ignoring path outside the repo: %r", p)
+            continue
+        kept.append(p)
+    return kept
+
+
 def _filter_units_to_hunks(
     units: list[CodeUnit],
     file_diffs: list[FileDiff],
+    repo_root: Path | None = None,
 ) -> list[CodeUnit]:
     """Return units whose line range overlaps with at least one changed hunk.
 
@@ -201,7 +228,7 @@ def _filter_units_to_hunks(
     for unit in units:
         if unit.id in seen:
             continue
-        matched_key = _match_path(unit.file_path, diff_paths)
+        matched_key = _match_path(unit.file_path, diff_paths, repo_root)
 
         if matched_key is None:
             # Transitively affected file — include the whole unit
@@ -223,12 +250,23 @@ def _filter_units_to_hunks(
     return result
 
 
-def _match_path(unit_path: str, candidates: set[str]) -> str | None:
-    """Match an (absolute or relative) unit path against a set of repo-relative paths."""
-    for candidate in candidates:
-        if unit_path == candidate or unit_path.endswith("/" + candidate):
-            return candidate
-    return None
+def _match_path(unit_path: str, candidates: set[str], repo_root: Path | None = None) -> str | None:
+    """Match an (absolute or relative) unit path against a set of repo-relative paths.
+
+    With *repo_root*, a unit under the root is made repo-relative and compared exactly,
+    so ``other/utils.py`` never matches a diff entry for ``utils.py``. Otherwise the
+    longest (most specific) suffix match wins, independent of set order.
+    """
+    if repo_root is not None:
+        try:
+            rel = Path(unit_path).relative_to(repo_root)
+        except ValueError:
+            rel = None
+        if rel is not None:
+            key = os.path.normpath(str(rel))
+            return key if key in candidates else None
+    matches = [c for c in candidates if unit_path == c or unit_path.endswith("/" + c)]
+    return max(matches, key=len) if matches else None
 
 
 def _ranges_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
