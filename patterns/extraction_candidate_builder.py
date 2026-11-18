@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import textwrap
 from typing import Iterable
 
 from auditor.contracts import CodeUnit
@@ -48,6 +49,10 @@ def detect_duplicate_clusters(units: list[CodeUnit]) -> list[dict]:
     buckets = _lsh_buckets(signatures, bands=max(1, lsh_bands), rows=max(1, lsh_rows))
     pair_ids = _candidate_pairs_from_buckets(buckets)
     if not pair_ids:
+        # An empty LSH result means no near-duplicates; only a small corpus is worth an
+        # exhaustive check, since Stage 2 on all pairs is quadratic in the expensive part.
+        if len(candidates) > _int_env("AI_AUDIT_DUP_FALLBACK_MAX", 200):
+            return []
         pair_ids = _all_cross_repo_pairs(candidates)
 
     # Stage 2: AST + embedding + signature compatibility filtering.
@@ -212,7 +217,8 @@ def _normalized_ast_repr(unit: CodeUnit) -> str:
     if unit.language != "python":
         return ""
     try:
-        tree = ast.parse(unit.raw_text, filename=unit.file_path)
+        # Methods and nested functions keep their indentation; dedent so they parse.
+        tree = ast.parse(textwrap.dedent(unit.raw_text), filename=unit.file_path)
     except SyntaxError:
         return ""
 
@@ -265,7 +271,7 @@ def _signature_compatibility(left: CodeUnit, right: CodeUnit) -> float:
 def _extract_signature(text: str, language: str) -> dict:
     if language == "python":
         try:
-            tree = ast.parse(text, filename="<extract-signature>")
+            tree = ast.parse(textwrap.dedent(text), filename="<extract-signature>")
             node = tree.body[0] if tree.body else None
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 arg_count = len(node.args.args) + len(node.args.kwonlyargs)
