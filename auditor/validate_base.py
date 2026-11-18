@@ -70,6 +70,28 @@ def _bool_env(name: str, default: bool) -> bool:
     return default if not raw else raw not in ("0", "false", "no", "off")
 
 
+def _float_env(name: str, default: float) -> float:
+    """A non-negative number from *name*; unset, malformed or negative reads as *default*."""
+    try:
+        value = float((os.getenv(name) or "").strip() or default)
+    except ValueError:
+        logger.warning("%s=%r is not a number; using %s", name, os.getenv(name), default)
+        return default
+    return value if value >= 0 and value != float("inf") else default
+
+
+def _fetchable_url(url: str, top: Path) -> str:
+    """*url* as ``git fetch`` should see it from the cache repo: a relative local path is
+    resolved against the mirror's top, where its ``remote.origin.url`` is meant. URLs with a
+    scheme, scp-style ``host:path`` and absolute paths are left alone."""
+    if "://" in url or os.path.isabs(url):
+        return url
+    colon, slash = url.find(":"), url.find("/")
+    if colon > 0 and (slash < 0 or colon < slash):  # git's scp-like syntax
+        return url
+    return str((top / url).resolve())
+
+
 def _git(*args: str, cwd: Path | None = None, git_dir: Path | None = None,
          timeout: float | None = 30) -> subprocess.CompletedProcess[str]:
     cmd = ["git"]
@@ -130,8 +152,8 @@ def resolve_base(repo_path: Path, *, branch: str = "dev", output_dir: str | Path
     key = f"{top.name}-{hashlib.sha1(str(top).encode()).hexdigest()[:8]}"
     cache = root / f"{key}.git"
     stamp = root / f".{key}.fetched"
-    ttl = float(os.getenv("AI_AUDIT_VALIDATE_FETCH_TTL_S") or 60)
-    timeout = float(os.getenv("AI_AUDIT_VALIDATE_FETCH_TIMEOUT_S") or 20)
+    ttl = _float_env("AI_AUDIT_VALIDATE_FETCH_TTL_S", 60)
+    timeout = _float_env("AI_AUDIT_VALIDATE_FETCH_TIMEOUT_S", 20) or 20  # 0 would mean no bound
     remote_ref = f"refs/remotes/origin/{branch}"
 
     with open(root / f".{key}.lock", "w") as lock:
@@ -154,7 +176,7 @@ def resolve_base(repo_path: Path, *, branch: str = "dev", output_dir: str | Path
 
             try:
                 # tags too: tests may `git describe` the tree (attach_head copies those on the base)
-                r = _git("fetch", "--quiet", "--no-tags", "--no-write-fetch-head", url,
+                r = _git("fetch", "--quiet", "--no-tags", "--no-write-fetch-head", _fetchable_url(url, top),
                          f"+refs/heads/{branch}:{remote_ref}", "+refs/tags/*:refs/tags/*",
                          git_dir=cache, timeout=timeout)
                 err = "" if r.returncode == 0 else (r.stderr.strip() or f"git fetch exited {r.returncode}")[:300]

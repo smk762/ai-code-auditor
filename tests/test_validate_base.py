@@ -1,6 +1,7 @@
 """validate_patch's base: fetch dev on demand into a cache repo, never write the mirror."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -27,12 +28,25 @@ def _commit(cwd: Path, rel: str, text: str) -> str:
 
 
 def _snapshot(repo: Path) -> dict[str, str]:
-    """Every file under .git with its content hash: proves the mirror's repository isn't written."""
+    """Every file under .git with its content hash and mtime: proves the mirror's repository isn't
+    written, not even rewritten in place with the same bytes."""
     out = {}
     for p in sorted((repo / ".git").rglob("*")):
         if p.is_file():
-            out[str(p.relative_to(repo))] = p.read_bytes().hex()[:64] + str(p.stat().st_size)
+            out[str(p.relative_to(repo))] = f"{hashlib.sha256(p.read_bytes()).hexdigest()} {p.stat().st_mtime_ns}"
     return out
+
+
+def test_snapshot_sees_a_same_size_rewrite_past_the_header(tmp_path: Path) -> None:
+    f = tmp_path / ".git" / "index"
+    f.parent.mkdir()
+    f.write_bytes(b"H" * 64 + b"a" * 64)
+    before, mtime = _snapshot(tmp_path), f.stat().st_mtime_ns
+    with open(f, "r+b") as fh:  # same length, same first 32 bytes
+        fh.seek(100)
+        fh.write(b"b")
+    os.utime(f, ns=(mtime, mtime))  # even with the mtime put back, the content hash differs
+    assert _snapshot(tmp_path) != before
 
 
 @pytest.fixture
@@ -95,14 +109,50 @@ def test_fetch_timeout_is_bounded(repos, monkeypatch) -> None:
     _, mirror, _ = repos
     real = validate_base._git
 
+    fetch_timeouts = []
+
     def slow(*args, **kw):
         if args and args[0] == "fetch":
+            fetch_timeouts.append(kw.get("timeout"))
             raise subprocess.TimeoutExpired(cmd="git fetch", timeout=kw.get("timeout"))
         return real(*args, **kw)
 
     monkeypatch.setattr(validate_base, "_git", slow)
     base = resolve_base(mirror)
     assert base.source == "mirror" and "timed out" in base.fetch_error
+    # the fetch itself was given a finite, positive bound (not left to the default or None)
+    assert len(fetch_timeouts) == 1
+    assert isinstance(fetch_timeouts[0], (int, float)) and 0 < fetch_timeouts[0] < float("inf")
+
+
+@pytest.mark.parametrize("ttl,timeout", [("soon", "20s"), ("-1", "0"), ("nan", "inf")])
+def test_malformed_fetch_env_falls_back_to_defaults(repos, monkeypatch, ttl, timeout) -> None:
+    _, mirror, _ = repos
+    monkeypatch.setenv("AI_AUDIT_VALIDATE_FETCH_TTL_S", ttl)
+    monkeypatch.setenv("AI_AUDIT_VALIDATE_FETCH_TIMEOUT_S", timeout)
+    real = validate_base._git
+    seen = []
+    monkeypatch.setattr(validate_base, "_git",
+                        lambda *a, **kw: (seen.append(kw.get("timeout")) if a[0] == "fetch" else None) or real(*a, **kw))
+    assert resolve_base(mirror).source == "fetched"
+    assert seen == [20.0]
+
+
+def test_relative_origin_url_is_resolved_against_the_mirror(repos, tmp_path, monkeypatch) -> None:
+    _, mirror, pusher = repos
+    tip = _merge_upstream(pusher)
+    _git(mirror, "remote", "set-url", "origin", "../remote.git")  # relative to the mirror's top
+    elsewhere = tmp_path / "a" / "b"
+    elsewhere.mkdir(parents=True)
+    monkeypatch.chdir(elsewhere)
+    base = resolve_base(mirror)
+    assert base.source == "fetched" and base.sha == tip, base.fetch_error
+
+
+@pytest.mark.parametrize("url", ["https://github.com/o/r.git", "git@github.com:o/r.git", "/srv/r.git",
+                                 "file:///srv/r.git"])
+def test_remote_urls_other_than_relative_paths_are_untouched(url) -> None:
+    assert validate_base._fetchable_url(url, Path("/m/top")) == url
 
 
 def test_fetch_disabled_uses_the_mirror(repos, monkeypatch) -> None:
