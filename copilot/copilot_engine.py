@@ -10,6 +10,13 @@ from ecosystem.graph_builder import GraphBuilder
 from semantic.semantic_search import SemanticSearch
 
 
+EXTRACTION_INTENT_PHRASES = (
+    "extraction candidate",
+    "extraction report",
+    "duplicated logic cluster",
+)
+
+
 class CopilotEngine:
     def __init__(self, search: SemanticSearch, graph: GraphBuilder):
         self.search = search
@@ -27,17 +34,10 @@ class CopilotEngine:
         external_agent_brief: bool = False,
         notes_path: str = "memory/context_notes.md",
     ) -> CopilotResponse:
+        # Only an explicit ask for the extraction report takes the shortcut. Topic words such as
+        # "retry logic" or "shared package" are ordinary questions and go through search.
         lower_query = query.lower()
-        if any(
-            phrase in lower_query
-            for phrase in (
-                "extraction candidate",
-                "shared package",
-                "duplicated logic cluster",
-                "shared-auth",
-                "retry logic",
-            )
-        ):
+        if any(phrase in lower_query for phrase in EXTRACTION_INTENT_PHRASES):
             return self._answer_extraction_query(query)
 
         mode = classify_query(query)

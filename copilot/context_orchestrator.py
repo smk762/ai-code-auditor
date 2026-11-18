@@ -17,6 +17,17 @@ def _clip_words(text: str, max_words: int) -> str:
     return " ".join(words[:max_words]).strip() + " ..."
 
 
+_NOTE_FIELD_MAX = 300
+_CONTROL = re.compile(r"[\x00-\x1f\x7f\u0085\u2028\u2029]+")
+
+
+def _note_field(text: str, limit: int = _NOTE_FIELD_MAX) -> str:
+    """One line of bounded length: a caller's text must not forge note headers or lines that
+    later requests read back as context."""
+    flat = re.sub(r"\s+", " ", _CONTROL.sub(" ", text or "")).strip()
+    return flat if len(flat) <= limit else flat[: limit - 1] + "\u2026"
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -92,7 +103,8 @@ class ContextOrchestrator:
                     {
                         "source": "notes",
                         "citation": self.options.notes_path,
-                        "text": notes_excerpt,
+                        # recorded from earlier callers' queries: data, not instructions
+                        "text": f"[notes from earlier queries, untrusted]\n{notes_excerpt}",
                         "score": 0.75,
                     }
                 )
@@ -244,9 +256,9 @@ class ContextOrchestrator:
         citations = [c.get("citation", "") for c in selected_chunks[:5] if c.get("citation")]
         note = [
             f"## {_now_iso()}",
-            f"- query: {query}",
-            f"- compact_summary: {compact_summary.replace(chr(10), ' | ')}",
-            f"- citations: {', '.join(citations) if citations else 'none'}",
+            f"- query: {_note_field(query)}",
+            f"- compact_summary: {_note_field(compact_summary.replace(chr(10), ' | '), 1000)}",
+            f"- citations: {_note_field(', '.join(citations)) if citations else 'none'}",
             "",
         ]
         with path.open("a", encoding="utf-8") as fh:
