@@ -278,7 +278,7 @@ def test_cache_is_per_output_dir(eco: Path, tmp_path: Path) -> None:
     assert first["argus-forge"]["wiki"] is False and second["argus-forge"]["wiki"] is True
 
 
-@pytest.mark.parametrize("body", ['{"nodes": [', "[1, 2]"])
+@pytest.mark.parametrize("body", ['{"nodes": [', "[1, 2]"], ids=["truncated", "not_an_object"])
 def test_malformed_sidecar_degrades_to_no_policy_data(eco: Path, body: str) -> None:
     (eco / "service_topology.json").write_text(body)
     d = ui_topology.topology_data(eco)
