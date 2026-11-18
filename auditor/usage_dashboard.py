@@ -5,6 +5,7 @@ the timers (00:30 conductor, 01:30 batch review, hourly merge poll).
 """
 from __future__ import annotations
 
+import calendar
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -20,7 +21,8 @@ ONE_OFF_PREFIX = "baseline:"
 def _next_reset(start: date) -> date:
     month = start.month % 12 + 1
     year = start.year + (1 if start.month == 12 else 0)
-    return date(year, month, start.day)
+    # Clamp to the target month's length (Jan 31 -> Feb 28/29).
+    return date(year, month, min(start.day, calendar.monthrange(year, month)[1]))
 
 
 def _recurring(row: tuple) -> bool:
