@@ -128,12 +128,23 @@ def ensure_node_modules(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
 
     ``npm ci --ignore-scripts``: install scripts never run, and the patched tree is not
     touched. Returns ``(node_modules, "")`` or ``(None, error)``."""
-    lock = next((root / n for n in LOCKFILES if (root / n).is_file()), None)
+    lock = next((root / n for n in LOCKFILES if (root / n).is_file() or (root / n).is_symlink()), None)
     if lock is None:
         return None, "no package-lock.json (yarn and pnpm lockfiles aren't supported)"
+    pkg = root / "package.json"
+    for f in (pkg, lock):
+        # The audited repo is untrusted: a symlinked manifest could point at a host file, whose
+        # contents would be copied into the cache and quoted back in npm's parse errors.
+        if f.is_symlink():
+            return None, f"{f.name} is a symlink, not followed"
+        if not f.is_file():
+            return None, f"no {f.name}"
     h = hashlib.sha256(_node_version().encode())
-    for f in (root / "package.json", lock):
-        h.update(f.read_bytes())
+    try:
+        for f in (pkg, lock):
+            h.update(f.read_bytes())
+    except OSError as exc:
+        return None, str(exc)
     cache_dir = cache_dir.resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
     entry = cache_dir / f"{root.name or 'repo'}-{h.hexdigest()[:16]}"
@@ -145,9 +156,9 @@ def ensure_node_modules(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
             return modules, ""
         shutil.rmtree(entry, ignore_errors=True)
         entry.mkdir(parents=True)
-        for f in (root / "package.json", lock):
-            shutil.copyfile(f, entry / f.name)
         try:
+            for f in (pkg, lock):
+                shutil.copyfile(f, entry / f.name, follow_symlinks=False)
             subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=entry,
                            env=_env(cache_dir / ".npm-cache"),
                            check=True, capture_output=True, text=True, timeout=INSTALL_TIMEOUT_S)
@@ -164,18 +175,40 @@ def ensure_node_modules(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
 
 
 def _link_modules(root: Path, modules: Path) -> None:
+    """Point *root*'s ``node_modules`` at *modules*. A symlink to anything else (a dangling link to
+    an evicted cache entry, or another lockfile's deps) is replaced; a real directory is left alone."""
     link = root / "node_modules"
-    if not link.exists() and not link.is_symlink():
+    if link.is_symlink():
+        if os.readlink(link) == str(modules):
+            return
+        link.unlink(missing_ok=True)
+    elif link.exists():
+        return
+    try:
         link.symlink_to(modules, target_is_directory=True)
+    except FileExistsError:  # a concurrent run linked it first
+        pass
 
 
 # ── Running checks ───────────────────────────────────────────────────────────
 
+def _scripts(root: Path) -> dict[str, str]:
+    """The ``scripts`` table of *root*'s package.json; {} when it's missing, unreadable or not an
+    object (valid JSON such as ``[]`` or ``"scripts": "x"`` included). Non-string commands are dropped."""
+    try:
+        pkg = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    scripts = pkg.get("scripts") if isinstance(pkg, dict) else None
+    if not isinstance(scripts, dict):
+        return {}
+    return {k: v for k, v in scripts.items() if isinstance(v, str)}
+
+
 def project_checks(root: Path) -> list[tuple[str, list[str]]]:
     """``(script, npm args)`` for the checks *root* declares, in run order."""
-    try:
-        scripts = (json.loads((root / "package.json").read_text(encoding="utf-8")).get("scripts") or {})
-    except (OSError, ValueError):
+    scripts = _scripts(root)
+    if not scripts:
         return []
     out: list[tuple[str, list[str]]] = []
     typecheck = next((s for s in _TYPECHECK_SCRIPTS if s in scripts), None)
@@ -198,7 +231,7 @@ def _run(cmd: list[str], cwd: Path, timeout_s: int, tool: str = TOOL) -> Validat
     t0 = time.monotonic()
     try:
         proc = subprocess.Popen(cmd, cwd=cwd, env=_env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, start_new_session=True)
+                                text=True, encoding="utf-8", errors="replace", start_new_session=True)
     except OSError as exc:
         return ValidationResult(passed=False, tool=tool, duration_ms=0, errors=[str(exc)],
                                 raw_output=f"env: node: No such file: {exc}")
@@ -209,7 +242,12 @@ def _run(cmd: list[str], cwd: Path, timeout_s: int, tool: str = TOOL) -> Validat
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             pass
-        proc.communicate()
+        try:  # bounded: a descendant that left the group (setsid) can hold the pipe open forever
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            if proc.stdout is not None:
+                proc.stdout.close()
+            proc.wait()
         return ValidationResult(passed=False, tool=tool, duration_ms=int((time.monotonic() - t0) * 1000),
                                 errors=[f"timed out after {timeout_s}s"], raw_output="")
     out = (out or "")[-_OUTPUT_LIMIT:]
@@ -220,7 +258,9 @@ def _run(cmd: list[str], cwd: Path, timeout_s: int, tool: str = TOOL) -> Validat
 def error_ids(script: str, output: str, root: Path) -> Counter:
     """The errors in a check's *output*, keyed without line numbers or the tree's own path."""
     text = output
-    for prefix in {str(root.resolve()) + os.sep, str(root) + os.sep}:
+    # longest first, in a fixed order: a relative root's "repo/" is a substring of the resolved
+    # "/home/u/repo/", and stripping it first would leave "/home/u/" in every id
+    for prefix in sorted({str(root.resolve()) + os.sep, str(root) + os.sep}, key=len, reverse=True):
         text = text.replace(prefix, "")
     ids: Counter = Counter()
     tsc = list(_TSC_RE.finditer(text))
@@ -279,11 +319,7 @@ def _env_gap_is_the_cause(root: Path, script: str, output: str) -> bool:
     runs first isn't installed. A missing command reported from inside a running check is not."""
     if re.search(r"env: .?node.?: No such file", output):
         return True
-    try:
-        cmd = str((json.loads((root / "package.json").read_text(encoding="utf-8")).get("scripts") or {})
-                  .get(script) or "")
-    except (OSError, ValueError):
-        return False
+    cmd = _scripts(root).get(script) or ""
     first = next((t for t in cmd.split() if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t)), "")
     if not first:
         return False
