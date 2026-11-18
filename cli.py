@@ -1101,6 +1101,7 @@ def _run_repair(
             event_name = ""
             for line in resp.iter_lines(decode_unicode=True):
                 if not line:
+                    event_name = ""  # a blank line ends the SSE event; its name doesn't carry over
                     continue
                 if line.startswith("event:"):
                     event_name = line[6:].strip()
@@ -1108,6 +1109,9 @@ def _run_repair(
                 elif line.startswith("data:"):
                     try:
                         data = json.loads(line[5:].strip())
+                        if not isinstance(data, dict):
+                            print(line)
+                            continue
                         if event_name == "pack_loaded":
                             print(f"  Pack:          {data.get('pack_id')} — {data.get('title')}")
                             print(f"  Repo:          {data.get('repo')}")
