@@ -118,6 +118,55 @@ def _write_ecosystem_report(
     return report
 
 
+def _scan_and_extract(
+    repos: list,
+    meta: RunMetadata,
+    completed: set[str],
+    all_units: list[CodeUnit],
+    repo_roots: dict[str, str],
+    repo_files: dict[str, list],
+) -> None:
+    """Scan each repo and extract its code units into *all_units* / *repo_roots* / *repo_files*.
+
+    A repo's results are added only once the whole repo has succeeded: one that fails part
+    way is recorded as failed and contributes nothing, so later stages never mix its partial
+    units into the graph, embeddings and reports."""
+    for i, repo in enumerate(repos, start=1):
+        if repo.name in completed:
+            upsert_repo_run(meta.run_id, repo.name, "skipped", attempts=0, error_message="resumed-skip")
+            record_run_progress(meta)
+            continue
+        logger.info("Scanning repo %s (%d / %d) …", repo.name, i, len(repos))
+        try:
+            files = with_retries(lambda repo=repo: scan_repo(repo), retries=3, base_delay_s=1.0)
+            root = ""
+            if files:
+                root = str(Path(files[0]).resolve().parent)
+                for parent in Path(files[0]).resolve().parents:
+                    if (parent / ".git").exists():
+                        root = str(parent)
+                        break
+            units: list[CodeUnit] = []
+            for file_path in files:
+                units.extend(extract_code_units(repo.name, file_path))
+        except Exception as repo_exc:
+            upsert_repo_run(meta.run_id, repo.name, "failed", attempts=1, error_message=str(repo_exc))
+            write_checkpoint("ecosystem-audit", meta.run_id, repo.name, "failed", {"error": str(repo_exc)})
+            meta.add_error(f"{repo.name}: {repo_exc}")
+            record_run_progress(meta)
+            continue
+        if files:
+            repo_roots[repo.name] = root
+            repo_files[repo.name] = files
+        all_units.extend(units)
+        meta.scanned_repos.append(repo.name)
+        meta.scanned_files += len(files)
+        meta.code_units += len(units)
+        upsert_repo_run(meta.run_id, repo.name, "completed", attempts=1)
+        write_checkpoint("ecosystem-audit", meta.run_id, repo.name, "completed", {"files": len(files)})
+        record_run_progress(meta)
+
+
 def run() -> None:
     cfg = load_ecosystem_config()
     setup_logging(level=cfg.log_level, log_file_path=cfg.log_file_path, output_dir=cfg.output_dir)
@@ -205,35 +254,7 @@ def run() -> None:
             resume_run_id = os.getenv("AI_AUDIT_RESUME_RUN_ID", "")
             completed = completed_repos_for_run("ecosystem-audit", resume_run_id) if resume_run_id else set()
             t0 = time.monotonic()
-            for i, repo in enumerate(cfg.repos, start=1):
-                if repo.name in completed:
-                    upsert_repo_run(meta.run_id, repo.name, "skipped", attempts=0, error_message="resumed-skip")
-                    record_run_progress(meta)
-                    continue
-                logger.info("Scanning repo %s (%d / %d) …", repo.name, i, len(cfg.repos))
-                try:
-                    files = with_retries(lambda: scan_repo(repo), retries=3, base_delay_s=1.0)
-                    if files:
-                        repo_roots[repo.name] = str(Path(files[0]).resolve().parent)
-                        for parent in Path(files[0]).resolve().parents:
-                            if (parent / ".git").exists():
-                                repo_roots[repo.name] = str(parent)
-                                break
-                        repo_files[repo.name] = files
-                    for file_path in files:
-                        units = extract_code_units(repo.name, file_path)
-                        all_units.extend(units)
-                    meta.scanned_repos.append(repo.name)
-                    meta.scanned_files += len(files)
-                    meta.code_units += len(all_units)
-                    upsert_repo_run(meta.run_id, repo.name, "completed", attempts=1)
-                    write_checkpoint("ecosystem-audit", meta.run_id, repo.name, "completed", {"files": len(files)})
-                    record_run_progress(meta)
-                except Exception as repo_exc:
-                    upsert_repo_run(meta.run_id, repo.name, "failed", attempts=1, error_message=str(repo_exc))
-                    write_checkpoint("ecosystem-audit", meta.run_id, repo.name, "failed", {"error": str(repo_exc)})
-                    meta.add_error(f"{repo.name}: {repo_exc}")
-                    record_run_progress(meta)
+            _scan_and_extract(cfg.repos, meta, completed, all_units, repo_roots, repo_files)
             meta.mark_stage("scan_and_extract", int((time.monotonic() - t0) * 1000), status="partial_success" if meta.errors else "success")
             meta.current_stage = "graph_and_embedding_index"
             record_run_progress(meta)
