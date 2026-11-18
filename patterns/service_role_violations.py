@@ -142,7 +142,7 @@ def detect_competing_providers(
             try:
                 source = file_path.read_text(encoding="utf-8", errors="ignore")
                 tree = ast.parse(source, filename=str(file_path))
-            except (OSError, SyntaxError):
+            except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):  # NUL bytes (< 3.12), deep nesting
                 continue
 
             for node in ast.walk(tree):
