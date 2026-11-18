@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import random
 import re
 import sys
@@ -246,6 +247,19 @@ _JS_REQUIRE = re.compile(r"""require\(\s*['"]([^'"]+)['"]\s*\)""")
 _JS_EXPORT = re.compile(r"^\s*export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|class|const|let|var|type|interface|enum)\s+(\w+)", re.M)
 
 
+def _all_names(value) -> list[str]:
+    """The names an ``__all__`` literal lists; a marker when it is computed at runtime."""
+    import ast
+
+    try:
+        names = ast.literal_eval(value)
+    except (ValueError, SyntaxError, TypeError, RecursionError):
+        return ["<dynamic __all__>"]
+    if isinstance(names, (list, tuple, set, frozenset)) and all(isinstance(n, str) for n in names):
+        return list(names)
+    return ["<dynamic __all__>"]
+
+
 def file_structure(path: Path, text: str) -> dict:
     """Imports, exports and top-level names, read from the code itself."""
     import ast
@@ -254,7 +268,7 @@ def file_structure(path: Path, text: str) -> dict:
     if path.suffix == ".py":
         try:
             tree = ast.parse(text)
-        except SyntaxError:
+        except (SyntaxError, ValueError, RecursionError, MemoryError):  # e.g. NUL bytes, deep nesting
             return out
         imps: list[str] = []
         for node in tree.body:
@@ -265,13 +279,13 @@ def file_structure(path: Path, text: str) -> dict:
                 imps.append(f"{mod}: {', '.join(a.name for a in node.names)}")
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 out["top_level"].append(node.name)
-            elif isinstance(node, ast.Assign):
-                for t in node.targets:
-                    if isinstance(t, ast.Name) and t.id == "__all__":
-                        try:
-                            out["exports"] = list(ast.literal_eval(node.value))
-                        except (ValueError, SyntaxError):
-                            out["exports"] = ["<dynamic __all__>"]
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+                    out["exports"] = _all_names(node.value)
+            elif (isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add)
+                  and isinstance(node.target, ast.Name) and node.target.id == "__all__"):
+                out["exports"] = (out["exports"] or []) + _all_names(node.value)
         # lazy imports inside functions matter for "optional dependency" claims
         lazy = sorted({a.name for n in ast.walk(tree) if isinstance(n, ast.Import)
                        and n not in tree.body for a in n.names}
@@ -317,6 +331,18 @@ def note_path(repo: str, relpath: str, text: str) -> Path:
     return NOTES_DIR / repo / f"{h}.json"
 
 
+def _write_atomic(path: Path, text: str) -> None:
+    """Write via a temp file and rename, so an interrupted write never leaves a truncated note that
+    later runs would count as cached."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def stage_notes(repo_names: list[str], concurrency: int) -> dict:
     cl = client()
     repos = repos_by_name()
@@ -356,15 +382,24 @@ def stage_notes(repo_names: list[str], concurrency: int) -> dict:
         except json.JSONDecodeError:
             r["error"] = "parse"
             return job, r
-        note.update(path=rp, lines=text.count("\n") + 1)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(note, indent=1))
+        if not isinstance(note, dict):
+            r["error"] = "parse: note is not a JSON object"
+            return job, r
+        try:
+            note.update(path=rp, lines=text.count("\n") + 1)
+            _write_atomic(out, json.dumps(note, indent=1))
+        except Exception as exc:  # noqa: BLE001 — one bad file is an error, not the end of the stage
+            r["error"] = f"{type(exc).__name__}: {exc}"
         return job, r
 
     t0 = time.time()
     with ThreadPoolExecutor(concurrency) as pool:
-        for i, fut in enumerate(as_completed([pool.submit(work, j) for j in jobs]), 1):
-            job, r = fut.result()
+        futs = {pool.submit(work, j): j for j in jobs}
+        for i, fut in enumerate(as_completed(futs), 1):
+            try:
+                job, r = fut.result()
+            except Exception as exc:  # noqa: BLE001 — e.g. the call itself raised; nothing to count
+                job, r = futs[fut], {"error": f"{type(exc).__name__}: {exc}", "cost": 0.0}
             stats["cost"] += r.get("cost", 0.0)
             stats["input_tokens"] += r.get("input_tokens", 0)
             stats["output_tokens"] += r.get("output_tokens", 0)
@@ -454,7 +489,7 @@ def check_citations(md: str, repo) -> dict:
             else:
                 text_cache[path] = None
         lines = text_cache[path]
-        if lines is None or not (1 <= a <= b <= len(lines) + 1):
+        if lines is None or not (1 <= a <= b <= len(lines)):
             bad.append(m.group(0))
             continue
         valid += 1
@@ -506,7 +541,10 @@ def cited_code(md: str, repo, pad: int = 3, cap_chars: int = 120_000) -> str:
             continue
         lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
         merged: list[list[int]] = []
-        for a, b in sorted(rs):
+        for a, b in sorted(set(rs)):
+            if not 1 <= a <= b <= len(lines):
+                parts.append(f"\n===== {path} L{a}-L{b} (LINES OUT OF RANGE: file has {len(lines)} lines) =====")
+                continue
             a, b = max(1, a - pad), min(len(lines), b + pad)
             if merged and a <= merged[-1][1] + 1:
                 merged[-1][1] = max(merged[-1][1], b)
@@ -680,6 +718,9 @@ def stage_judge(run: Path, concurrency: int, seed: int = 7, judge_arms: list[str
         arms = sorted(p.name for p in repo_dir.iterdir() if not judge_arms or p.name in judge_arms)
         for page in PAGES:
             present = [a for a in arms if (repo_dir / a / f"{page}.md").exists()]
+            if len(present) < 2:  # nothing to compare: a verdict would be paid for and meaningless
+                print(f"  skip judging {repo.name}/{page}: {len(present)} arm(s) have the page", flush=True)
+                continue
             rng.shuffle(present)
             labels = {chr(65 + i): a for i, a in enumerate(present)}
             jobs.append((repo, page, src, labels, repo_dir))
@@ -751,6 +792,7 @@ def summarise(run: Path, notes_stats: dict | None) -> str:
                                               "citation_quality": [], "errors": [], "rank1": []}
                                           for a in arms}
     judge_cost = 0.0
+    n_ranked = 0  # judgements that produced a ranking: the "Ranked #1" denominator
     for j in judg:
         judge_cost += j["cost"]
         v = j.get("verdict")
@@ -758,14 +800,15 @@ def summarise(run: Path, notes_stats: dict | None) -> str:
             continue
         for pg in v["pages"]:
             arm = j["labels"].get(pg["label"])
-            if not arm:
+            if not arm or arm not in scores:  # an arm with no rows in pages.jsonl
                 continue
             for k in ("accuracy", "coverage", "usefulness", "citation_quality"):
                 scores[arm][k].append(pg[k])
             scores[arm]["errors"].append(len(pg["factual_errors"]))
-        if v["ranking"]:
+        if v.get("ranking"):
+            n_ranked += 1
             top = j["labels"].get(v["ranking"][0])
-            if top:
+            if top in scores:
                 scores[top]["rank1"].append(1)
 
     def avg(xs):
@@ -796,7 +839,7 @@ def summarise(run: Path, notes_stats: dict | None) -> str:
     for arm in arms:
         a, s = agg[arm], scores[arm]
         n = max(a["n"], 1)
-        rank = f"{len(s['rank1'])}/{len(judg)}" if n_judged[arm] else "not judged"
+        rank = f"{len(s['rank1'])}/{n_ranked}" if n_judged[arm] else "not judged"
         lines.append(
             f"| {arm} | {a['n']} (+{a['err']} err) | {a['words']//n} | {a['cites']/n:.1f} | "
             f"{a['valid']/max(a['cites'],1):.0%} | {a['anch']/max(a['cites'],1):.0%} | "
@@ -833,6 +876,11 @@ def main() -> int:
     ap.add_argument("--judge-arms", help="comma list; default: every arm with pages")
     ap.add_argument("--concurrency", type=int, default=8)
     args = ap.parse_args()
+    if args.stage == "judge":
+        if not args.run:
+            ap.error("--stage judge needs --run <existing run dir>")
+        if not (Path(args.run) / "pages.jsonl").is_file():
+            ap.error(f"--run {args.run}: no pages.jsonl there (run --stage pages first)")
 
     run = Path(args.run) if args.run else OUT_BASE / datetime.now().strftime("%Y%m%d-%H%M%S")
     run.mkdir(parents=True, exist_ok=True)
