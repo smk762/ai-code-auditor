@@ -10,9 +10,10 @@ from auditor.contracts import ImpactResult
 
 logger = logging.getLogger(__name__)
 
-# Cache keyed by (repo_path_str, git_head_hash) → import graph
-# Avoids re-walking large repos on repeated calls within the same process.
-_graph_cache: dict[tuple[str, str], dict[str, set[str]]] = {}
+# Cache: repo_path_str → (git_head_hash, import graph). One entry per repo, so a
+# long-running process never accumulates graphs for old commits. Only a clean tree
+# is cached: uncommitted .py edits don't move HEAD, so they would hit a stale graph.
+_graph_cache: dict[str, tuple[str, dict[str, set[str]]]] = {}
 
 
 def analyze_impact(
@@ -68,13 +69,32 @@ def analyze_impact(
 
 def _get_import_graph(repo_path: Path) -> dict[str, set[str]]:
     git_hash = _git_head_hash(repo_path)
-    cache_key = (str(repo_path), git_hash)
-    if cache_key in _graph_cache:
-        return _graph_cache[cache_key]
+    if git_hash and _py_tree_dirty(repo_path):
+        git_hash = ""  # uncommitted .py changes: build fresh, don't cache
+    key = str(repo_path)
+    cached = _graph_cache.get(key)
+    if git_hash and cached is not None and cached[0] == git_hash:
+        return cached[1]
     graph = _build_import_graph(repo_path)
     if git_hash:
-        _graph_cache[cache_key] = graph
+        _graph_cache[key] = (git_hash, graph)
+    else:
+        _graph_cache.pop(key, None)
     return graph
+
+
+def _py_tree_dirty(repo_path: Path) -> bool:
+    """True if any .py file is modified, added, deleted or untracked (or git can't tell)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "status", "--porcelain", "--", "*.py"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return result.returncode != 0 or bool(result.stdout.strip())
 
 
 def _git_head_hash(repo_path: Path) -> str:
@@ -106,7 +126,8 @@ def _build_import_graph(repo_path: Path) -> dict[str, set[str]]:
         try:
             text = py_file.read_text(encoding="utf-8", errors="ignore")
             tree = ast.parse(text, filename=str(py_file))
-        except (SyntaxError, OSError):
+        except (SyntaxError, ValueError, RecursionError, MemoryError, OSError):
+            # Unparsable (NUL bytes, absurd nesting, unreadable): no imports, keep going.
             graph[file_rel] = set()
             continue
         imports: set[str] = set()
