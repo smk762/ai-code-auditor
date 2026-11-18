@@ -252,15 +252,18 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     try:
-        lines = path.read_text().splitlines()
+        # bad bytes only spoil their own line, which the per-line parse then skips
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
     out = []
     for ln in lines:
         try:
-            out.append(json.loads(ln))
+            obj = json.loads(ln)
         except ValueError:
             continue
+        if isinstance(obj, dict):
+            out.append(obj)
     return out
 
 

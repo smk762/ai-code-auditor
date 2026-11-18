@@ -207,3 +207,9 @@ def test_evidence_gates_judge_the_rolling_window_when_the_report_has_one() -> No
     assert g["evidence.lint_only"].value == pytest.approx(1 / 40) and g["evidence.lint_only"].n == 40
     assert g["evidence.waiver_rate"].value == pytest.approx(4 / 40)
     assert "last 14 days" in g["evidence.lint_only"].description
+
+
+def test_read_jsonl_skips_undecodable_bytes_and_non_object_lines(tmp_path: Path) -> None:
+    p = tmp_path / "h.jsonl"
+    p.write_bytes(b'{"a": 1}\n\xff\xfe garbage\n1\n"x"\nnull\n[1]\n{"b": 2}\n')
+    assert trust_eval._read_jsonl(p) == [{"a": 1}, {"b": 2}]
