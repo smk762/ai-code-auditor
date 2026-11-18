@@ -67,7 +67,9 @@ def export_catalogue(mirror: Path, cache: Path) -> Path | None:
     dest = cache / tree[:16]
     if (dest / "suite-rules" / "check.py").is_file():
         return dest / "suite-rules"
-    arch = git("archive", "--format=tar", ref, "suite-rules")
+    # Archive the tree object itself, not the symbolic ref: a fetch moving origin/dev between
+    # the two calls would otherwise cache tree Y's files under tree X's name.
+    arch = git("archive", "--format=tar", "--prefix=suite-rules/", tree)
     if arch.returncode != 0:
         return None
     import io
