@@ -111,3 +111,71 @@ def test_anthropic_health_check_needs_key(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     ok, msg = _client("anthropic").health_check()
     assert not ok and "ANTHROPIC_API_KEY" in msg
+
+
+def _http_error(status: int) -> llm_mod.requests.HTTPError:
+    resp = llm_mod.requests.Response()
+    resp.status_code = status
+    return llm_mod.requests.HTTPError(f"{status}", response=resp)
+
+
+@pytest.mark.parametrize(
+    ("exc", "attempts"),
+    [
+        (llm_mod.requests.ConnectionError("refused"), 3),
+        (llm_mod.requests.Timeout("hung"), 3),
+        (_http_error(503), 3),
+        (_http_error(404), 1),  # a missing model answers the same every time
+    ],
+)
+def test_only_transient_errors_are_retried(monkeypatch: pytest.MonkeyPatch, exc: Exception, attempts: int) -> None:
+    monkeypatch.setattr("auditor.retry.time.sleep", lambda s: None)
+    c = _client("ollama")
+    calls = []
+
+    def fail(payload: dict[str, Any], headers: dict[str, str]) -> str:
+        calls.append(1)
+        raise exc
+
+    monkeypatch.setattr(c, "_do_generate", fail)
+    assert c.generate("hi") == ""
+    assert len(calls) == attempts
+
+
+def test_dead_backend_trips_the_breaker_for_every_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One client is built per repo: once the backend has failed N times in a row, later clients
+    skip it instead of each paying N more timeouts."""
+    monkeypatch.setenv("AI_AUDIT_LLM_BREAKER_FAILURES", "3")
+    monkeypatch.setattr(llm_mod, "with_retries", lambda fn, **kw: fn())
+    calls = []
+
+    def dead(payload: dict[str, Any], headers: dict[str, str]) -> str:
+        calls.append(1)
+        raise llm_mod.requests.Timeout("hung")
+
+    first = _client("ollama")
+    monkeypatch.setattr(first, "_do_generate", dead)
+    for _ in range(5):
+        assert first.generate("hi") == ""
+    assert len(calls) == 3 and first.breaker_skips == 2
+
+    second = _client("ollama")  # the next repo's client, same endpoint
+    monkeypatch.setattr(second, "_do_generate", dead)
+    assert second.generate("hi") == "" and len(calls) == 3 and second.breaker_skips == 1
+
+    other = _client("ollama", endpoint="http://y/api/generate")  # a different backend is unaffected
+    monkeypatch.setattr(other, "_do_generate", lambda payload, headers: "[]")
+    assert other.generate("hi") == "[]"
+
+
+def test_anthropic_failures_never_trip_the_breaker(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_AUDIT_LLM_BREAKER_FAILURES", "1")
+    c = _client("anthropic")
+
+    def refuse(prompt: Any) -> str:
+        raise RuntimeError("Anthropic refusal")
+
+    monkeypatch.setattr(c, "_anthropic_generate", refuse)
+    c.generate("a")
+    c.generate("b")
+    assert c._failures == 2 and not c.breaker.is_open
