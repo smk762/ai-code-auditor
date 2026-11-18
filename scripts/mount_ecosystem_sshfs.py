@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -58,19 +59,23 @@ def _sshfs_cmd(sshfs_bin: str, remote: str, local: str, options: str) -> list[st
 
 
 def _is_exact_mountpoint(local: str) -> bool:
-    """True only if `local` is itself a mount point (not just a dir under /)."""
+    """True only if `local` is itself a mount point (not just a dir under /).
+
+    The mount table (findmnt -M) comes first: `mountpoint` stat()s the path, which fails with
+    ENOTCONN on a disconnected sshfs mount, so a stale mount would read as "not mounted".
+    """
     try:
         r = subprocess.run(
-            ["mountpoint", "-q", local],
+            ["findmnt", "-M", local],
             capture_output=True,
             timeout=10,
         )
         return r.returncode == 0
     except FileNotFoundError:
-        # util-linux mountpoint missing: fall back to findmnt --mountpoint
+        # findmnt missing: fall back to util-linux mountpoint
         try:
             r = subprocess.run(
-                ["findmnt", "-M", local],
+                ["mountpoint", "-q", local],
                 capture_output=True,
                 timeout=10,
             )
@@ -192,15 +197,23 @@ def cmd_mount(config_path: Path) -> int:
             continue
         cmd = _sshfs_cmd(sshfs_bin, remote, local, options)
         print(" ".join(cmd), file=sys.stderr)
-        # Capture output so one bad remote does not abort the rest of the list.
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        except subprocess.TimeoutExpired:
-            print(f"sshfs timed out after 120s: {local} <- {remote}", file=sys.stderr)
-            failures += 1
-            continue
+        # Capture stderr so one bad remote does not abort the rest of the list. Into a file, not a
+        # pipe: sshfs's ssh child inherits stderr and lives as long as the mount, so a pipe would
+        # never reach EOF and a successful mount would wait out the timeout.
+        with tempfile.TemporaryFile(mode="w+") as err:
+            try:
+                r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=err, text=True, timeout=120)
+            except subprocess.TimeoutExpired:
+                if _is_exact_mountpoint(local):
+                    started += 1
+                    continue
+                print(f"sshfs timed out after 120s: {local} <- {remote}", file=sys.stderr)
+                failures += 1
+                continue
+            err.seek(0)
+            stderr_text = err.read()
         if r.returncode != 0:
-            detail = (r.stderr or r.stdout or "").strip()
+            detail = stderr_text.strip()
             msg = f"sshfs failed ({r.returncode}): {local} <- {remote}"
             if detail:
                 msg = f"{msg}\n{detail}"
@@ -233,6 +246,7 @@ def cmd_umount(config_path: Path, quiet: bool = False) -> int:
 
     cfg = _load_config(config_path)
     mounts = list(reversed(cfg["mounts"]))  # reverse order for teardown
+    failures = 0
     for m in mounts:
         if not isinstance(m, dict):
             continue
@@ -248,9 +262,11 @@ def cmd_umount(config_path: Path, quiet: bool = False) -> int:
         if not quiet:
             print(" ".join(cmd), file=sys.stderr)
         r = subprocess.run(cmd, capture_output=quiet, text=True, timeout=60)
-        if r.returncode != 0 and not quiet:
-            print(r.stderr or r.stdout or f"umount failed: {local}", file=sys.stderr)
-    return 0
+        if r.returncode != 0:
+            failures += 1  # still mounted: callers must not treat the dirs as free
+            if not quiet:
+                print(r.stderr or r.stdout or f"umount failed: {local}", file=sys.stderr)
+    return 1 if failures else 0
 
 
 def cmd_status(config_path: Path) -> int:
