@@ -19,6 +19,12 @@ except ImportError:
 
 
 DIM = 64
+MAX_EMBED_CHARS = 8000  # code body cap per unit (embedding endpoints have an input token limit)
+
+
+def _unit_text(unit: CodeUnit) -> str:
+    """What is embedded for a unit: where it lives, then its code (the hash is metadata, not meaning)."""
+    return f"{unit.repo}:{unit.file_path}:{unit.symbol}\n{(unit.raw_text or '')[:MAX_EMBED_CHARS]}"
 
 
 def _hash_embedding(text: str, dim: int = DIM) -> list[float]:
@@ -43,7 +49,7 @@ class EmbeddingIndex:
         self.records = []
         vectors: list[list[float]] = []
         for unit in units:
-            vec = self._embed_text(f"{unit.repo}:{unit.file_path}:{unit.symbol}:{unit.raw_text_hash}")
+            vec = self._embed_text(_unit_text(unit))
             vectors.append(vec)
             self.records.append(
                 {
@@ -51,6 +57,7 @@ class EmbeddingIndex:
                     "repo": unit.repo,
                     "file_path": unit.file_path,
                     "symbol": unit.symbol,
+                    "raw_text_hash": unit.raw_text_hash,  # for staleness checks
                 }
             )
 
@@ -90,9 +97,24 @@ class EmbeddingIndex:
         provider = self.provider_config.provider.lower()
         if provider == "openai-compatible" and self.provider_config.endpoint:
             remote = with_retries(lambda: self._remote_openai_embedding(text), retries=3, base_delay_s=1.0)
-            if remote:
-                return remote
+            if not remote:
+                # never fall back to hash vectors here: they live in a different space, so a mixed
+                # index (or a hash query against remote vectors) returns arbitrary results
+                raise RuntimeError(f"embedding endpoint {self.provider_config.endpoint} returned no vector "
+                                   "(remote embedder configured; not falling back to local hashes)")
+            return self._fit(remote)
         return _hash_embedding(text, dim=self.dim)
+
+    def _fit(self, emb: list[float]) -> list[float]:
+        """The vector at the configured dim, unit-normalised for inner-product search. A longer one is
+        truncated (valid for Matryoshka models such as text-embedding-3) then renormalised; a shorter
+        one cannot fit the index."""
+        if len(emb) < self.dim:
+            raise ValueError(f"embedder {self.provider_config.model!r} returned {len(emb)} dims, but the index "
+                             f"is configured for {self.dim} (set AI_AUDIT_EMBEDDER_DIM to match)")
+        vec = emb[: self.dim]
+        norm = sum(v * v for v in vec) ** 0.5 or 1.0
+        return [v / norm for v in vec]
 
     def _remote_openai_embedding(self, text: str) -> list[float]:
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -107,7 +129,7 @@ class EmbeddingIndex:
             if data and isinstance(data[0], dict):
                 emb = data[0].get("embedding", [])
                 if emb and isinstance(emb, list):
-                    return [float(v) for v in emb[: self.dim]]
+                    return [float(v) for v in emb]
         except requests.RequestException:
             return []
         return []
@@ -117,6 +139,8 @@ class EmbeddingIndex:
         if provider != "openai-compatible":
             return True, "local embedder"
         sample = self._remote_openai_embedding("health-check")
+        if sample and len(sample) < self.dim:
+            return False, f"embedder returns {len(sample)} dims, index configured for {self.dim}"
         if sample:
             return True, "ok"
         return False, "embedding endpoint unavailable"
