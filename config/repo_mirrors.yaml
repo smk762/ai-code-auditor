@@ -33,6 +33,9 @@ mirrors:
   - name: argus-darkroom
     url: https://github.com/smk762/argus-darkroom.git
     path: /home/smk/mirrors/argus-darkroom
+  - name: argus-echo
+    url: https://github.com/smk762/argus-echo.git
+    path: /home/smk/mirrors/argus-echo
   - name: argus-forge
     url: https://github.com/smk762/argus-forge.git
     path: /home/smk/mirrors/argus-forge
