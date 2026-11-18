@@ -43,6 +43,30 @@ _JS_REQUIRE = re.compile(r"""require\(\s*['"]([^'"]+)['"]\s*\)""")
 _JS_EXPORT = re.compile(r"^\s*export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|class|const|let|var|type|interface|enum)\s+(\w+)", re.M)
 
 
+def _is_type_checking(test: ast.expr) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or \
+        (isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING")
+
+
+def _module_imports(stmts: list[ast.stmt], type_only: bool = False):
+    """(import node, under ``if TYPE_CHECKING``) for every import that runs at module level, including
+    those in module-level ``if``/``try``/``with`` blocks, but not inside function or class bodies."""
+    for node in stmts:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            yield node, type_only
+        elif isinstance(node, ast.If):
+            yield from _module_imports(node.body, type_only or _is_type_checking(node.test))
+            yield from _module_imports(node.orelse, type_only)
+        elif isinstance(node, (ast.Try, getattr(ast, "TryStar", ast.Try))):
+            yield from _module_imports(node.body, type_only)
+            for h in node.handlers:
+                yield from _module_imports(h.body, type_only)
+            yield from _module_imports(node.orelse, type_only)
+            yield from _module_imports(node.finalbody, type_only)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            yield from _module_imports(node.body, type_only)
+
+
 def file_structure(path: Path, text: str) -> dict[str, Any]:
     """Imports, exports and top-level names, read from the code itself."""
     out: dict[str, Any] = {"imports": [], "exports": None, "top_level": []}
@@ -52,13 +76,16 @@ def file_structure(path: Path, text: str) -> dict[str, Any]:
         except SyntaxError:
             return out
         imps: list[str] = []
-        for node in tree.body:
+        module_level = list(_module_imports(tree.body))
+        for node, type_only in module_level:
+            tag = " (type checking only)" if type_only else ""
             if isinstance(node, ast.Import):
-                imps += [a.name for a in node.names]
-            elif isinstance(node, ast.ImportFrom):
+                imps += [a.name + tag for a in node.names]
+            else:
                 mod = "." * node.level + (node.module or "")
-                imps.append(f"{mod}: {', '.join(a.name for a in node.names)}")
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                imps.append(f"{mod}: {', '.join(a.name for a in node.names)}{tag}")
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 out["top_level"].append(node.name)
             elif isinstance(node, ast.Assign):
                 for t in node.targets:
@@ -67,8 +94,9 @@ def file_structure(path: Path, text: str) -> dict[str, Any]:
                             out["exports"] = list(ast.literal_eval(node.value))
                         except (ValueError, SyntaxError):
                             out["exports"] = ["<dynamic __all__>"]
-        # lazy imports inside functions matter for "optional dependency" claims
-        top = set(map(id, tree.body))
+        # lazy imports inside functions matter for "optional dependency" claims; module-level
+        # ``try:``/``if`` blocks (optional or version-gated imports, TYPE_CHECKING) are not lazy
+        top = {id(n) for n, _ in module_level}
         lazy = sorted({a.name for n in ast.walk(tree) if isinstance(n, ast.Import) and id(n) not in top for a in n.names}
                       | {n.module or "" for n in ast.walk(tree)
                          if isinstance(n, ast.ImportFrom) and id(n) not in top and n.level == 0})
