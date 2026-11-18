@@ -82,3 +82,12 @@ def test_api_serves_report_and_history(tmp_path: Path, monkeypatch):
     body = client.get("/audit/pack-savings.json").json()
     assert body["repos"][0]["repo"] == "demo"
     assert len(client.get("/audit/pack-savings.json?history=1").json()["history"]) == 1
+
+
+def test_load_history_limit_zero_or_negative_returns_nothing(tmp_path: Path):
+    path = pack_savings.history_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{\"a\": 1}\n{\"a\": 2}\n")
+    assert pack_savings.load_history(tmp_path, limit=0) == []
+    assert pack_savings.load_history(tmp_path, limit=-1) == []
+    assert pack_savings.load_history(tmp_path, limit=1) == [{"a": 2}]

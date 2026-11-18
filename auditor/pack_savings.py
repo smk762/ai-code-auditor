@@ -297,6 +297,8 @@ def load_history(output_dir: str | Path | None = None, *, limit: int = 365) -> l
         lines = history_path(output_dir).read_text().splitlines()
     except OSError:
         return []
+    if limit <= 0:
+        return []
     rows = []
     for raw in lines[-limit:]:
         try:
