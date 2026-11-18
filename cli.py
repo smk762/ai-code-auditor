@@ -1253,7 +1253,8 @@ def _budget(args: argparse.Namespace) -> None:
           + (f" of ${cap:.2f} (${cap - summary['total_spent']:.2f} left)" if cap is not None else ""))
     for lane, info in summary["lanes"].items():
         lane_cap = f"${info['cap']:.2f}" if info["cap"] is not None else "no cap"
-        print(f"  {lane:12s} ${info['spent']:8.2f}  cap {lane_cap:>8s}  left ${info['remaining']:.2f}")
+        left = f"${info['remaining']:.2f}" if info["remaining"] is not None else "unlimited"
+        print(f"  {lane:12s} ${info['spent']:8.2f}  cap {lane_cap:>8s}  left {left}")
     if summary["by_model"]:
         print("By lane/model:")
         for r in summary["by_model"]:
