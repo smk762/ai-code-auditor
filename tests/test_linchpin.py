@@ -242,3 +242,33 @@ def test_build_report_includes_issues_linchpins_and_spoken(monkeypatch: pytest.M
     assert report["prs"][0]["p0"] and report["prs"][0]["linchpin"] == ["cross_repo"]
     assert "P0 linchpin: argus-lens#97 holds up argus-studio." in report["spoken"]
     json.dumps(report)
+
+
+def test_and_of_nothing_is_empty():
+    from auditor.linchpin import _and
+
+    assert _and([]) == "" and _and(["a"]) == "a" and _and(["a", "b", "c"]) == "a, b and c"
+
+
+def test_label_rename_takes_the_old_label_off_what_this_tool_labelled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    calls: list[tuple[str, str]] = []
+
+    def rest(method, path, body=None):
+        if "argus-z" in path:
+            raise urllib.error.HTTPError(path, 500, "boom", {}, None)
+        calls.append((method, path))
+
+    ledger = tmp_path / "linchpin_labels.json"
+    ledger.write_text(json.dumps({"label": "P0", "applied": {
+        "smk762/argus-old#4": "x", "smk762/argus-keep#5": "x", "smk762/argus-z#6": "x",
+    }}))
+    monkeypatch.setenv("AI_AUDIT_LINCHPIN_LABEL", "priority: P0")
+    out = apply_labels({"linchpins": [_lp("argus-keep", 5)]}, output_dir=tmp_path, rest=rest)
+    assert ("POST", "/repos/smk762/argus-keep/issues/5/labels") in calls
+    assert ("DELETE", "/repos/smk762/argus-old/issues/4/labels/P0") in calls
+    assert ("DELETE", "/repos/smk762/argus-keep/issues/5/labels/P0") in calls
+    assert out["errors"][0]["ref"] == "argus-z#6"
+    saved = json.loads(ledger.read_text())
+    assert saved["label"] == "priority: P0" and set(saved["applied"]) == {"smk762/argus-keep#5"}
+    # the failed removal is kept for the next run instead of being forgotten
+    assert saved["stale"] == {"P0": {"smk762/argus-z#6": "x"}}
