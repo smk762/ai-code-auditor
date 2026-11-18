@@ -54,6 +54,13 @@ repos:
     provider: local
     subpath: ""
 
+  - name: argus-echo
+    path: /home/smk/mirrors/argus-echo
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
   - name: argus-forge
     path: /home/smk/mirrors/argus-forge
     branch: dev

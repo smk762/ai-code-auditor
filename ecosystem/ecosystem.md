@@ -22,6 +22,7 @@ Night conductor scans `dev` on every `smk762/argus-*` repo, plus shared dependen
 | Survey UI | [argus-sightline](https://github.com/smk762/argus-sightline) | Web workspace for survey deliverables |
 | Provenance | [argus-mint](https://github.com/smk762/argus-mint) | Provenance tokens for game assets (IPFS, ERC-721, Merkle anchors) |
 | Review UI | [argus-assay](https://github.com/smk762/argus-assay) | Review UI for mint — approve cards/templates/frames before pin/sign |
+| Speech | [argus-echo](https://github.com/smk762/argus-echo) | Speech servers (Miso, XTTS-v2, Qwen3-TTS) behind one HTTP contract; replacing voluptas |
 | Face / TTS face | [argus-mask](https://github.com/smk762/argus-mask) | Audio → facial animation frames for LAN screens |
 | Infra | [argus-halo](https://github.com/smk762/argus-halo) | Public demo infra (Hetzner, Terraform, Cloudflare) |
 | CI | [argus-ci](https://github.com/smk762/argus-ci) | Reusable GitHub Actions for the suite |
