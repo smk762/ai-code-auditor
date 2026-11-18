@@ -91,10 +91,11 @@ def load_ecosystem_config(path: str | Path = "config/ecosystem.yaml") -> Ecosyst
         )
         for item in raw.get("repos", [])
     ]
-    if not repos:
-        raise ValueError("config/ecosystem.yaml must define at least one repository in repos[].")
+    enabled = [r for r in repos if r.enabled]
+    if not enabled:
+        raise ValueError("config/ecosystem.yaml must define at least one enabled repository in repos[].")
     return EcosystemConfig(
-        repos=[r for r in repos if r.enabled],
+        repos=enabled,
         output_dir=os.getenv("AI_AUDIT_OUTPUT_DIR", raw.get("output_dir", "reports")),
         graph_db_path=os.getenv("AI_AUDIT_GRAPH_DB_PATH", raw.get("graph_db_path", "graph/ecosystem_graph.db")),
         embedding_index_path=os.getenv("AI_AUDIT_EMBEDDING_INDEX_PATH", raw.get("embedding_index_path", "index/code_embeddings.faiss")),
@@ -137,11 +138,32 @@ def load_prompts(path: str | Path = "config/prompts.yaml") -> dict[str, str]:
     return {str(k): str(v) for k, v in prompts.items()}
 
 
+def _select_provider(raw: dict[str, Any], provider: str, default_provider: str, kind: str) -> dict[str, Any]:
+    """Return the ``providers`` block for ``provider``.
+
+    Only the built-in default provider may run without a block (it gets hardcoded defaults); any
+    other name with no block is a typo or a missing config, so it raises rather than pairing the
+    requested provider name with another provider's model and endpoint.
+    """
+    providers = raw.get("providers") or {}
+    if not isinstance(providers, dict):
+        raise ValueError(f"{kind} config: providers must be a mapping, got {type(providers).__name__}")
+    selected = providers.get(provider) or {}
+    if not isinstance(selected, dict):
+        raise ValueError(f"{kind} config: providers.{provider} must be a mapping")
+    if not selected and provider != default_provider:
+        known = ", ".join(sorted(str(k) for k in providers)) or "none"
+        raise ValueError(
+            f"{kind} provider {provider!r} has no block under providers (known: {known}); "
+            f"fix the provider name or add its config"
+        )
+    return selected
+
+
 def load_model_provider_config(path: str | Path = "config/generator.yaml") -> ModelProviderConfig:
     raw = _read_yaml(path)
     provider = str(os.getenv("AI_AUDIT_LLM_PROVIDER", raw.get("provider", "ollama"))).lower()
-    providers = raw.get("providers", {})
-    selected = providers.get(provider, {})
+    selected = _select_provider(raw, provider, "ollama", "LLM")
     if not selected:
         selected = {
             "model": "deepseek-coder-33b",
@@ -163,8 +185,7 @@ def load_model_provider_config(path: str | Path = "config/generator.yaml") -> Mo
 def load_embedder_provider_config(path: str | Path = "config/embedder.yaml") -> EmbedderProviderConfig:
     raw = _read_yaml(path)
     provider = str(os.getenv("AI_AUDIT_EMBEDDER_PROVIDER", raw.get("provider", "local-hash"))).lower()
-    providers = raw.get("providers", {})
-    selected = providers.get(provider, {})
+    selected = _select_provider(raw, provider, "local-hash", "embedder")
     if not selected:
         selected = {
             "model": "local-hash",
