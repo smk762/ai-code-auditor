@@ -55,6 +55,7 @@ Start:
 """
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
@@ -74,7 +75,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Qu
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -230,15 +231,17 @@ def _db_update_status(run_id: str, status: str) -> None:
 
 
 def _db_claim_pending_run(run_id: str) -> bool:
-    """Set ``pending`` → ``running``.  False if missing, not pending, or lost the race to cancel."""
+    """Set ``pending`` → ``running``.  False if missing, not pending, or lost the race to cancel.
+
+    One conditional UPDATE, so a cancel that lands mid-claim is never overwritten and two
+    workers can't both claim the run."""
     with db_session() as session:
-        row = session.execute(
-            select(AuditRun).where(AuditRun.run_id == run_id)
-        ).scalar_one_or_none()
-        if row is None or row.status != "pending":
-            return False
-        row.status = "running"
-        return True
+        result = session.execute(
+            update(AuditRun)
+            .where(AuditRun.run_id == run_id, AuditRun.status == "pending")
+            .values(status="running")
+        )
+        return result.rowcount == 1
 
 
 def _db_finish_run_cancelled(run_id: str, note: str = "Run cancelled.") -> None:
@@ -334,29 +337,39 @@ def _run_pipeline(run_id: str) -> None:
     stderr = ""
     rc: int | None = None
 
+    proc: subprocess.Popen | None = None
     try:
         if not _db_claim_pending_run(run_id):
             return
 
-        if _cancel_event.is_set():
-            # HTTP handler already moved the row to ``cancelled``.
-            return
-
-        proc = subprocess.Popen(
-            [sys.executable, str(pipeline_script)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-        )
+        # Check, spawn and publish under the lock cancel_run takes, so a cancel either stops
+        # the spawn or finds the process to terminate; never neither.
         with _active_run_lock:
+            if _cancel_event.is_set():
+                # HTTP handler already moved the row to ``cancelled``.
+                return
+            proc = subprocess.Popen(
+                [sys.executable, str(pipeline_script)],
+                stdout=subprocess.DEVNULL,  # unused; only stderr is kept (for the error tail)
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
             _active_process = proc
+            if _cancel_event.is_set():
+                proc.terminate()
         _stdout, stderr = proc.communicate()
         rc = proc.returncode
-    except Exception as exc:
+    except BaseException as exc:
         logger.exception("Audit pipeline thread raised: %s", exc)
+        if proc is not None and proc.poll() is None:
+            # don't leave the pipeline running untracked and uncancellable
+            proc.kill()
+            proc.wait()
         if not _cancel_event.is_set():
             _db_update_status(run_id, "failed")
+        if not isinstance(exc, Exception):
+            raise
     finally:
         with _active_run_lock:
             _active_process = None
@@ -434,15 +447,21 @@ def start_run() -> JSONResponse:
         run_id = f"ecosystem-audit-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
         _active_run_id = run_id
 
-    _db_insert_pending(run_id)
-
-    t = threading.Thread(
-        target=_run_pipeline,
-        args=(run_id,),
-        daemon=True,
-        name=f"audit-{run_id[-12:]}",
-    )
-    t.start()
+    try:
+        _db_insert_pending(run_id)
+        t = threading.Thread(
+            target=_run_pipeline,
+            args=(run_id,),
+            daemon=True,
+            name=f"audit-{run_id[-12:]}",
+        )
+        t.start()
+    except Exception:
+        # Nothing will run, so free the slot; else every later start gets 409 until a restart.
+        with _active_run_lock:
+            if _active_run_id == run_id:
+                _active_run_id = None
+        raise
 
     return JSONResponse({"run_id": run_id})
 
@@ -459,7 +478,7 @@ def list_runs(limit: int = Query(default=20, ge=1, le=200)) -> JSONResponse:
         if live:
             runs = [r for r in runs if r["run_id"] != active]
             runs.insert(0, live)
-    return JSONResponse(runs)
+    return JSONResponse(runs[:limit])
 
 
 @app.get("/audit/runs/{run_id}/repos")
@@ -470,22 +489,34 @@ def list_run_repos(run_id: str) -> JSONResponse:
     return JSONResponse(_db_list_repo_runs(run_id))
 
 
+# An SSE stream closes after this long with a ``timeout`` event; the client reconnects.
+STREAM_MAX_S = 1800.0
+
+
 @app.get("/audit/runs/{run_id}/stream")
 def stream_run(
     run_id: str,
+    request: Request,
     interval: float = Query(default=1.0, ge=0.25, le=5.0, description="Poll interval in seconds."),
 ) -> StreamingResponse:
     """Server-Sent Events: repeated ``snapshot`` events with the same JSON as ``GET /audit/runs/{run_id}``.
 
     Emits ``snapshot`` whenever the payload changes, then ``terminal`` when the run is no longer
     ``pending`` or ``running``, then closes the stream. Sends ``error`` and closes if the run id
-    is unknown.
-    """
+    is unknown, and ``timeout`` after ``STREAM_MAX_S`` (reconnect to keep watching).
 
-    def event_generator():
+    The generator is async: it sleeps on the event loop and borrows a worker thread only for each
+    DB read, so open streams don't hold the threadpool the sync endpoints share.
+    """
+    import anyio
+
+    async def event_generator():
         last_payload: str | None = None
+        deadline = time.monotonic() + STREAM_MAX_S
         while True:
-            row = _db_get_run(run_id)
+            if await request.is_disconnected():
+                return
+            row = await anyio.to_thread.run_sync(_db_get_run, run_id)
             if row is None:
                 yield f"event: error\ndata: {json.dumps({'detail': f'Run {run_id!r} not found.'})}\n\n"
                 return
@@ -500,7 +531,10 @@ def stream_run(
             if row["status"] not in ("pending", "running"):
                 yield f"event: terminal\ndata: {json.dumps({'status': row['status']})}\n\n"
                 return
-            time.sleep(interval)
+            if time.monotonic() >= deadline:
+                yield f"event: timeout\ndata: {json.dumps({'status': row['status']})}\n\n"
+                return
+            await asyncio.sleep(interval)
 
     return StreamingResponse(
         event_generator(),
