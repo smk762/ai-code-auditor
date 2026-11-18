@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -210,12 +211,17 @@ class PrIntel:
         return d
 
 
-def _days_since(iso: str, now: datetime) -> float:
+def _as_utc(t: datetime) -> datetime:
+    """Treat a naive datetime as UTC so aware and naive values can be subtracted."""
+    return t.replace(tzinfo=timezone.utc) if t.tzinfo is None else t
+
+
+def _days_since(iso: str | None, now: datetime) -> float:
     try:
-        t = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        t = datetime.fromisoformat(str(iso or "").replace("Z", "+00:00"))
     except ValueError:
         return 0.0
-    return max((now - t).total_seconds() / 86400, 0.0)
+    return max((_as_utc(now) - _as_utc(t)).total_seconds() / 86400, 0.0)
 
 
 # ── GitHub access ─────────────────────────────────────────────────────────────
@@ -266,7 +272,7 @@ def _checks(node: dict[str, Any]) -> tuple[list[dict[str, str]], int]:
 
 
 def _is_release(title: str, head: str, base: str) -> bool:
-    return bool(re.match(r"\s*(release|chore\(release\))\b", title, re.I)) or (
+    return bool(re.match(r"\s*(?:release\b|chore\(release\))", title, re.I)) or (
         base in ("main", "master") and head in ("dev", "develop")
     )
 
@@ -682,9 +688,16 @@ def refresh(
         )
     path = report_path(output_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    # A unique temp file per call, so overlapping refreshes never share (or steal) one.
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(report, indent=2))
+        os.chmod(tmp_name, 0o644)  # mkstemp makes it 0600; readers (the API) may run as another uid
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
     return report
 
 
@@ -694,6 +707,8 @@ def load_report(output_dir: str | Path | None = None, *, max_age_h: float | None
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        return None
+    if not isinstance(report, dict):
         return None
     if max_age_h is not None:
         age_h = _days_since(str(report.get("generated_at") or ""), datetime.now(timezone.utc)) * 24
