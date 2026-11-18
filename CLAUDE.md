@@ -27,6 +27,7 @@ here and in code. Don't add a rule to remember.
 | Overwrite `trust_history.jsonl`, `trust_eval_history.jsonl` or `pack_savings_history.jsonl` | `test_trust_metrics::test_refresh_writes_report_and_appends_history`, `test_trust_eval::test_evaluate_writes_report_and_history`, `test_pack_savings::test_refresh_writes_report_and_appends_history` |
 | A partial RAG send retiring other docs | `test_rag_retire::test_sync_retires_only_what_the_send_replaced`, `::test_failed_delete_is_retried_and_failed_send_retires_nothing` |
 | Remove a GitHub label this tool didn't add, or label an external item | `test_linchpin::test_apply_labels_adds_removes_only_its_own_and_records_ledger` |
+| Keep calling a local LLM backend after it failed 5 times in a row (each unit paying its timeout), or retry a 4xx | `test_llm_client::test_dead_backend_trips_the_breaker_for_every_client`, `::test_only_transient_errors_are_retried`. `AI_AUDIT_LLM_BREAKER_FAILURES` / `_COOLDOWN_S` (5, 600s) |
 | Spend past a lane budget | `test_spend_ledger::test_lane_and_total_caps`, `::test_batch_prefetch_trims_to_budget` |
 | Suite-rule findings that disagree with argus-ci's CI (a different catalogue or checker) | `test_suite_rules::test_catalogue_is_read_from_dev_not_the_checkout`; the scanner runs argus-ci's own `check.py` |
 | Serve a brand SVG with scripts or event handlers | `test_ui_topology::test_mark_rejects_active_content` |

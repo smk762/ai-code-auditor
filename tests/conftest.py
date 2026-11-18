@@ -43,6 +43,14 @@ def _isolated_suite_rules(tmp_path_factory: pytest.TempPathFactory, monkeypatch:
 
 
 @pytest.fixture(autouse=True)
+def _fresh_llm_breakers() -> None:
+    """LLM circuit breakers are process-wide; one test's failures must not trip the next's."""
+    from auditor import retry
+
+    retry._BREAKERS.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """auditor.env_loader pulls the developer's real .env into os.environ; tests must
     see built-in defaults, not whichever provider/model is configured locally."""

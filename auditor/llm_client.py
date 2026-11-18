@@ -11,7 +11,7 @@ import requests
 from auditor.config import ModelProviderConfig, get_secret_from_env, load_model_provider_config
 from auditor.contracts import CodeUnit, Finding
 from auditor.llm_cache import ReviewCache, review_key
-from auditor.retry import with_retries
+from auditor.retry import breaker_for, with_retries
 from auditor.ecosystem_briefing import build_ecosystem_overview, build_file_briefing
 from auditor.spend_ledger import get_ledger
 
@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 # Providers whose endpoint speaks POST /v1/chat/completions (OpenAI, DeepSeek, Qwen, vLLM, …).
 OPENAI_CHAT_PROVIDERS = {"openai", "openai-compatible", "xai"}
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _transient(exc: Exception) -> bool:
+    """Worth retrying: the backend didn't answer, or answered 5xx/429. A 4xx (a missing model,
+    a bad payload) gives the same answer every time, so it is not retried."""
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        return True
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return exc.response.status_code >= 500 or exc.response.status_code == 429
+    return False
 
 AUDIT_INSTRUCTIONS = (
     "Review the code below for security vulnerabilities (auth bypass, injection, path traversal, "
@@ -134,6 +144,15 @@ class LLMClient:
         self.num_gpu_layers = num_gpu_layers
         self._failures = 0
         self._parse_failures = 0
+        # Shared per endpoint across clients (one is built per repo), so a dead or hung local
+        # model is given up on once per run, not once per repo. Anthropic is left to its SDK's
+        # retries: its failures include refusals, which say nothing about the backend.
+        self.breaker = breaker_for(
+            f"{self.provider}:{self.endpoint}",
+            threshold=int(os.getenv("AI_AUDIT_LLM_BREAKER_FAILURES", "5")),
+            cooldown_s=float(os.getenv("AI_AUDIT_LLM_BREAKER_COOLDOWN_S", "600")),
+        )
+        self.breaker_skips = 0
         # Effort only applies to Claude; it is part of the cache key so changing it re-reviews.
         self.effort = os.getenv("AI_AUDIT_LLM_EFFORT", "low") if self.provider == "anthropic" else ""
         self.instructions = PROMPTS.get(os.getenv("AI_AUDIT_LLM_PROMPT", "v2"), AUDIT_INSTRUCTIONS_V2)
@@ -180,13 +199,24 @@ class LLMClient:
             headers: dict[str, str] = {}
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
-            return with_retries(
+            if not self.breaker.allow():
+                self.breaker_skips += 1
+                return ""
+            text = with_retries(
                 lambda: self._do_generate(payload=payload, headers=headers),
                 retries=3,
                 base_delay_s=1.0,
+                retry_if=_transient,
             )
+            self.breaker.success()
+            return text
         except Exception as exc:  # noqa: BLE001 — never let one unit kill the audit run
             self._failures += 1
+            if self.provider != "anthropic" and self.breaker.failure():
+                logger.warning(
+                    "LLM backend %s failed %d times in a row: skipping it (heuristics only) for %.0fs",
+                    self.endpoint, self.breaker.consecutive, self.breaker.cooldown_s,
+                )
             if self._failures <= 3 or self._failures % 100 == 0:
                 logger.warning(
                     "LLM generate failed (%s/%s, failure #%d) — falling back to heuristics: %s",
