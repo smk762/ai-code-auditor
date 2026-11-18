@@ -56,6 +56,8 @@ class GraphBuilder:
                 """,
                 (unit.id, unit.kind.upper(), unit.symbol, unit.repo, unit.file_path, str(unit.ast_features)),
             )
+            # Re-indexing replaces the unit's imports, so drop edges for imports it no longer has.
+            cur.execute("DELETE FROM edges WHERE source_id = ? AND edge_type = 'IMPORTS'", (unit.id,))
             for imp in unit.ast_features.get("imports", []):
                 import_id = f"import::{unit.repo}::{imp}"
                 cur.execute(
@@ -73,6 +75,13 @@ class GraphBuilder:
                     """,
                     (unit.id, import_id),
                 )
+        # MODULE nodes nothing imports any more are orphans.
+        cur.execute(
+            """
+            DELETE FROM nodes WHERE kind = 'MODULE' AND id LIKE 'import::%'
+              AND id NOT IN (SELECT target_id FROM edges)
+            """
+        )
         self.conn.commit()
 
     def add_dependency(self, source_repo: str, target_repo: str) -> None:
