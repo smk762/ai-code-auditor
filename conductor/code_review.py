@@ -102,7 +102,9 @@ def review_draft_pr(
         # The verdict comes from the reviewer's structured JSON, never from a substring of
         # its prose ("no need to escalate", "privilege escalation", ...).
         declared = _declared_verdict(result.raw or result.summary)
-        if declared == "clean":
+        # A "clean" verdict that still lists findings contradicts itself: the findings win,
+        # so the PR goes through the fix rounds instead of being marked merge-ready.
+        if declared == "clean" and not findings:
             status = "clean"
             break
         if declared == "escalate" or result.status == "ESCALATE":
