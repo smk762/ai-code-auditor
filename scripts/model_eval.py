@@ -224,6 +224,10 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     sample = sample_units(args.n, args.seed, args.risky_share)
+    if not sample:
+        # Every cost and per-unit average below divides by the sample size.
+        print("no code units sampled (--n 0, or no unit matched the filters); nothing to evaluate", file=sys.stderr)
+        return 1
     prompts: dict[str, str] = {}
     for unit, root, briefing in sample:
         llm = LLMClient(
