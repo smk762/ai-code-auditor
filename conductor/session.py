@@ -50,6 +50,8 @@ class SessionState:
     tasks_done: list[WorkerResult] = field(default_factory=list)
     draft_prs: list[DraftPr] = field(default_factory=list)
     draft_pr_by_pack: dict[str, str] = field(default_factory=dict)
+    # (repo, finding title) -> real draft PR url, so a top finding links only its own PR.
+    draft_pr_by_finding: dict[tuple[str, str], str] = field(default_factory=dict)
     decisions: list[DecisionNeeded] = field(default_factory=list)
     scanner_counts: dict[str, int] = field(default_factory=dict)
     repos: list[str] = field(default_factory=list)
@@ -194,8 +196,10 @@ def run_rest_session(
 
         if enable_draft_prs and confirmed_findings and result.status in ("COMPLETED", "PARTIAL"):
             if _cancel() and not force:
+                # Out of time for new PRs only: every finished task still gets its
+                # handoff, escalation and confirmed count above.
                 state.ended_reason = "time_budget"
-                break
+                continue
             top = confirmed_findings[0]
             awareness = awareness_by_repo.get(task.repo) or RepoAwareness(repo=task.repo)
             clash = overlap_reason(
@@ -244,6 +248,8 @@ def run_rest_session(
                 state.draft_prs.append(draft)
                 if draft.url and not dry_run:  # dry-run URLs are placeholders
                     state.draft_pr_by_pack[pack_id] = draft.url
+                    finding_title = str(top.get("title") or top.get("symbol") or "finding")[:160]
+                    state.draft_pr_by_finding[(task.repo, finding_title)] = draft.url
             elif pr_res.error:
                 state.decisions.append(
                     DecisionNeeded(
@@ -270,9 +276,11 @@ def run_rest_session(
         manual_review=len([d for d in state.decisions]),
         top=top_findings_from_worker_results(worker_dicts),
     )
-    # Attach PR urls onto top findings when possible
-    if state.draft_prs and findings.top:
-        findings.top[0].pr_url = state.draft_prs[0].url
+    # Attach a PR url only to the finding that PR was opened for (never a dry-run placeholder).
+    for tf in findings.top:
+        url = state.draft_pr_by_finding.get((tf.repo, tf.title))
+        if url:
+            tf.pr_url = url
 
     window = RestWindowInfo(
         start=rest.start.strftime("%H:%M"),
