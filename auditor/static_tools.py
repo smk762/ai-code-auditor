@@ -59,9 +59,9 @@ def _run_bandit(repo_name: str, target_args: list[str]) -> list[Finding]:
         payload = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
         return []
-    return [
+    return _unique_ids([
         Finding(
-            id=f"bandit:{issue.get('filename')}:{issue.get('line_number')}",
+            id=f"bandit:{issue.get('test_id') or 'unknown'}:{issue.get('filename')}:{issue.get('line_number')}",
             type="security",
             severity=_bandit_to_severity(issue.get("issue_severity", "LOW")),
             repo=repo_name,
@@ -74,7 +74,7 @@ def _run_bandit(repo_name: str, target_args: list[str]) -> list[Finding]:
             source="bandit",
         )
         for issue in payload.get("results", [])
-    ]
+    ])
 
 
 def _run_semgrep(repo_name: str, target_args: list[str]) -> list[Finding]:
@@ -88,9 +88,9 @@ def _run_semgrep(repo_name: str, target_args: list[str]) -> list[Finding]:
         payload = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
         return []
-    return [
+    return _unique_ids([
         Finding(
-            id=f"semgrep:{issue.get('path')}:{issue.get('start', {}).get('line')}",
+            id=f"semgrep:{issue.get('check_id') or 'unknown'}:{issue.get('path')}:{issue.get('start', {}).get('line')}",
             type="code_quality",
             severity=_semgrep_to_severity(issue.get("extra", {}).get("severity", "WARNING")),
             repo=repo_name,
@@ -103,7 +103,20 @@ def _run_semgrep(repo_name: str, target_args: list[str]) -> list[Finding]:
             source="semgrep",
         )
         for issue in payload.get("results", [])
-    ]
+    ])
+
+
+def _unique_ids(findings: list[Finding]) -> list[Finding]:
+    """Ids are ``<tool>:<rule>:<path>:<line>`` (the rule where ``finding_class.static_rule_id``
+    reads it), so two rules on one line stay two findings. A repeat of the same rule on the same
+    line keeps the first id, and later ones get ``:2``, ``:3``. Findings and packs match on repo,
+    file, type and title, never on this id, so the scheme can't reopen or duplicate packs."""
+    seen: dict[str, int] = {}
+    for f in findings:
+        n = seen[f.id] = seen.get(f.id, 0) + 1
+        if n > 1:
+            f.id = f"{f.id}:{n}"
+    return findings
 
 
 def _bandit_to_severity(value: str) -> str:

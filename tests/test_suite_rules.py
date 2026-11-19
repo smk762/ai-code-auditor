@@ -68,7 +68,9 @@ def test_scan_maps_guard_hits_to_findings_and_skips_conventions(tmp_path: Path) 
 def test_scan_passes_paths_and_never_raises(tmp_path: Path) -> None:
     cdir = fake_catalogue(tmp_path)
     suite_rules.scan("r", tmp_path, ["a.py", "b/c.py"], cdir=cdir)
-    assert json.loads((tmp_path / "args.json").read_text())[-2:] == ["a.py", "b/c.py"]
+    assert json.loads((tmp_path / "args.json").read_text())[-3:] == ["--", "a.py", "b/c.py"]
+    suite_rules.scan("r", tmp_path, ["-x.py"], cdir=cdir)   # a path, never an option such as --root
+    assert json.loads((tmp_path / "args.json").read_text())[-2:] == ["--", "-x.py"]
     broken = tmp_path / "broken"
     broken.mkdir()
     assert suite_rules.scan("r", tmp_path, cdir=fake_catalogue(broken, fail=True)) == []
@@ -86,6 +88,19 @@ def test_fixtures_feed_the_gate(tmp_path: Path) -> None:
     none = {x.id: x for x in trust_eval.build_gates(None, None, None, None, None)}["rules.fixtures"]
     assert none.status == "insufficient" and "catalogue" in none.note
     assert suite_rules.fixtures(tmp_path) is None
+
+
+@pytest.mark.parametrize("printed,n,note", [
+    ("null", 0, "unexpected fixtures output: NoneType"),
+    ('{"error": "boom"}', 0, "unexpected fixtures output: dict"),
+    ('[1, "x", {"rule": "a", "ok": true}]', 1, ""),
+])
+def test_fixtures_survive_output_of_the_wrong_shape(tmp_path: Path, printed: str, n: int, note: str) -> None:
+    d = tmp_path / "suite-rules"
+    d.mkdir()
+    (d / "check.py").write_text(f"print({printed!r})\n")
+    rep = suite_rules.fixtures(None, cdir=d)
+    assert (rep["n"], rep["ok"], rep["note"]) == (n, n, note)
 
 
 def test_taxonomy_maps_every_suite_guard_rule() -> None:
@@ -130,7 +145,7 @@ def test_catalogue_is_read_from_dev_not_the_checkout(tmp_path: Path, monkeypatch
     d = suite_rules.export_catalogue(m, cache)
     assert d is not None and (d / "check.py").read_text() == "print('v1')\n"   # HEAD has none; origin/dev does
     assert suite_rules.export_catalogue(m, cache) == d                          # cached by tree hash
-    monkeypatch.delenv("AI_AUDIT_SUITE_RULES_DIR")
+    monkeypatch.delenv("AI_AUDIT_SUITE_RULES_DIR", raising=False)
     monkeypatch.setattr("auditor.trust_metrics._mirror_paths", lambda *_: {"argus-ci": m})
     got = suite_rules.catalogue_dir(cache_root=tmp_path / "out")          # cache_root is the output dir
     assert got == tmp_path / "out" / "_suite_rules" / d.parent.name / "suite-rules" and (got / "check.py").exists()

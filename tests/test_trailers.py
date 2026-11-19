@@ -107,6 +107,13 @@ def test_range_pack_ids(repo: Path) -> None:
     assert tr.range_pack_ids(repo, f"{base}..HEAD") == ["pack-r-2", "pack-r-1"]
 
 
+def test_range_is_never_read_as_a_git_option(repo: Path, tmp_path: Path) -> None:
+    target = tmp_path / "written-by-git"
+    with pytest.raises(ValueError):
+        tr.range_pack_ids(repo, f"--output={target}")
+    assert not target.exists()
+
+
 def test_reverts_are_attributed_to_the_named_packs(repo: Path) -> None:
     keep = commit(repo, "k", "Fix k\n\nPack: pack-r-keep")
     bad = commit(repo, "b", "Fix b\n\nPack: pack-r-bad\nPack: pack-r-bad2")
