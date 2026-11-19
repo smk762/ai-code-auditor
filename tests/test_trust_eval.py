@@ -213,3 +213,32 @@ def test_read_jsonl_skips_undecodable_bytes_and_non_object_lines(tmp_path: Path)
     p = tmp_path / "h.jsonl"
     p.write_bytes(b'{"a": 1}\n\xff\xfe garbage\n1\n"x"\nnull\n[1]\n{"b": 2}\n')
     assert trust_eval._read_jsonl(p) == [{"a": 1}, {"b": 2}]
+
+
+def test_seeded_run_creates_a_missing_output_dir(tmp_path: Path) -> None:
+    mirrors = tmp_path / "mirrors.yaml"
+    mirrors.write_text("mirrors: []\n")
+    out = tmp_path / "fresh" / "reports"
+    r = eval_seeded.run(out, mirrors_path=mirrors, seed="fixed")
+    assert json.loads((out / eval_seeded.SEEDED_NAME).read_text())["seed"] == r["seed"] == "fixed"
+
+
+def test_kill_restores_the_module_byte_for_byte(tmp_path: Path, monkeypatch) -> None:
+    import random
+
+    from auditor import evidence
+
+    mod = tmp_path / "calc.py"
+    raw = SRC.replace("\n", "\r\n").encode()
+    mod.write_bytes(raw)
+    seen: list[bytes] = []
+
+    def fake_pytest(root, python, files, timeout_s):
+        seen.append(mod.read_bytes())
+        return {"t::a": "failed" if len(seen) > 1 else "passed"}, ""
+
+    monkeypatch.setattr(evidence, "_pytest", fake_pytest)
+    hit = eval_seeded._kill(tmp_path, tmp_path, mod, "clamp", "t.py", Path(sys.executable), 5, tmp_path,
+                            random.Random(0))
+    assert hit is not None and hit[2] == ["t::a"] and seen[1] != raw
+    assert mod.read_bytes() == raw
