@@ -306,6 +306,8 @@ class MergeHookScheduler:
         self._history: deque[dict[str, Any]] = deque(maxlen=50)
         self._running_repo: str | None = None
         self._worker_thread: threading.Thread | None = None
+        # When the last refresh finished; the global gap runs from here, across worker restarts.
+        self._last_finished: float = 0.0
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -426,6 +428,15 @@ class MergeHookScheduler:
                     self._running_repo = None
                     self._worker_thread = None
                     return
+                # The gap counts from the last refresh, even one run by an earlier worker that
+                # exited because the queue was briefly empty.
+                wait = (self._last_finished + gap - time.time()) if gap > 0 and self._last_finished else 0.0
+            if wait > 0:
+                time.sleep(wait)
+                continue
+            with self._lock:
+                if not self._ready:
+                    continue
                 repo = self._ready.popleft()
                 event = self._pending.pop(repo, None)
                 self._timers.pop(repo, None)
@@ -471,12 +482,8 @@ class MergeHookScheduler:
                         }
                     )
 
-            if gap > 0:
-                # Peek: if more work is queued, honour the inter-repo quiet window.
-                with self._lock:
-                    more = bool(self._ready)
-                if more:
-                    time.sleep(gap)
+            with self._lock:
+                self._last_finished = time.time()
 
 
 _SCHEDULER: MergeHookScheduler | None = None

@@ -120,6 +120,29 @@ def test_scheduler_serialises_repos_with_global_gap(monkeypatch):
     assert stamps[1] - stamps[0] >= 0.9
 
 
+def test_global_gap_holds_when_the_next_merge_arrives_after_the_worker_exits(monkeypatch):
+    """The worker exits on an empty queue; a merge arriving next must still wait out the gap."""
+    monkeypatch.setenv("AI_AUDIT_MERGE_HOOK_ENABLED", "1")
+    monkeypatch.setenv("AI_AUDIT_MERGE_DEBOUNCE_S", "0")
+    monkeypatch.setenv("AI_AUDIT_MERGE_GLOBAL_GAP_S", "1")
+
+    sched = MergeHookScheduler()
+    stamps: list[float] = []
+
+    def fake_run(event, **kwargs):
+        stamps.append(time.time())
+        return {"repo": event.repo, "ok": True}
+
+    with patch("auditor.merge_hook.run_merge_refresh", side_effect=fake_run):
+        sched.enqueue(MergeEvent(repo="repo-one", force=True))
+        assert sched.wait_idle(timeout=5, poll_s=0.01)
+        sched.enqueue(MergeEvent(repo="repo-two", force=True))
+        assert sched.wait_idle(timeout=5, poll_s=0.01)
+
+    assert len(stamps) == 2
+    assert stamps[1] - stamps[0] >= 0.9
+
+
 def test_force_skips_debounce(monkeypatch):
     monkeypatch.setenv("AI_AUDIT_MERGE_DEBOUNCE_S", "60")
     monkeypatch.setenv("AI_AUDIT_MERGE_GLOBAL_GAP_S", "0")
