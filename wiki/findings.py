@@ -17,7 +17,7 @@ MAX_PACKS = 15
 
 def _esc(text: Any) -> str:
     """Keep table cells on one line and stop stray pipes breaking the table."""
-    cell = " ".join(str(text or "").splitlines())  # \n, \r, \u2028 ...
+    cell = " ".join(("" if text is None else str(text)).splitlines())  # 0 / False stay visible  # \n, \r, \u2028 ...
     # A table splits on any pipe not preceded by a lone backslash, so backslashes right before a
     # pipe are doubled too ("a\\|b" must not become an escaped backslash plus a bare pipe).
     # Other backslashes stay as they are: they may sit inside a code span.
