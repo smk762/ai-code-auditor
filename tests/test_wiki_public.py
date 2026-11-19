@@ -390,3 +390,28 @@ def test_publish_tolerates_a_null_generated_at(wiki: Path, tmp_path: Path) -> No
     (b / "manifest.json").write_text(json.dumps(m))
     res = pub.publish(b, repo=_bare(tmp_path), checkout=tmp_path / "co", denylist_path=deny, visibility=VIS.get)
     assert res["changed"] and res["commit"] and res["repos"] == ["argus-good"]
+
+
+@pytest.mark.parametrize("content", ["", "\n\n", "# only comments\n   # and blanks\n"])
+def test_an_empty_denylist_fails_closed(wiki: Path, content: str) -> None:
+    # an empty or comment-only deny-list filters nothing, so it must stop the export like a missing one
+    deny = wiki.parent / "deny.txt"
+    deny.write_text(content)
+    with pytest.raises(ValueError, match="contains no terms"):
+        public.load_denylist(deny)
+    with pytest.raises(ValueError, match="contains no terms"):
+        public.export(wiki, denylist_path=deny, visibility=VIS.get)
+    assert not (wiki / "wiki_public").exists()
+
+
+def test_a_nested_manifest_json_is_covered_by_the_bundle_hash(wiki: Path, tmp_path: Path) -> None:
+    from wiki import publish as pub
+
+    deny = wiki.parent / "deny.txt"
+    rep = public.export(wiki, denylist_path=deny, visibility=VIS.get)
+    b = wiki / "wiki_public"
+    assert public.bundle_hash_of(b) == rep.bundle_sha256  # what the export produces hashes as before
+    (b / "argus-good" / "manifest.json").write_text('{"planted": true}\n')  # only the root manifest is exempt
+    assert public.bundle_hash_of(b) != rep.bundle_sha256
+    with pytest.raises(RuntimeError, match="bundle hash mismatch"):
+        pub.publish(b, repo=_bare(tmp_path), checkout=tmp_path / "co", denylist_path=deny, visibility=VIS.get)
