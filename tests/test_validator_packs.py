@@ -169,6 +169,16 @@ def test_changed_file_names_are_never_lint_options(tmp_path: Path, monkeypatch) 
         assert files == ["./--fix.py", "./-", "ok.py"], cmd
 
 
+def test_empty_file_list_lints_nothing(tmp_path: Path, monkeypatch) -> None:  # 94eb95fb7c
+    seen: list[list[str]] = []
+    monkeypatch.setattr(validator, "_exec", lambda cmd, **kw: seen.append(cmd) or
+                        ValidationResult(passed=False, tool="lint_only", duration_ms=0, errors=["x"], raw_output=""))
+    for ruff in ("/usr/bin/ruff", None):
+        monkeypatch.setattr(validator.shutil, "which", lambda name, r=ruff: r)
+        assert validator._lint_files(tmp_path, [], 30).passed
+    assert seen == []  # neither ruff (whole tree) nor py_compile (stdin) ran
+
+
 def test_exec_error_falls_back_to_stdout(tmp_path: Path) -> None:  # 3de9a5121e
     code = "print('x.py:1:1: F821 undefined name'); raise SystemExit(1)"
     res = validator._exec([sys.executable, "-c", code], cwd=tmp_path, tool="lint_only", timeout_s=30)

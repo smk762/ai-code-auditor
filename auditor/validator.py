@@ -716,6 +716,9 @@ def _lint_files(tree: Path, files: list[str], timeout_s: int) -> ValidationResul
 
     A file name from the patch must never be read as an option (``--fix``, ``--config=...``) or as
     py_compile's ``-`` (stdin), so one that starts with ``-`` is passed as ``./<name>``."""
+    if not files:  # ruff with no paths lints the whole tree; py_compile with none can read stdin
+        return ValidationResult(passed=True, tool="lint_only", duration_ms=0, errors=[],
+                                raw_output="no files to lint")
     files = [f"./{f}" if f.startswith("-") else f for f in files]
     if shutil.which("ruff"):
         return _exec(["ruff", "check", "--isolated", "--no-cache", "--select", _RUFF_SELECT, *files],
