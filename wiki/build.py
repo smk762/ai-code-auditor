@@ -102,8 +102,10 @@ def _write_top_index(output_dir: str | Path) -> None:
             continue
         try:
             idx = json.loads(idx_path.read_text(encoding="utf-8"))
-        except ValueError:
+        except (OSError, ValueError):
             continue
+        if not isinstance(idx, dict) or not idx.get("repo"):
+            continue  # an older-format or foreign file must not stop every other repo's entry
         repos[idx["repo"]] = {"built_at": idx.get("built_at"), "source_sha": idx.get("source_sha"),
                               "branch": idx.get("branch"), "pages": len(idx.get("pages") or [])}
     atomic_write_text(root / "INDEX.json", json.dumps({"updated_at": _now(), "repos": repos}, indent=2))
@@ -144,6 +146,8 @@ def build(repo_names: list[str] | None, output_dir: str | Path, *, mode: str = "
     jobs_by_repo: dict[str, list[notes_mod.NoteJob]] = {}
     for repo in repos:
         res = report.repos.setdefault(repo.name, RepoResult(repo.name))
+        if res.skipped:  # e.g. not a public argus repo: no notes to pay for
+            continue
         try:
             jobs, cached, oversize = notes_mod.scan_notes(repo, out)
         except Exception as exc:  # noqa: BLE001 — e.g. mirror missing; other repos go on
@@ -263,8 +267,11 @@ def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport
     d = wiki_dir(out) / "_public" / name if public else wiki_dir(out) / name
     d.mkdir(parents=True, exist_ok=True)
     try:
-        previous = {p["slug"]: p for p in json.loads((d / "INDEX.json").read_text(encoding="utf-8")).get("pages", [])}
-    except (OSError, ValueError):
+        prev_pages = json.loads((d / "INDEX.json").read_text(encoding="utf-8")).get("pages", [])
+        # only entries naming a slug and a file can be reused; a malformed index counts as none
+        previous = {p["slug"]: p for p in prev_pages
+                    if isinstance(p, dict) and isinstance(p.get("slug"), str) and isinstance(p.get("file"), str)}
+    except (OSError, ValueError, AttributeError, TypeError):
         previous = {}
     base = Path(repo.path) if "://" not in (repo.path or "") else root
     sha, branch = _git(base, "rev-parse", "HEAD"), _git(base, "rev-parse", "--abbrev-ref", "HEAD")
