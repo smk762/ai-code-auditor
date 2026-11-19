@@ -172,7 +172,16 @@ def test_every_status_writer_refreshes_the_pack_doc(fake, tmp_path, monkeypatch)
     assert res["updated"] is True
     assert fake.deleted_ids == ["agent-pack::pack-a"]
 
-    # the kill switch is honoured, and a missing pack is a no-op
-    monkeypatch.setenv("AI_AUDIT_PACK_RAG_INGEST", "0")
-    assert agent_pack.refresh_pack_rag(tmp_path, {"id": "pack-b", "status": "resolved"}) is None
+    sent_before = list(fake.ingested)
+
+    # a missing pack is a no-op (checked with the kill switch off, so this path is what runs)
+    monkeypatch.delenv("AI_AUDIT_PACK_RAG_INGEST", raising=False)
+    assert agent_pack.pack_rag_ingest_enabled()
     assert agent_pack.refresh_pack_rag(tmp_path, None) is None
+    assert fake.deleted_ids == ["agent-pack::pack-a"] and fake.ingested == sent_before
+
+    # the kill switch is honoured: neither a closed pack is retired nor an open one re-sent
+    monkeypatch.setenv("AI_AUDIT_PACK_RAG_INGEST", "0")
+    assert agent_pack.refresh_pack_rag(tmp_path, _mk_pack("pack-b", status="resolved").to_dict()) is None
+    assert agent_pack.refresh_pack_rag(tmp_path, _mk_pack("pack-c").to_dict()) is None
+    assert fake.deleted_ids == ["agent-pack::pack-a"] and fake.ingested == sent_before
