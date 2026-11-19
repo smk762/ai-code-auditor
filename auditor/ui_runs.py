@@ -322,17 +322,21 @@ def _pack_lookup(output_dir: str | Path) -> dict[tuple[str, str, str], dict[str,
     from auditor.agent_pack import index_path
 
     try:
-        entries = json.loads(index_path(output_dir).read_text(encoding="utf-8")).get("packs") or []
+        data = json.loads(index_path(output_dir).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    packs = data.get("packs") if isinstance(data, dict) else None
+    # malformed or legacy entries (not objects, or no id) can't be linked: skip them
+    entries = [e for e in packs if isinstance(e, dict) and e.get("id")] if isinstance(packs, list) else []
     rank = {st: i for i, st in enumerate(PACK_STATUS_ORDER)}
-    by_id = {e.get("id"): e for e in entries}
+    by_id = {e["id"]: e for e in entries}
     out: dict[tuple[str, str, str], dict[str, Any]] = {}
     for e in entries:
         if e.get("layer") == "world_model" or not e.get("title"):
             continue
         k = (str(e.get("repo") or ""), str(e.get("file_path") or ""), str(e["title"]))
-        e = by_id.get(e.get("duplicate_of")) or e  # a closed duplicate stands for its keeper
+        dup = e.get("duplicate_of")
+        e = (by_id.get(dup) if dup else None) or e  # a closed duplicate stands for its keeper
         status = str(e.get("status") or "open")
         cur = out.get(k)
         if cur is None or rank.get(status, len(rank)) < rank.get(cur["status"], len(rank)):
@@ -363,12 +367,15 @@ def findings_data(
     pack index, ``pack_status`` filters on it (comma-separated; ``none`` = no pack), and
     ``packs`` summarises the filtered rows' packs, including the open ones to hand an agent.
     """
+    filters = {"repo": repo, "severity": severity, "source": source, "type": type, "q": q,
+               "change": change, "pack_status": pack_status, "limit": limit}
     with ui._db_session() as s:
         row = _resolve_run(s, run_id or None)
-        if row is None:
+        if row is None:  # same keys as the full response below
             return None if run_id else {"run": None, "previous": None, "matrix": {}, "facets": {},
                                         "findings": [], "total": 0, "filtered_total": 0, "delta": None,
-                                        "matrix_prev": None, "pack_matrix": None, "history": []}
+                                        "matrix_prev": None, "pack_matrix": None, "history": [],
+                                        "packs": None, "filters": filters}
         run = run_to_dict(row)
         current = _findings(s, row.run_id)
         base = _baseline(s, row)
@@ -470,6 +477,5 @@ def findings_data(
         "filtered_total": len(rows),
         "findings": rows[:limit],
         "packs": pack_summary,
-        "filters": {"repo": repo, "severity": severity, "source": source, "type": type, "q": q,
-                    "change": change, "pack_status": pack_status, "limit": limit},
+        "filters": filters,
     }

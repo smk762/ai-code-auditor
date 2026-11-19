@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import fcntl
+import os
 from pathlib import Path
+import shutil
+
 import yaml
 
 from auditor.contracts import PatternProposal
@@ -81,6 +85,17 @@ def append_architecture_rule_for_extraction(candidate: dict, rules_path: str = "
     survive; the result is re-parsed and must equal the old data plus the new rule.
     """
     path = Path(rules_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # the whole read-modify-write holds a lock, so two concurrent approvals can't drop each other's rule
+    with open(path.with_name(path.name + ".lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            return _append_rule(path, rules_path, candidate)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _append_rule(path: Path, rules_path: str, candidate: dict) -> Path:
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     data = (yaml.safe_load(text) or {}) if text else {}
     if not isinstance(data, dict):
@@ -97,5 +112,13 @@ def append_architecture_rule_for_extraction(candidate: dict, rules_path: str = "
     if new_text is None or yaml.safe_load(new_text) != expected:
         # No block-style rules list to extend: write the whole document (comments are lost).
         new_text = yaml.safe_dump(expected, sort_keys=False)
-    path.write_text(new_text, encoding="utf-8")
+    # tmp + replace: a crash mid-write must not leave the rules file truncated
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(new_text, encoding="utf-8")
+        if path.exists():
+            shutil.copymode(path, tmp)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
     return path

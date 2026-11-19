@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -144,6 +145,11 @@ class Plan:
     skipped: dict[str, str] = field(default_factory=dict)  # "repo/variant" → why
 
 
+def _aware(t: datetime) -> datetime:
+    """``t`` with a timezone: a naive stamp (an older or hand-edited index) is taken as UTC."""
+    return t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+
+
 def _refused_by_last_export(out: Path) -> set[str]:
     try:
         rep = json.loads((out / "wiki_public_report.json").read_text(encoding="utf-8"))
@@ -163,7 +169,7 @@ def plan(output_dir: str | Path, repo_names: list[str] | None = None, *, force: 
     from auditor.config import load_ecosystem_config
     from wiki.sources import source_files
 
-    out, now = Path(output_dir), now or datetime.now(timezone.utc)
+    out, now = Path(output_dir), _aware(now or datetime.now(timezone.utc))
     repos = [r for r in load_ecosystem_config().repos if r.enabled and (not repo_names or r.name in repo_names)]
     result = Plan()
     refused = _refused_by_last_export(out)
@@ -193,8 +199,8 @@ def plan(output_dir: str | Path, repo_names: list[str] | None = None, *, force: 
                     result.skipped[key] = "up to date with the mirror"
                     continue
                 try:
-                    built = datetime.fromisoformat(idx.get("built_at") or "")
-                except ValueError:
+                    built = _aware(datetime.fromisoformat(idx.get("built_at") or ""))
+                except (TypeError, ValueError):
                     built = None
                 if built and now - built < min_interval():
                     result.skipped[key] = f"built {(now - built).days}d ago (weekly at most)"
@@ -243,29 +249,40 @@ def select_within_budget(items: list[PlanItem], estimates: dict[tuple[str, str],
     return chosen, deferred
 
 
+LOCK_WAIT_S = 1.0  # outlasts an is_running() probe; a real refresh holds the lock for minutes
+
+
 @contextmanager
 def _lock(out: Path) -> Iterator[None]:
     _wiki(out).mkdir(parents=True, exist_ok=True)
-    f = open(_wiki(out) / ".refresh.lock", "w")
+    f = open(_wiki(out) / ".refresh.lock", "a")
     try:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise RuntimeError("a wiki refresh is already running") from exc
+        deadline = time.monotonic() + LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                # a status probe holds the lock for an instant; only a lock that stays held is a run
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("a wiki refresh is already running") from exc
+                time.sleep(0.05)
         yield
     finally:
         f.close()
 
 
 def is_running(output_dir: str | Path) -> bool:
+    """Whether a refresh holds the lock. Probes with a shared lock, released at once."""
     p = _wiki(Path(output_dir)) / ".refresh.lock"
     if not p.exists():
         return False
-    with open(p, "w") as f:
+    with open(p, "a") as f:
         try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
         except BlockingIOError:
             return True
+        fcntl.flock(f, fcntl.LOCK_UN)
         return False
 
 

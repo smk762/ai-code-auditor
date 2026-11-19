@@ -78,8 +78,14 @@ def export_catalogue(mirror: Path, cache: Path) -> Path | None:
     tmp = cache / f".tmp-{tree[:16]}-{os.getpid()}"
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
-    with tarfile.open(fileobj=io.BytesIO(arch.stdout)) as tf:
-        tf.extractall(tmp, filter="data")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(arch.stdout)) as tf:
+            tf.extractall(tmp, filter="data")
+    except (tarfile.TarError, OSError) as exc:
+        # Pruning below skips .tmp-* and the next run has another pid: never leave it behind.
+        shutil.rmtree(tmp, ignore_errors=True)
+        logger.warning("suite rules export of %s failed: %s", tree[:16], exc)
+        return None
     try:
         tmp.rename(dest)
     except OSError:  # another process exported the same tree first
@@ -122,21 +128,31 @@ def scan(repo_name: str, repo_root: str | Path, paths: list[str] | None = None, 
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         logger.warning("suite rules scan of %s failed: %s", repo_name, exc)
         return []
-    meta = data.get("rules") or {}
+    if not isinstance(data, dict):
+        logger.warning("suite rules scan of %s: expected a JSON object, got %s", repo_name, type(data).__name__)
+        return []
+    meta = data.get("rules") if isinstance(data.get("rules"), dict) else {}
+    hits = data.get("hits") if isinstance(data.get("hits"), list) else []
     out = []
-    for h in data.get("hits") or []:
-        m = meta.get(h.get("rule")) or {}
-        if not m or m.get("kind", "guard") != "guard":
+    for h in hits:
+        if not isinstance(h, dict) or not h.get("rule") or not h.get("path"):
             continue
+        m = meta.get(h.get("rule")) or {}
+        if not isinstance(m, dict) or not m or m.get("kind", "guard") != "guard":
+            continue
+        try:
+            line = int(h.get("line") or 0)
+        except (TypeError, ValueError):
+            line = 0
         cls = str(m.get("class") or "")
         sev = str(m.get("severity") or "MEDIUM").upper()
         out.append(Finding(
-            id=f"suite:{h['rule']}:{h['path']}:{h['line']}",
+            id=f"suite:{h['rule']}:{h['path']}:{line}",
             type="security" if cls in SECURITY_CLASSES else "bug",
             severity=sev if sev in _SEVERITIES else "MEDIUM",
             repo=repo_name,
             file_path=str(root / h["path"]),
-            line=int(h.get("line") or 0),
+            line=line,
             title=f"{h['rule']}: {str(m.get('message') or '').split('. ')[0].rstrip('.')}",
             description=str(m.get("message") or "") + (f" ({h['detail']})" if h.get("detail") else ""),
             evidence=str(h.get("text") or ""),

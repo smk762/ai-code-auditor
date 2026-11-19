@@ -50,7 +50,7 @@ def analyze_call_graph(
         if "from" in item and "to" in item and item["to"] != "*"
     }
     wildcard_senders: set[str] = {
-        item["from"] for item in allowed_calls_raw if item.get("to") == "*"
+        item["from"] for item in allowed_calls_raw if "from" in item and item.get("to") == "*"
     }
 
     if not env_to_service:
@@ -141,14 +141,22 @@ def _find_service_calls(
     """
     try:
         tree = ast.parse(source, filename=str(file_path))
-    except SyntaxError:
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        # NUL bytes (ValueError before 3.12) or pathologically nested generated
+        # code (RecursionError, or MemoryError "parser stack overflowed") skip
+        # this file like a syntax error instead of aborting the whole scan.
         return []
 
     # Pass 1: collect variable names that were assigned from a service env var.
     # e.g. gothmog_url = os.getenv("GOTHMOG_URL")  →  {"GOTHMOG_URL": "gothmog", ...}
     service_var_names: dict[str, str] = {}  # upper(var_name) → service
+    # Annotated assignments (gothmog_url: str = os.getenv(...)) count too.
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets = [node.target]
+        else:
             continue
         try:
             rhs = ast.unparse(node.value).upper()
@@ -156,7 +164,7 @@ def _find_service_calls(
             continue
         for frag, svc in env_to_service.items():
             if frag in rhs:
-                for target in node.targets:
+                for target in targets:
                     if isinstance(target, ast.Name):
                         service_var_names[target.id.upper()] = svc
                 break

@@ -68,7 +68,9 @@ def _behind(repo_cfg: Any, built_sha: str | None, tip_sha: str | None) -> dict[s
                 commits = int(r.stdout.strip())
         except (OSError, subprocess.TimeoutExpired):
             pass
-    return {"behind": True, "commits": commits, "tip_sha": tip_sha}
+    # git's count wins when known: 0 means the build already has the tip (an abbreviated SHA,
+    # or a build newer than the recorded tip); the SHAs differing is only a fallback
+    return {"behind": commits > 0 if commits is not None else True, "commits": commits, "tip_sha": tip_sha}
 
 
 def _github(slug: str | None, sha: str | None, subpath: str, path: str, a: int, b: int) -> str | None:

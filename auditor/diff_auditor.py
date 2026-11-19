@@ -44,7 +44,8 @@ def get_diff_from_branch(repo_path: Path, compare_branch: str) -> str:
         result = subprocess.run(
             ["git", "-C", str(repo_path), "diff", f"{git_ref_arg(compare_branch)}...HEAD"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
     except subprocess.TimeoutExpired as exc:
@@ -75,7 +76,8 @@ def get_diff_between_refs(repo_path: Path, before: str, after: str = "HEAD") -> 
         result = subprocess.run(
             ["git", "-C", str(repo_path), "diff", f"{git_ref_arg(before_ref)}..{git_ref_arg(after_ref)}"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
     except subprocess.TimeoutExpired as exc:

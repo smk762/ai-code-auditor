@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
 import yaml
 
 from auditor.contracts import CopilotResponse
@@ -136,7 +138,8 @@ class CopilotEngine:
         return "No strong matches found yet. Rebuild the semantic index or narrow the question."
 
     def _answer_extraction_query(self, query: str) -> CopilotResponse:
-        path = Path("reports/extraction_candidates.yaml")
+        # the configured output dir (AI_AUDIT_OUTPUT_DIR, default reports/), where the ecosystem audit writes it
+        path = Path(os.getenv("AI_AUDIT_OUTPUT_DIR") or "reports") / "extraction_candidates.yaml"
         if not path.exists():
             return CopilotResponse(
                 answer="No extraction candidate report found. Run ecosystem audit first.",
@@ -145,9 +148,14 @@ class CopilotEngine:
                 confidence=0.3,
                 citations=["reports/extraction_candidates.yaml"],
             )
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        candidates = raw.get("candidates", [])
-        if not candidates:
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            raw = {}
+        # a hand-edited or partly written report must not turn the request into a 500
+        candidates = raw.get("candidates") if isinstance(raw, dict) else None
+        top = candidates[0] if isinstance(candidates, list) and candidates else None
+        if not isinstance(top, dict):
             return CopilotResponse(
                 answer="No extraction candidates currently exceed proposal threshold.",
                 supporting_entities=[],
@@ -155,9 +163,9 @@ class CopilotEngine:
                 confidence=0.5,
                 citations=["reports/extraction_candidates.yaml"],
             )
-        top = candidates[0]
-        repos = top.get("repos_involved", [])
-        title = top.get("title", "Top extraction candidate")
+        involved = top.get("repos_involved")
+        repos = [str(r) for r in involved if r is not None] if isinstance(involved, list) else []
+        title = str(top.get("title") or "Top extraction candidate")
         answer = f"{title} is currently top-ranked. Impacted repos: {', '.join(repos)}."
         return CopilotResponse(
             answer=answer,

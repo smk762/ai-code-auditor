@@ -216,12 +216,12 @@ def main() -> None:
     )
     print("World model samples:")
     for entry in list_packs(out, layer="world_model", limit=5):
-        print(f"  [world] {entry.get('id')}  {entry.get('title', '')[:60]}")
+        print(f"  [world] {entry.get('id')}  {(entry.get('title') or '')[:60]}")
     print("Specialist samples:")
     for entry in list_packs(out, layer="specialist", limit=8):
         print(
-            f"  [{entry.get('kind')}] {entry.get('severity', '?'):8} "
-            f"{entry.get('repo', ''):20} {entry.get('id')}"
+            f"  [{entry.get('kind')}] {entry.get('severity') or '?':8} "
+            f"{entry.get('repo') or '':20} {entry.get('id')}"
         )
     from auditor.pack_savings import refresh_quietly
 

@@ -25,19 +25,42 @@ class MirrorSyncResult:
     error: str = ""
 
 
-def _git(args: list[str], cwd: Path, check: bool = False) -> subprocess.CompletedProcess[str]:
+# Network git (clone, fetch) runs unattended: never wait on a credential prompt, never hang.
+NETWORK_TIMEOUT_S = 600
+_NO_PROMPT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+
+
+def _git(
+    args: list[str], cwd: Path, check: bool = False, timeout: float | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
         cwd=str(cwd),
         capture_output=True,
         text=True,
         check=check,
+        timeout=timeout,
+        env={**os.environ, **_NO_PROMPT_ENV},
     )
+
+
+def _clone(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """``git clone`` with no prompt and a timeout; a timeout comes back as a failed result."""
+    cmd = ["git", *_CLONE_PROTOCOLS, "clone", *args]
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, check=False,
+                              timeout=NETWORK_TIMEOUT_S, env={**os.environ, **_NO_PROMPT_ENV})
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", f"git clone timed out after {NETWORK_TIMEOUT_S}s")
 
 
 def _branch_exists(repo: Path, ref: str) -> bool:
     r = _git(["rev-parse", "--verify", "--quiet", ref], repo)
     return r.returncode == 0
+
+
+def _stash_tip(repo: Path) -> str:
+    return _git(["rev-parse", "-q", "--verify", "refs/stash"], repo).stdout.strip()
 
 
 def _local_only_commits(repo: Path, local: str, remote: str) -> list[str]:
@@ -78,10 +101,21 @@ def _update_local_branch(repo: Path, local: str, remote: str) -> str:
     if _git(["merge-base", "--is-ancestor", local, remote], repo).returncode == 0:
         # A plain fast-forward that local changes blocked (files it would overwrite), not a
         # rewrite: stash them and fast-forward. No backup branch needed; nothing leaves the branch.
+        before = _stash_tip(repo)
         st = _git(["stash", "push", "--include-untracked", "-m", f"mirror sync: before fast-forward of {local}"], repo)
-        if st.returncode != 0 or _git(["merge", "--ff-only", remote], repo).returncode != 0:
+        # "No local changes to save" exits 0 too: only a new stash entry means something was stashed.
+        if st.returncode != 0 or _stash_tip(repo) in ("", before):
             logger.warning("%s: fast-forward of %s blocked by local changes that could not be stashed; "
                            "leaving it as-is: %s", repo.name, local, (st.stderr or ff.stderr).strip()[:200])
+            return "diverged"
+        ff2 = _git(["merge", "--ff-only", remote], repo)
+        if ff2.returncode != 0:
+            # Give the stashed changes back, so a failed sync leaves the working tree as it found it.
+            pop = _git(["stash", "pop"], repo)
+            logger.warning("%s: fast-forward of %s failed even with local changes stashed; %s; leaving it "
+                           "as-is: %s", repo.name, local,
+                           "restored them" if pop.returncode == 0 else "they are still in the stash (stash@{0})",
+                           (ff2.stderr or "").strip()[:200])
             return "diverged"
         logger.warning("%s: local changes blocked the fast-forward of %s; stashed them and fast-forwarded",
                        repo.name, local)
@@ -120,7 +154,7 @@ def checkout_scan_branch(repo: Path, preferred: str = "dev", report: dict[str, s
 
     An existing local branch is updated with :func:`_update_local_branch`; its outcome goes in
     ``report["update"]`` when *report* is given."""
-    _git(["fetch", "--all", "--prune"], repo)
+    _git(["fetch", "--all", "--prune"], repo, timeout=NETWORK_TIMEOUT_S)
     candidates = [preferred, "main", "master"]
     for name in candidates:
         local = name
@@ -196,21 +230,12 @@ def _sync_mirror_item(
                 return MirrorSyncResult(name=name, path=str(path), ok=False, action="skip",
                                         error=f"refusing to clone: {bad}")
             path.parent.mkdir(parents=True, exist_ok=True)
-            clone = subprocess.run(
-                ["git", *_CLONE_PROTOCOLS, "clone", "--branch", preferred, "--", url, str(path)],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            clone = _clone(["--branch", preferred, "--", url, str(path)])
             if clone.returncode != 0:
-                # Preferred branch may not exist yet — clone default then checkout
-                subprocess.run(
-                    ["git", *_CLONE_PROTOCOLS, "clone", "--", url, str(path)],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-            if path.exists() and (path / ".git").exists():
+                # Preferred branch may not exist yet — clone default then checkout. If this one
+                # fails too, its stderr is the real cause (auth, network), so report that.
+                clone = _clone(["--", url, str(path)])
+            if clone.returncode == 0 and path.exists() and (path / ".git").exists():
                 checked = checkout_scan_branch(path, preferred)
                 return MirrorSyncResult(
                     name=name, path=str(path), ok=True, branch=checked, action="clone"
@@ -252,6 +277,15 @@ def ensure_checkout_aliases(cfg: dict[str, Any]) -> list[MirrorSyncResult]:
     for alias, target_name in aliases.items():
         target = paths.get(str(target_name))
         name = f"alias:{alias}"
+        alias_s = str(alias)
+        if alias_s in ("", ".", "..") or alias_s != Path(alias_s).name or "\\" in alias_s:
+            # An alias is one name inside a mirror directory: never an absolute path or ../ escape
+            # that would let it unlink and repoint a symlink anywhere else.
+            results.append(MirrorSyncResult(
+                name=name, path="", ok=False, action="alias",
+                error=f"alias {alias_s!r} must be a plain directory name",
+            ))
+            continue
         if target is None:
             results.append(MirrorSyncResult(
                 name=name, path="", ok=False, action="alias",
@@ -259,8 +293,8 @@ def ensure_checkout_aliases(cfg: dict[str, Any]) -> list[MirrorSyncResult]:
             ))
             continue
         for parent in parents:
-            link = parent / str(alias)
-            if link == target or not parent.is_dir():
+            link = parent / alias_s
+            if link.parent != parent or link == target or not parent.is_dir():
                 continue
             rel = os.path.relpath(target, parent)
             try:
@@ -315,13 +349,16 @@ def sync_one_mirror(
 def sync_mirrors(
     config_path: str | Path = "config/repo_mirrors.yaml",
     *,
-    branch: str = "dev",
+    branch: str | None = None,
 ) -> list[MirrorSyncResult]:
-    """Clone/fetch every configured mirror and check out *branch* (default dev)."""
+    """Clone/fetch every configured mirror and check out *branch*.
+
+    An explicit *branch* wins; otherwise the config ``default_branch`` (or ``dev``).
+    """
     cfg = load_mirrors_config(config_path)
     root = Path(cfg.get("mirror_root") or "/home/smk/mirrors")
     root.mkdir(parents=True, exist_ok=True)
-    preferred = str(cfg.get("default_branch") or branch)
+    preferred = str(branch or cfg.get("default_branch") or "dev")
     results: list[MirrorSyncResult] = []
 
     for item in cfg.get("mirrors") or []:

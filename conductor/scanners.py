@@ -39,9 +39,13 @@ def _timeout_s() -> int:
         return DEFAULT_TIMEOUT_S
 
 
+FINGERPRINT_HEX = 16  # 64 bits: 8 hex (32 bits) collides at ~1% by ~9k keys across the suite
+LEGACY_FINGERPRINT_HEX = 8
+
+
 def fingerprint(category: str, file: str, symbol: str) -> str:
     key = f"{category}|{file}|{symbol}"
-    return hashlib.sha256(key.encode()).hexdigest()[:8]
+    return hashlib.sha256(key.encode()).hexdigest()[:FINGERPRINT_HEX]
 
 
 def run_scanners(repo_path: str | Path, output_dir: str | Path) -> ScannerResult:
@@ -55,7 +59,7 @@ def run_scanners(repo_path: str | Path, output_dir: str | Path) -> ScannerResult
     run_rc: int | None = None
     if script.exists():
         # Outputs of an earlier run must not stand in for this one if it fails.
-        for name in (*(f"{t}.sarif" for t in SCANNER_TOOLS), "exit-codes.txt"):
+        for name in (*(f"{t}.sarif" for t in SCANNER_TOOLS), "exit-codes.txt", "tool-versions.txt"):
             (output_dir / name).unlink(missing_ok=True)
         log_path = output_dir / "run-scanners.log"
         try:
@@ -133,17 +137,22 @@ def sarif_to_findings(path: Path, *, source: str, repo: str) -> list[Finding]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return []
+    if not isinstance(data, dict):
+        return []
+    runs = data.get("runs")
     out: list[Finding] = []
     seen: dict[str, int] = {}
-    for run in data.get("runs") or []:
+    for run in runs if isinstance(runs, list) else []:
+        if not isinstance(run, dict):
+            continue
         rules = {
             r.get("id"): r
-            for r in ((run.get("tool") or {}).get("driver") or {}).get("rules") or []
+            for r in _list(_dict(_dict(run.get("tool")).get("driver")).get("rules"))
             if isinstance(r, dict) and r.get("id")
         }
-        for result in run.get("results") or []:
+        for result in _list(run.get("results")):
             if not isinstance(result, dict):
                 continue
             rule_id = str(result.get("ruleId") or "unknown")
@@ -154,14 +163,14 @@ def sarif_to_findings(path: Path, *, source: str, repo: str) -> list[Finding]:
                 "note": "LOW",
                 "none": "INFO",
             }.get(level, "MEDIUM")
-            msg = result.get("message") or {}
+            msg = _dict(result.get("message"))
             title = str(msg.get("text") or rule_id)[:200]
-            loc = (result.get("locations") or [{}])[0]
-            phys = (loc.get("physicalLocation") or {}) if isinstance(loc, dict) else {}
-            art = phys.get("artifactLocation") or {}
-            region = phys.get("region") or {}
+            loc = (_list(result.get("locations")) or [{}])[0]
+            phys = _dict(_dict(loc).get("physicalLocation"))
+            art = _dict(phys.get("artifactLocation"))
+            region = _dict(phys.get("region"))
             file_path = str(art.get("uri") or "")
-            line = int(region.get("startLine") or 0)
+            line = _int_or_zero(region.get("startLine"))
             # Content-addressed id: stable when other results come and go, and distinct
             # across runs. The ordinal only separates exact duplicates.
             fps = result.get("partialFingerprints") or result.get("fingerprints") or {}
@@ -191,6 +200,21 @@ def sarif_to_findings(path: Path, *, source: str, repo: str) -> list[Finding]:
     return out
 
 
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def load_dispositions(path: str | Path = "security/dispositions.yaml") -> dict[str, dict[str, Any]]:
     p = Path(path)
     if not p.exists():
@@ -214,7 +238,8 @@ def filter_by_dispositions(
     kept: list[Finding] = []
     for f in findings:
         fp = fingerprint(f.type or f.source, f.file_path, f.title[:80])
-        disp = dispositions.get(fp)
+        # Dispositions written before fingerprints grew to 64 bits still match on their prefix.
+        disp = dispositions.get(fp) or dispositions.get(fp[:LEGACY_FINGERPRINT_HEX])
         if disp and str(disp.get("decision", "")).lower() in {"rejected", "risk-accepted"}:
             continue
         kept.append(f)

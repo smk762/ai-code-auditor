@@ -251,6 +251,31 @@ def test_findings_empty_db(memdb) -> None:
     assert d["run"] is None and d["findings"] == [] and d["history"] == []
 
 
+def test_findings_empty_db_has_the_full_response_shape(history, memdb) -> None:
+    full = ui_runs.findings_data("x-2", repo="x", output_dir="")
+    with memdb() as s:  # wipe: no finished runs left
+        s.query(FindingRecord).delete()
+        s.query(AuditRun).delete()
+    empty = ui_runs.findings_data(repo="x")
+    assert set(empty) == set(full)
+    assert empty["packs"] is None and empty["filters"] == full["filters"]
+
+
+def test_pack_lookup_ignores_id_less_entries(history, tmp_path) -> None:
+    import json
+
+    out = _pack_index(tmp_path, [{"title": "legacy", "repo": "x", "file_path": "z.py"},
+                                 _pk("pack-fresh", "fresh")])
+    packs = {f["title"]: f["pack"] for f in ui_runs.findings_data("x-2", output_dir=out)["findings"]}
+    assert packs["fresh"] == {"id": "pack-fresh", "status": "open", "kind": "nightly"}
+    # malformed index shapes degrade to "no pack links", never an error
+    idx = out / "agent_packs" / "INDEX.json"
+    for bad in ([1, 2], {"packs": ["junk", None, _pk("pack-fresh", "fresh")]}, {"packs": "x"}):
+        idx.write_text(json.dumps(bad))
+        assert isinstance(ui_runs._pack_lookup(out), dict)
+    assert ui_runs._pack_lookup(out) == {}
+
+
 def _f(title, line=1, file="/srv/mirrors/x/app.py", ftype="bug", repo="x"):
     return {"repo": repo, "file_path": file, "path": file, "line": line, "type": ftype,
             "severity": "HIGH", "title": title, "source": "llm"}

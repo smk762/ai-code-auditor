@@ -122,3 +122,22 @@ def test_cache_only_never_calls_model(tmp_path: Path, monkeypatch: pytest.Monkey
                  start_line=1, end_line=1, raw_text="def f(): pass")
     assert c.analyze_code(u) == [] and c.cache_misses == 1
     _ = SimpleNamespace  # keep import used
+
+
+def test_unpriced_model_is_charged_the_dearest_rate_not_zero() -> None:
+    dearest = cost_usd("claude-fable-5-2", 1_000_000, 1_000_000)
+    assert cost_usd("claude-unknown-9", 1_000_000, 1_000_000) == pytest.approx(dearest)
+    assert cost_usd("", 0, 1_000_000) > 0
+    # dated ids price as their base model; local models really are free
+    assert cost_usd("claude-opus-5-5-20261101", 1_000_000, 0) == pytest.approx(4.0)
+    assert cost_usd("ollama/qwen2.5-coder:32b", 1_000_000, 1_000_000) == 0.0
+
+
+def test_summary_is_strict_json_with_caps_disabled(ledger_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    monkeypatch.setenv("AI_AUDIT_BUDGET_TOTAL_USD", "")
+    monkeypatch.setenv("AI_AUDIT_BUDGET_AUDIT_USD", "")
+    s = SpendLedger(ledger_env).summary()
+    assert s["lanes"]["audit"]["remaining"] is None
+    json.dumps(s, allow_nan=False)

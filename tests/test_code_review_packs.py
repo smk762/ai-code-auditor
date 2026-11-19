@@ -57,3 +57,23 @@ def test_failed_review_runs_no_fix_rounds(run: Any) -> None:
     assert draft.code_review is not None
     assert draft.code_review.status == "review_failed"
     assert draft.code_review.fix_rounds == 0
+
+
+def test_clean_verdict_with_findings_is_not_clean(run: Any) -> None:
+    raw = json.dumps({
+        "status": "COMPLETED", "verdict": "clean",
+        "findings": [{"file": "a.py", "title": "x", "severity": "HIGH"}],
+    })
+    review = WorkerResult(task_id="t", status="COMPLETED", summary="", raw=raw,
+                          findings=json.loads(raw)["findings"])
+    draft, missions = run(review)
+    assert draft.code_review is not None
+    assert draft.code_review.status != "clean" and draft.action != "merge_ready"
+    assert "pr_fix" in missions
+
+
+def test_clean_verdict_without_findings_is_clean(run: Any) -> None:
+    raw = json.dumps({"status": "COMPLETED", "verdict": "clean", "findings": []})
+    draft, missions = run(WorkerResult(task_id="t", status="COMPLETED", summary="", raw=raw))
+    assert draft.code_review is not None and draft.code_review.status == "clean"
+    assert "pr_fix" not in missions

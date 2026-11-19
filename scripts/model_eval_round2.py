@@ -20,6 +20,8 @@ import argparse
 import json
 import random
 import sys
+import threading
+import traceback
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -92,8 +94,6 @@ def main() -> int:
     ap.add_argument("--concurrency", type=int, default=6)
     args = ap.parse_args()
     base = Path(args.base)
-    out = ROOT / "reports" / "model_eval" / (datetime.now().strftime("%Y%m%d-%H%M%S") + "-round2")
-    out.mkdir(parents=True, exist_ok=True)
 
     # ── Rebuild the exact round-1 units ─────────────────────────────────────
     wanted = {u["id"]: u for u in json.loads((base / "sample.json").read_text())}
@@ -108,6 +108,28 @@ def main() -> int:
                 if unchanged(u, wanted.get(u.id)):
                     units[u.id], roots[u.id] = u, str(root)
     print(f"matched {len(units)}/{len(wanted)} round-1 units unchanged")
+    if not units:
+        print("no round-1 unit is unchanged (code drifted, or wrong --base?); nothing to run", file=sys.stderr)
+        return 1
+    out = ROOT / "reports" / "model_eval" / (datetime.now().strftime("%Y%m%d-%H%M%S") + "-round2")
+    out.mkdir(parents=True, exist_ok=True)
+    write_lock = threading.Lock()
+
+    def append_jsonl(name: str, row: dict) -> None:
+        """Paid results go to disk as each call completes, so a later failure loses nothing."""
+        with write_lock, (out / name).open("a") as fh:
+            fh.write(json.dumps(row, default=list) + "\n")
+
+    def guarded(phase: str, fn):
+        """Run ``fn(uid)``; an unexpected error is reported for that unit instead of aborting the run."""
+        def run(uid: str) -> None:
+            try:
+                fn(uid)
+            except Exception as exc:  # noqa: BLE001 — one bad unit must not discard the rest
+                print(f"{phase} failed for {uid}: {type(exc).__name__}: {exc}", file=sys.stderr)
+                append_jsonl("errors.jsonl", {"phase": phase, "unit": uid, "error": f"{type(exc).__name__}: {exc}",
+                                              "traceback": traceback.format_exc(limit=5)})
+        return run
 
     def client_for(uid: str) -> LLMClient:
         return LLMClient(
@@ -134,13 +156,18 @@ def main() -> int:
     # ── Haiku with v2 prompt ────────────────────────────────────────────────
     def run_v2(uid: str) -> None:
         r = me.call(client, HAIKU_V2, prompts_v2[uid], max_tokens=8192)
-        parsed = _parse_findings_json(r.get("text", ""), units[uid]) if "text" in r else None
+        try:
+            parsed = _parse_findings_json(r.get("text", ""), units[uid]) if "text" in r else None
+        except Exception as exc:  # noqa: BLE001 — keep the paid response, mark it unparsed
+            r["parse_error"] = f"{type(exc).__name__}: {exc}"
+            parsed = None
         r["parse_ok"] = parsed is not None
         r["findings"] = [asdict(f) for f in (parsed or [])]
         results[("haiku-v2", uid)] = r
+        append_jsonl("raw.jsonl", {"arm": "haiku-v2", "unit": uid, **{k: v for k, v in r.items() if k != "text"}})
 
     with ThreadPoolExecutor(args.concurrency) as pool:
-        list(pool.map(run_v2, list(units)))
+        list(pool.map(guarded("haiku-v2", run_v2), list(units)))
     print("haiku-v2 done")
 
     # ── Opus verifies haiku-v2's MEDIUM+ findings ───────────────────────────
@@ -148,7 +175,7 @@ def main() -> int:
     verify_cost: dict[str, float] = {}
 
     def run_verify(uid: str) -> None:
-        fs = results[("haiku-v2", uid)]["findings"]
+        fs = results.get(("haiku-v2", uid), {}).get("findings", [])
         idx = [i for i, f in enumerate(fs) if is_medium_plus(f["severity"])]
         if not idx:
             return
@@ -159,16 +186,18 @@ def main() -> int:
         prompt = f"{VERIFY_INSTRUCTIONS}\n\n=== CONTEXT AND CODE ===\n{context[uid]}\n\n=== FINDINGS ===\n{listing}"
         r = me.call(client, VERIFIER, prompt, max_tokens=8192, schema=VERIFY_SCHEMA)
         verify_cost[uid] = r.get("cost", 0.0)
+        append_jsonl("verify_raw.jsonl", {"unit": uid, **r})
         try:
             for v in json.loads(r.get("text", ""))["findings"]:
                 i = int(v["id"].lstrip("V"))
                 verdicts[(uid, i)] = v
-        except (json.JSONDecodeError, KeyError, ValueError):
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, AttributeError):
             pass  # unverifiable → treated as rejected below
 
     with ThreadPoolExecutor(args.concurrency) as pool:
-        list(pool.map(run_verify, list(units)))
+        list(pool.map(guarded("verify", run_verify), list(units)))
     print(f"verified {len(verdicts)} MEDIUM+ findings")
+    (out / "verdicts.json").write_text(json.dumps({f"{u}:{i}": v for (u, i), v in verdicts.items()}, indent=1))
 
     # ── Blind judge over the pooled arms ────────────────────────────────────
     judged_arms = ["haiku-v1", "opus-v1", "haiku-v2"]
@@ -191,9 +220,10 @@ def main() -> int:
         except json.JSONDecodeError:
             r["judgement"] = None
         judgements[uid] = r
+        append_jsonl("judgements.jsonl", {"unit": uid, "labels": labels.get(uid), **r})
 
     with ThreadPoolExecutor(args.concurrency) as pool:
-        list(pool.map(run_judge, list(units)))
+        list(pool.map(guarded("judge", run_judge), list(units)))
 
     # ── Score ───────────────────────────────────────────────────────────────
     verdict_of: dict[tuple[str, str, int], dict] = {}  # (arm, uid, idx) -> judge verdict
@@ -282,14 +312,6 @@ def main() -> int:
         "Verification uses a different Opus prompt from the judge, but both are Opus.",
     ]
     (out / "summary.md").write_text("\n".join(md) + "\n")
-    with (out / "raw.jsonl").open("w") as fh:
-        for (arm, uid), r in results.items():
-            if arm == "haiku-v2":
-                fh.write(json.dumps({"arm": arm, "unit": uid, **{k: v for k, v in r.items() if k != "text"}}) + "\n")
-    (out / "verdicts.json").write_text(json.dumps({f"{u}:{i}": v for (u, i), v in verdicts.items()}, indent=1))
-    with (out / "judgements.jsonl").open("w") as fh:
-        for uid, r in judgements.items():
-            fh.write(json.dumps({"unit": uid, "labels": labels.get(uid), **r}, default=list) + "\n")
     print("\n".join(md))
     print(f"\nwritten to {out}")
     return 0

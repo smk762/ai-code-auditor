@@ -94,7 +94,8 @@ def rel_path(repo: str, path: str) -> str:
     p = str(path or "")
     marker = f"/{repo}/"
     if marker in p:
-        return p.rsplit(marker, 1)[1]
+        # The first occurrence is the checkout root; a same-named subdirectory must survive.
+        return p.split(marker, 1)[1]
     # Strip a literal "./" prefix only: lstrip("./") would eat the dot of ".github/" or ".env".
     while p.startswith("./"):
         p = p[2:]
@@ -166,7 +167,7 @@ def load_packs(output_dir: str | Path) -> list[PackView]:
     for path in sorted((Path(output_dir) / "agent_packs").glob("*.yaml")):
         try:
             data = yaml.load(path.read_text(encoding="utf-8"), Loader=_YAML_LOADER)  # noqa: S506 — a safe loader
-        except (OSError, yaml.YAMLError) as exc:
+        except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
             logger.warning("skip unreadable pack %s: %s", path.name, exc)
             continue
         if isinstance(data, dict) and data.get("work_item_id"):
@@ -223,6 +224,12 @@ def load_scans(session, *, since: datetime | None = None) -> list[Scan]:
             "path": rel_path(r.repo, r.file_path), "line": int(r.line or 0),
             "title": r.title or "", "type": r.finding_type or "",
         })
+    # A run that started before the window but wrote findings inside it: its scan is cut by the
+    # window (and may have failed), so it is left out rather than counted as a partial success.
+    early = {rid for rid, _repo in by_scan} - runs.keys()
+    if early:
+        cut = set(session.execute(select(AuditRun.run_id).where(AuditRun.run_id.in_(early))).scalars().all())
+        by_scan = defaultdict(list, {k: v for k, v in by_scan.items() if k[0] not in cut})
     # Ecosystem runs list scanned_repos but store no findings rows; only pipelines that do store
     # findings can report "scanned, nothing found".
     storing = {runs[rid].pipeline for rid, _repo in by_scan if rid in runs}
@@ -581,7 +588,7 @@ def scan_persistence_metric(scans: list[Scan], packs: list[PackView]) -> dict[st
     per_repo: dict[str, dict[str, int]] = {}
     for repo, seq in sorted(by_repo.items()):
         r_total = r_refound = 0
-        for prev, cur in pairwise(seq):
+        for prev, cur in pairwise(sorted(seq, key=lambda x: x.at)):
             if not prev.findings:
                 continue
             p_total = p_refound = 0
@@ -595,14 +602,15 @@ def scan_persistence_metric(scans: list[Scan], packs: list[PackView]) -> dict[st
                                  for g in cur.findings)
             r_total += p_total
             r_refound += p_refound
-            pairs.append({"repo": repo, "from": prev.run_id, "to": cur.run_id, "findings": p_total,
-                          "refound": p_refound, "rate": _rate(p_refound, p_total)})
+            pairs.append({"repo": repo, "from": prev.run_id, "to": cur.run_id, "at": cur.at.isoformat(),
+                          "findings": p_total, "refound": p_refound, "rate": _rate(p_refound, p_total)})
         if r_total:
             per_repo[repo] = {"findings": r_total, "refound": r_refound, "rate": _rate(r_refound, r_total)}
         total += r_total
         refound += r_refound
     return {"findings": total, "refound": refound, "rate": _rate(refound, total), "by_repo": per_repo,
-            "pairs": pairs[-60:]}
+            # The 60 most recent pairs across repos, not the tail of the alphabetically last repos.
+            "pairs": sorted(pairs, key=lambda x: (x["at"], x["repo"]))[-60:]}
 
 
 def flow_metric(scans: list[Scan]) -> dict[str, Any]:
@@ -612,7 +620,7 @@ def flow_metric(scans: list[Scan]) -> dict[str, Any]:
     for s in scans:
         by_repo[s.repo].append(s)
     for seq in by_repo.values():
-        for prev, cur in pairwise(seq):
+        for prev, cur in pairwise(sorted(seq, key=lambda x: x.at)):
             y, w, _ = cur.at.isocalendar()
             wk = f"{y}-W{w:02d}"
             new, gone = _pair_delta(prev.findings, cur.findings)
@@ -674,14 +682,15 @@ def mirror_git_log(mirror_paths: dict[str, Path]) -> GitLog:
             raise FileNotFoundError(f"no mirror for {repo}")
         for ref in ("origin/dev", "HEAD"):
             r = subprocess.run(["git", "log", ref, f"--since={since}", "--format=%H%x1f%cI%x1f%B%x1e"],
-                               cwd=path, capture_output=True, text=True, timeout=30, check=False)
+                               cwd=path, capture_output=True, encoding="utf-8", errors="replace",
+                               timeout=30, check=False)
             if r.returncode == 0:
                 break
         else:
             raise RuntimeError(r.stderr.strip()[:200])
         out = []
         for rec in r.stdout.split("\x1e"):
-            parts = rec.strip("\n").split("\x1f")
+            parts = rec.strip("\n").split("\x1f", 2)  # the message may itself hold 0x1f
             if len(parts) == 3:
                 out.append((parts[0], parts[1], parts[2]))
         return out
@@ -762,7 +771,8 @@ class MirrorCommits:
                 break
 
     def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["git", *args], cwd=self.path, capture_output=True, text=True, timeout=60, check=False)
+        return subprocess.run(["git", *args], cwd=self.path, capture_output=True, encoding="utf-8", errors="replace",
+                              timeout=60, check=False)
 
     def commits(self, since: str) -> list[dict[str, Any]]:
         if not self.ref:
@@ -770,7 +780,7 @@ class MirrorCommits:
         r = self._git("log", self.ref, f"--since={since}", "--format=%H%x1f%P%x1f%cI%x1f%B%x1e")
         out = []
         for rec in r.stdout.split("\x1e") if r.returncode == 0 else []:
-            parts = rec.strip("\n").split("\x1f")
+            parts = rec.strip("\n").split("\x1f", 3)  # the message may itself hold 0x1f
             if len(parts) == 4:
                 out.append({"sha": parts[0], "parents": parts[1].split(), "date": parts[2], "message": parts[3]})
         return out
@@ -790,10 +800,11 @@ class MirrorCommits:
         return out[::-1]  # git lists the first-parent line newest first
 
     def merged_by(self, merge: dict[str, Any]) -> list[str]:
-        """The commits a merge brought in (``first-parent..second-parent``)."""
+        """The commits a merge brought in: reachable from any non-first parent (octopus merges
+        too), not from the first."""
         if len(merge["parents"]) < 2:
             return []
-        r = self._git("rev-list", f"{merge['parents'][0]}..{merge['parents'][1]}")
+        r = self._git("rev-list", *merge["parents"][1:], f"^{merge['parents'][0]}")
         return r.stdout.split() if r.returncode == 0 else []
 
 
@@ -1064,14 +1075,19 @@ def load_report(output_dir: str | Path) -> dict[str, Any] | None:
 
 
 def load_history(output_dir: str | Path, *, limit: int = 365) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
     try:
-        lines = (Path(output_dir) / HISTORY_NAME).read_text().splitlines()
+        # A corrupt byte spoils its own line (skipped below), not the whole history.
+        lines = (Path(output_dir) / HISTORY_NAME).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
     out = []
     for line in lines[-limit:]:
         try:
-            out.append(json.loads(line))
+            entry = json.loads(line)
         except ValueError:
             continue
+        if isinstance(entry, dict):
+            out.append(entry)
     return out

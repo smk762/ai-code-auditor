@@ -131,3 +131,40 @@ def test_tts_rejects_tables_and_urls():
     ok, reasons = md_passes_tts_rules(bad)
     assert not ok
     assert reasons
+
+
+def test_tts_path_check_ignores_slash_separated_prose():
+    for prose in (
+        "Run finished on 2024/01/15.",
+        "Checked TCP/IP/UDP handling.",
+        "The read/write/execute bits look fine.",
+        "Watch input/output/error streams.",
+    ):
+        ok, reasons = md_passes_tts_rules(prose)
+        assert ok, (prose, reasons)
+    for path in ("See /home/smk/repo/file.py now.", "Open ~/notes/today now.", "Edit src/conductor/publish.py."):
+        ok, reasons = md_passes_tts_rules(path)
+        assert any(r.startswith("long_path:") for r in reasons), (path, reasons)
+    ok, reasons = md_passes_tts_rules("See https://example.com/a/b/c please.")
+    assert reasons == ["raw_https_url"]
+
+
+def test_two_publishes_in_one_minute_keep_both_archives(tmp_path: Path, monkeypatch):
+    import conductor.publish as publish_mod
+
+    frozen = datetime(2026, 11, 18, 2, 30, 15, 123456, tzinfo=timezone.utc)
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    monkeypatch.setattr(publish_mod, "datetime", _Frozen)
+    status = _sample_status()
+    md, _ = build_briefing(status)
+    first = publish_status(status, md, output_dir=tmp_path)
+    second = publish_status(_sample_status(), md + "\nSecond run.", output_dir=tmp_path)
+    assert first.archive_json != second.archive_json
+    assert first.archive_md != second.archive_md
+    assert first.archive_md.read_text(encoding="utf-8") != second.archive_md.read_text(encoding="utf-8")
+    assert len(list((tmp_path / "mithrandir" / "archive").glob("*.json"))) == 2

@@ -19,3 +19,17 @@ def test_reindex_drops_removed_imports(tmp_path) -> None:
         assert modules == [("import::r::os",)]
     finally:
         graph.close()
+
+
+def test_node_metadata_is_json(tmp_path) -> None:
+    import json
+
+    graph = GraphBuilder(str(tmp_path / "g.db"))
+    try:
+        unit = _unit(["os"])
+        unit.ast_features.update({"async": True, "returns": None, "args": ("a", "b")})
+        graph.upsert_code_units([unit])
+        (meta,) = graph.conn.execute("SELECT metadata FROM nodes WHERE id = 'u1'").fetchone()
+        assert json.loads(meta) == {"imports": ["os"], "async": True, "returns": None, "args": ["a", "b"]}
+    finally:
+        graph.close()

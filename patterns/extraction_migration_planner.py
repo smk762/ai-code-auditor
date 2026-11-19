@@ -18,7 +18,7 @@ def build_public_api(symbols: list[str]) -> list[str]:
 
 def phased_migration_plan(package_name: str, repos: list[str]) -> dict:
     early = repos[:1] if repos else ["pilot-repo"]
-    later = repos[1:] if len(repos) > 1 else repos
+    later = repos[1:]
     return {
         "phase_1": {
             "name": "Create compatibility wrapper",

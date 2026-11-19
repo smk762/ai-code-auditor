@@ -101,8 +101,16 @@ def _node_runner_supports_pass_with_no_tests(repo_path: Path) -> bool:
         pkg = json.loads((repo_path / "package.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    test_script = (pkg.get("scripts") or {}).get("test", "").lower()
-    return any(runner in test_script for runner in _PASS_WITH_NO_TESTS_RUNNERS)
+    test_script = _table(_table(pkg).get("scripts")).get("test")
+    if not isinstance(test_script, str):
+        return False
+    return any(runner in test_script.lower() for runner in _PASS_WITH_NO_TESTS_RUNNERS)
+
+
+def _table(value: object) -> dict:
+    """*value* when it is a mapping, else {}: parsed JSON/TOML from an audited repo is untrusted,
+    and a key that should hold a table can hold a string, number or list."""
+    return value if isinstance(value, dict) else {}
 
 
 def _run_go(repo_path: Path, timeout_s: int) -> ValidationResult:
@@ -144,6 +152,8 @@ def _exec(
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",  # a tool echoing non-UTF-8 bytes must not crash the run
             timeout=timeout_s,
         )
         elapsed = int((time.monotonic() - t0) * 1000)
@@ -151,8 +161,9 @@ def _exec(
         passed = proc.returncode == 0
         errors: list[str] = []
         if not passed:
-            # Extract the tail of stderr as a concise error
-            tail = proc.stderr.strip()[-1000:]
+            # The tail of stderr as a concise error; stdout's when stderr is empty, since ruff,
+            # pytest and most linters report there.
+            tail = proc.stderr.strip()[-1000:] or proc.stdout.strip()[-1000:]
             if tail:
                 errors.append(tail)
         return ValidationResult(
@@ -257,13 +268,17 @@ def _find_python_runner(repo_path: Path) -> list[str] | None:
 
 
 def _is_writable(path: Path) -> bool:
-    probe = path / ".ai_audit_write_probe"
+    """Whether a file can be created in *path*. The probe has a unique name (``O_EXCL``), so
+    concurrent checks don't remove each other's probes and an existing file is never touched."""
+    import tempfile
+
     try:
-        probe.touch()
-        probe.unlink()
-        return True
-    except (PermissionError, OSError):
+        fd, name = tempfile.mkstemp(dir=path, prefix=".ai_audit_write_probe.")
+    except OSError:
         return False
+    os.close(fd)
+    Path(name).unlink(missing_ok=True)
+    return True
 
 
 def _skipped(reason: str) -> ValidationResult:
@@ -388,7 +403,7 @@ def _node_checks_summary(lines: list[str]) -> list[str]:
 def _npm_summary(lines: list[str]) -> list[str]:
     out: list[str] = []
     for l in lines:
-        if re.search(r"(✕|●\s+\S|FAIL\s|\bExpected:\b|\bReceived:\b|Error:)", l):
+        if re.search(r"(✕|●\s+\S|FAIL\s|\bExpected:|\bReceived:|Error:)", l):
             out.append(l)
     return out
 
@@ -432,7 +447,7 @@ def project_root(tree: Path, rel_path: str) -> Path:
         except ValueError:
             return tree
         if any((p / m).exists() for m in _PROJECT_MARKERS) or (p / "tests").is_dir():
-            return p
+            return p.resolve()  # resolved, like *tree*: callers take relative_to(tree.resolve())
         if p.resolve() == tree:
             return tree
         p = p.parent
@@ -610,8 +625,8 @@ def _requirement_lines(path: Path, depth: int = 0, root: Path | None = None) -> 
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return out
-    for ln in text.splitlines():
-        s = ln.split(" #", 1)[0].strip()
+    for ln in _logical_lines(text):
+        s = _HASH_OPT_RE.sub("", ln.split(" #", 1)[0]).strip()
         if not s or s.startswith("#") or s in (".", "-e .", "-e.") or s.startswith(("-c ", "--constraint")):
             continue
         m = re.match(r"^(?:-r|--requirement)[ =]?\s*(\S+)$", s)
@@ -625,6 +640,25 @@ def _requirement_lines(path: Path, depth: int = 0, root: Path | None = None) -> 
                 out += _requirement_lines(target, depth + 1, root)
             continue
         out.append(s)
+    return out
+
+
+_HASH_OPT_RE = re.compile(r"(?:^|\s)--hash[= ]\S+")
+
+
+def _logical_lines(text: str) -> list[str]:
+    """Lines of a requirements file with backslash continuations joined, as pip reads them
+    (pip-compile --generate-hashes writes ``pkg==1.0 \\`` then indented ``--hash=...`` lines)."""
+    out: list[str] = []
+    buf = ""
+    for ln in text.splitlines():
+        if ln.rstrip().endswith("\\") and not ln.lstrip().startswith("#"):
+            buf += ln.rstrip()[:-1] + " "
+            continue
+        out.append(buf + ln)
+        buf = ""
+    if buf:
+        out.append(buf)
     return out
 
 
@@ -678,7 +712,11 @@ def ensure_test_venv(root: Path, cache_dir: Path, extra: list[str] | None = None
 
 
 def _lint_files(tree: Path, files: list[str], timeout_s: int) -> ValidationResult:
-    """Fatal-only lint of the changed files: ruff when installed, else a compile check."""
+    """Fatal-only lint of the changed files: ruff when installed, else a compile check.
+
+    A file name from the patch must never be read as an option (``--fix``, ``--config=...``) or as
+    py_compile's ``-`` (stdin), so one that starts with ``-`` is passed as ``./<name>``."""
+    files = [f"./{f}" if f.startswith("-") else f for f in files]
     if shutil.which("ruff"):
         return _exec(["ruff", "check", "--isolated", "--no-cache", "--select", _RUFF_SELECT, *files],
                      cwd=tree, tool="lint_only", timeout_s=timeout_s)
@@ -702,22 +740,27 @@ def _run_project_tests(root: Path, python: Path, timeout_s: int,
     try:
         proc = proc_run([str(python), "-m", "pytest", "-q", "--tb=short", "-rfE", "-p", "no:cacheprovider",
                          *(["--", *only] if only else [])],
-                              cwd=root, env=env, capture_output=True, text=True, timeout=timeout_s)
+                              cwd=root, env=env, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=timeout_s)
     except subprocess.TimeoutExpired:
         return "ran", ValidationResult(passed=False, tool="pytest", duration_ms=int((time.monotonic() - t0) * 1000),
                                        errors=[f"tests timed out after {timeout_s}s"], raw_output="")
     except OSError as exc:  # the env's interpreter is gone or broken: an env problem, not the patch's
         return "env_gap", ValidationResult(passed=False, tool="pytest", duration_ms=0, errors=[str(exc)],
                                            raw_output=f"ImportError: cannot run tests: {exc}")
-    out = (proc.stdout + proc.stderr)[-_OUTPUT_LIMIT:]
+    full = proc.stdout + proc.stderr
+    out = full[-_OUTPUT_LIMIT:]
+    # pytest reports failures (tracebacks, the -rfE summary) on stdout; stderr is often just noise
+    error = proc.stdout.strip()[-1000:] or proc.stderr.strip()[-1000:]
     res = ValidationResult(passed=proc.returncode == 0, tool="pytest",
                            duration_ms=int((time.monotonic() - t0) * 1000),
-                           errors=[] if proc.returncode == 0 else [proc.stderr.strip()[-1000:] or out[-1000:]],
+                           errors=[] if proc.returncode == 0 else [error],
                            raw_output=out)
     if proc.returncode == 5:  # pytest: no tests collected
         return "no_tests", res
-    # only collection errors, at least one from a missing module, and no test ran at all
-    if proc.returncode != 0 and _ENV_GAP_RE.search(out) and not _RESULT_COUNTS_RE.search(out):
+    # only collection errors, at least one from a missing module, and no test ran at all. Judged on
+    # the whole output: the first ModuleNotFoundError can fall outside the stored tail.
+    if proc.returncode != 0 and _ENV_GAP_RE.search(full) and not _RESULT_COUNTS_RE.search(full):
         return "env_gap", res
     return "ran", res
 
@@ -742,10 +785,10 @@ def stub_version_files(root: Path) -> list[str]:
         data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
-    tool = data.get("tool") or {}
-    hooks = ((tool.get("hatch") or {}).get("build") or {}).get("hooks") or {}
-    scm = tool.get("setuptools_scm") or {}
-    wanted = [(hooks.get("vcs") or {}).get("version-file"), scm.get("version_file"), scm.get("write_to")]
+    tool = _table(data.get("tool"))
+    hooks = _table(_table(_table(tool.get("hatch")).get("build")).get("hooks"))
+    scm = _table(tool.get("setuptools_scm"))
+    wanted = [_table(hooks.get("vcs")).get("version-file"), scm.get("version_file"), scm.get("write_to")]
     written: list[str] = []
     resolved_root = root.resolve()
     for rel in dict.fromkeys(w for w in wanted if isinstance(w, str) and w.endswith(".py")):
@@ -763,6 +806,15 @@ def stub_version_files(root: Path) -> list[str]:
 
 def _failed_ids(output: str) -> set[str]:
     return set(_FAILED_ID_RE.findall(output))
+
+
+_SUMMARY_COUNT_RE = re.compile(r"\b(\d+) (failed|errors?)\b")
+
+
+def _reported_failures(output: str) -> int:
+    """Failed plus errored tests on pytest's final summary line (``3 failed, 1 error in 2s``), 0 if none."""
+    last = next((ln for ln in reversed(output.splitlines()) if re.search(r"\bin [\d.]+s\b", ln)), "")
+    return sum(int(n) for n, _ in _SUMMARY_COUNT_RE.findall(last))
 
 
 def _has_project(root: Path) -> bool:
@@ -792,6 +844,9 @@ def validate_patch_tree(
     from auditor import validate_node
 
     py = sorted({f for f in changed if f.endswith(".py") and (tree / f).is_file()})
+    # A .py file the patch deletes or renames away still picks its project's tests: a removed
+    # module breaks whatever imports it. Only files that exist are linted.
+    py_projects = sorted({f for f in changed if f.endswith(".py")})
     js = validate_node.node_files(tree, changed)
     if not py and not js:
         return validate_repo(repo, path_override=tree, timeout_s=timeout_s)
@@ -800,12 +855,13 @@ def validate_patch_tree(
     ran: list[tuple[str, ValidationResult]] = []
     tools: list[str] = []
     duration = 0
-    if py:
-        lint = _lint_files(tree, py, timeout_s)
-        if not lint.passed:
-            return lint
-        duration += lint.duration_ms
-        py_ran = _test_python_projects(tree, py, cache, base_tree, timeout_s, notes)
+    if py_projects:
+        if py:
+            lint = _lint_files(tree, py, timeout_s)
+            if not lint.passed:
+                return lint
+            duration += lint.duration_ms
+        py_ran = _test_python_projects(tree, py_projects, cache, base_tree, timeout_s, notes)
         ran += py_ran
         tools.append("pytest" if py_ran else "lint_only")
     unvalidated: list[str] = []
@@ -929,10 +985,18 @@ def _against_base(
     passes is a flake, not the patch's (#97). Tests that *error* on both trees are reported apart
     from ones that fail on both: an error at setup usually means the test env, not the repo."""
     patched = _failed_ids(res.raw_output)
-    base = base_tree()
-    if base is None or not patched:
+    if not patched or _reported_failures(res.raw_output) > len(patched):
+        # the stored output is a tail: when pytest counts more failures than it shows ids for, the
+        # cut-off ones can't be compared, so the failure stands
         return res
-    base_root = base / root.relative_to(tree.resolve())
+    try:
+        rel = root.resolve().relative_to(tree.resolve())
+    except ValueError:
+        return res
+    base = base_tree()
+    if base is None:
+        return res
+    base_root = base / rel
     if not base_root.is_dir():
         return res
     stub_version_files(base_root)

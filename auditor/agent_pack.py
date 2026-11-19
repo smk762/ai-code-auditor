@@ -527,7 +527,7 @@ def _load_yaml(text: str) -> Any:
 def _read_pack_yaml(path: Path) -> dict[str, Any] | None:
     try:
         data = _load_yaml(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
         return None
     return data if isinstance(data, dict) else None
 

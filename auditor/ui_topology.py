@@ -80,17 +80,22 @@ def parse_ecosystem_doc(text: str) -> tuple[dict[str, dict[str, str]], list[tupl
         return repos, flow
     grid = block.group(1).splitlines()
 
-    def names_in(segment: str) -> list[str]:
+    name = r"(?<![A-Za-z0-9])[a-z][a-z0-9-]*(?![A-Za-z0-9])"
+    group_re = re.compile(rf"{name}(?:\s*/\s*{name})*")
+
+    def groups_in(segment: str) -> list[list[str]]:
+        """Runs of names joined by "/" ("curator / cull"); anything else (prose, a parallel
+        column) separates runs, so only the run touching an arrow is connected through it."""
         segment = re.sub(r"\([^)]*\)", " ", segment)
-        return [w for w in re.findall(r"[a-z][a-z0-9-]*", segment)]
+        return [re.findall(name, m.group(0)) for m in group_re.finditer(segment)]
 
     for line in grid:
         if "──►" not in line or ":" in line.split("──►")[0]:
             continue  # skip "Shared AI / RAG:" style legend lines
-        parts = [names_in(p) for p in line.split("──►")]
+        parts = [groups_in(p) for p in line.split("──►")]
         parts = [p for p in parts if p]  # "(train)" drops out, chaining forge → proof
         for left, right in zip(parts, parts[1:]):
-            flow += [(a, b) for a in left for b in right]
+            flow += [(a, b) for a in left[-1] for b in right[0]]
 
     def word_at(row: int, col: int) -> str | None:
         if not (0 <= row < len(grid)) or col >= len(grid[row]):
@@ -236,9 +241,10 @@ def _badges(facets: list[dict[str, str]]) -> list[str]:
 def _head(path: str) -> str:
     try:
         r = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5)
-        return r.stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""
+    # without a commit, git echoes the literal "HEAD" (exit 128): that is not a revision
+    return r.stdout.strip() if r.returncode == 0 else ""
 
 
 # ── assembly ─────────────────────────────────────────────────────────────────
@@ -267,7 +273,7 @@ def topology_data(output_dir: str | Path, *, isolate: bool = False) -> dict[str,
     out = Path(output_dir)
     repos = [r for r in load_ecosystem_config().repos if r.enabled]
     side = out / "service_topology.json"
-    key = (tuple((r.name, _head(r.path)) for r in repos),
+    key = (str(out.resolve()), tuple((r.name, _head(r.path)) for r in repos),
            ECOSYSTEM_DOC.stat().st_mtime if ECOSYSTEM_DOC.is_file() else 0,
            side.stat().st_mtime if side.is_file() else 0)
     with _lock:
@@ -290,7 +296,12 @@ def _build(out: Path, repos: list[Any], side: Path, doc_path: Path | None = None
     doc_path = doc_path or ECOSYSTEM_DOC
     doc = doc_path.read_text(encoding="utf-8") if doc_path.is_file() else ""
     meta, flow_short = parse_ecosystem_doc(doc)
-    topo = json.loads(side.read_text(encoding="utf-8")) if side.is_file() else {}
+    try:  # optional enrichment: a half-written or malformed sidecar just adds nothing
+        topo = json.loads(side.read_text(encoding="utf-8")) if side.is_file() else {}
+    except (OSError, ValueError):
+        topo = {}
+    if not isinstance(topo, dict):
+        topo = {}
     node_info = {n.get("name"): n for n in topo.get("nodes") or []}
     try:
         poll = load_state(merge_poll_state_path(out)).get("repos") or {}

@@ -75,8 +75,19 @@ def _now(cfg: RestWindowConfig) -> datetime:
     return datetime.now(ZoneInfo(cfg.timezone))
 
 
+def _local(cfg: RestWindowConfig, now: datetime | None) -> datetime:
+    """*now* as wall-clock time in the window's timezone: an aware datetime is converted, a
+    naive one is read as already being in that zone. None means the current time."""
+    tz = ZoneInfo(cfg.timezone)
+    if now is None:
+        return datetime.now(tz)
+    if now.tzinfo is None or now.utcoffset() is None:
+        return now.replace(tzinfo=tz)
+    return now.astimezone(tz)
+
+
 def in_rest_window(cfg: RestWindowConfig, now: datetime | None = None) -> bool:
-    now = now or _now(cfg)
+    now = _local(cfg, now)
     t = now.timetz().replace(tzinfo=None)
     if cfg.start <= cfg.end:
         return cfg.start <= t < cfg.end
@@ -85,7 +96,7 @@ def in_rest_window(cfg: RestWindowConfig, now: datetime | None = None) -> bool:
 
 
 def wrap_up_deadline(cfg: RestWindowConfig, now: datetime | None = None) -> datetime:
-    now = now or _now(cfg)
+    now = _local(cfg, now)
     end_dt = datetime.combine(now.date(), cfg.end, tzinfo=ZoneInfo(cfg.timezone))
     if cfg.start > cfg.end and now.timetz().replace(tzinfo=None) >= cfg.start:
         end_dt = end_dt + timedelta(days=1)
@@ -95,14 +106,14 @@ def wrap_up_deadline(cfg: RestWindowConfig, now: datetime | None = None) -> date
 
 
 def should_freeze_launches(cfg: RestWindowConfig, now: datetime | None = None) -> bool:
-    now = now or _now(cfg)
+    now = _local(cfg, now)
     if not in_rest_window(cfg, now):
         return True
     return now >= wrap_up_deadline(cfg, now)
 
 
 def next_window_start_label(cfg: RestWindowConfig, now: datetime | None = None) -> str:
-    now = now or _now(cfg)
+    now = _local(cfg, now)
     start_dt = datetime.combine(now.date(), cfg.start, tzinfo=ZoneInfo(cfg.timezone))
     if now.timetz().replace(tzinfo=None) >= cfg.start:
         start_dt = start_dt + timedelta(days=1)

@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import subprocess
 
 from auditor.contracts import Finding
+
+logger = logging.getLogger(__name__)
+# Upper bound per tool run, so a pathological file or huge repo can't stall the audit.
+STATIC_TOOL_TIMEOUT_S = 900
+
+
+def _run_tool(cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=STATIC_TOOL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        logger.warning("%s timed out after %ss; skipping its findings", cmd[0], STATIC_TOOL_TIMEOUT_S)
+        return None
 
 
 def run_static_checks(repo_name: str, repo_path: str) -> list[Finding]:
@@ -39,8 +52,8 @@ def _run_bandit(repo_name: str, target_args: list[str]) -> list[Finding]:
     if shutil.which("bandit") is None:
         return []
     cmd = ["bandit", *target_args, "-f", "json"]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if result.returncode not in (0, 1):
+    result = _run_tool(cmd)
+    if result is None or result.returncode not in (0, 1):
         return []
     try:
         payload = json.loads(result.stdout or "{}")
@@ -68,8 +81,8 @@ def _run_semgrep(repo_name: str, target_args: list[str]) -> list[Finding]:
     if shutil.which("semgrep") is None:
         return []
     cmd = ["semgrep", "--config=auto", "--json", *target_args]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if result.returncode not in (0, 1):
+    result = _run_tool(cmd)
+    if result is None or result.returncode not in (0, 1):
         return []
     try:
         payload = json.loads(result.stdout or "{}")
@@ -99,5 +112,10 @@ def _bandit_to_severity(value: str) -> str:
 
 
 def _semgrep_to_severity(value: str) -> str:
-    mapping = {"ERROR": "HIGH", "WARNING": "MEDIUM", "INFO": "LOW"}
-    return mapping.get(value.upper(), "LOW")
+    # legacy levels plus the newer CRITICAL/HIGH/MEDIUM/LOW; an unknown level is not minimised
+    mapping = {"ERROR": "HIGH", "WARNING": "MEDIUM", "INFO": "LOW",
+               "CRITICAL": "CRITICAL", "HIGH": "HIGH", "MEDIUM": "MEDIUM", "LOW": "LOW"}
+    level = str(value or "").upper()
+    if level not in mapping:
+        logger.warning("unknown semgrep severity %r; recording it as MEDIUM", value)
+    return mapping.get(level, "MEDIUM")

@@ -121,3 +121,33 @@ def test_detect_call_graph_violations_back_compat(tmp_path: Path) -> None:
     assert v.entities == ["somnus", "imogen"]
     assert v.severity == "HIGH"
     assert "proxy.py" in v.evidence
+
+
+def test_annotated_assignment_of_service_url_is_followed(tmp_path: Path) -> None:
+    repo = tmp_path / "typed"
+    repo.mkdir()
+    f = _write(
+        repo / "client.py",
+        'import os, httpx\ngothmog_url: str = os.getenv("GOTHMOG_URL")\nhttpx.post(gothmog_url)\n',
+    )
+    edges = analyze_call_graph({"typed": [f]}, _RULES)
+    assert [(e.from_repo, e.to_service) for e in edges] == [("typed", "gothmog")]
+
+
+def test_wildcard_rule_without_from_is_skipped(tmp_path: Path) -> None:
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    f = _write(repo / "client.py", 'import os, httpx\nhttpx.get(os.getenv("GOTHMOG_URL"))\n')
+    rules = {**_RULES, "allowed_calls": [*_RULES["allowed_calls"], {"to": "*"}]}
+    edges = analyze_call_graph({"svc": [f]}, rules)
+    assert [(e.to_service, e.allowed) for e in edges] == [("gothmog", False)]
+
+
+def test_unparseable_file_is_skipped_not_fatal(tmp_path: Path) -> None:
+    repo = tmp_path / "gen"
+    repo.mkdir()
+    # Too deeply nested for the parser: MemoryError / RecursionError, not SyntaxError.
+    deep = _write(repo / "generated.py", "x = " + "-" * 200000 + "1\n")
+    ok = _write(repo / "client.py", 'import os, httpx\nhttpx.get(os.getenv("GOTHMOG_URL"))\n')
+    edges = analyze_call_graph({"gen": [deep, ok]}, _RULES)
+    assert [(e.from_repo, e.to_service) for e in edges] == [("gen", "gothmog")]

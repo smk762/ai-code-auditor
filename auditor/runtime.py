@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -19,10 +20,13 @@ def setup_logging(level: str = "INFO", log_file_path: str = "", output_dir: str 
         safe_path = _safe_log_path(log_file_path, output_dir)
         safe_path.parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(safe_path))
+    # force: a second call (or a harness that configured logging first) would otherwise be a
+    # silent no-op that also leaks the FileHandler opened above; force closes the old handlers.
     logging.basicConfig(
         level=numeric_level,
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
         handlers=handlers,
+        force=True,
     )
 
 
@@ -80,7 +84,8 @@ def require_auth(enabled: bool, env_name: str, provided_code: str = "") -> None:
     expected = os.getenv(env_name, "")
     if not expected:
         raise ValueError(f"Auth enabled but env var '{env_name}' is not set")
-    if provided_code != expected:
+    # Constant-time: a plain != leaks how long a prefix of the secret the caller guessed.
+    if not hmac.compare_digest(str(provided_code or "").encode(), expected.encode()):
         raise PermissionError("Invalid auth code")
 
 

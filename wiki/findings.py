@@ -5,6 +5,7 @@ Citations use the same [path:Lx-Ly] form as the generated pages so the viewer li
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,11 @@ MAX_PACKS = 15
 
 def _esc(text: Any) -> str:
     """Keep table cells on one line and stop stray pipes breaking the table."""
-    return str(text or "").replace("|", "\\|").replace("\n", " ").strip()
+    cell = " ".join(str(text or "").splitlines())  # \n, \r, \u2028 ...
+    # A table splits on any pipe not preceded by a lone backslash, so backslashes right before a
+    # pipe are doubled too ("a\\|b" must not become an escaped backslash plus a bare pipe).
+    # Other backslashes stay as they are: they may sit inside a code span.
+    return re.sub(r"(\\*)\|", lambda m: m.group(1) * 2 + "\\|", cell).strip()
 
 
 def _cite(repo: str, path: str, line: int) -> str:

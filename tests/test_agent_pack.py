@@ -567,9 +567,16 @@ def test_validate_patch_pass_resolves_pack(tmp_path: Path, monkeypatch):
     assert next(e for e in list_packs(out) if e["id"] == "pack-fixme")["status"] == "resolved"
     assert load_pack(out, "pack-untouched")["status"] == "open"
 
-    # without pack_id nothing changes and no "pack" key is returned
-    plain = client.post("/audit/validate_patch", json={"repo": "argus-cortex", "patch": PATCH}).json()
+    # without pack_id nothing changes and no "pack" key is returned (on a real pass, not an error body)
+    index_before = list_packs(out)
+    plain_resp = client.post("/audit/validate_patch", json={"repo": "argus-cortex", "patch": PATCH})
+    assert plain_resp.status_code == 200, plain_resp.text
+    plain = plain_resp.json()
+    assert plain["passed"] is True
     assert "pack" not in plain
+    assert load_pack(out, "pack-untouched")["status"] == "open"
+    assert load_pack(out, "pack-fixme")["status"] == "resolved"
+    assert list_packs(out) == index_before
 
 
 def test_validate_patch_failure_or_wrong_repo_leaves_pack_open(tmp_path: Path, monkeypatch):

@@ -34,6 +34,18 @@ class CitationReport:
                 "failed": self.failed[:20]}
 
 
+def _confined(root: Path, path: str) -> Path | None:
+    """The cited file under ``root``, or None if it is missing or the path leaves the root.
+
+    Citation paths come from LLM-written pages, so an absolute path or ``..`` must never make
+    us read (or hash) a file outside the repo.
+    """
+    if Path(path).is_absolute() or ".." in Path(path).parts:
+        return None
+    f = (root / path).resolve()
+    return f if f.is_file() and root.resolve() in f.parents else None
+
+
 class _Files:
     def __init__(self, root: Path):
         self.root = root
@@ -41,9 +53,8 @@ class _Files:
 
     def lines(self, path: str) -> list[str] | None:
         if path not in self._cache:
-            f = (self.root / path).resolve()
-            ok = f.is_file() and self.root.resolve() in f.parents
-            text = read_text(f) if ok else None
+            f = _confined(self.root, path)
+            text = read_text(f) if f is not None else None
             self._cache[path] = text.splitlines() if text is not None else None
         return self._cache[path]
 
@@ -55,7 +66,7 @@ def _verdict(md: str, m: re.Match, files: _Files) -> tuple[str, str | None]:
     lines = files.lines(path)
     if lines is None:
         return "missing", None
-    if not (1 <= a <= b <= len(lines) + 1):
+    if not (1 <= a <= b <= len(lines)):
         return "range", None
     line_start = md.rfind("\n", 0, m.start()) + 1
     prev = max((c.end() for c in CITE.finditer(md, line_start, m.start())), default=line_start)
@@ -91,6 +102,7 @@ def check(md: str, root: Path) -> CitationReport:
 
 
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z`*\[(])")
+_BLOCK_PREFIX = re.compile(r"^\s*(?:>\s*)*")
 
 
 def drop_failed_claims(md: str, root: Path) -> tuple[str, list[dict[str, str]]]:
@@ -108,7 +120,15 @@ def drop_failed_claims(md: str, root: Path) -> tuple[str, list[dict[str, str]]]:
             in_fence = not in_fence
             out.append(line)
             continue
-        if in_fence or not CITE.search(line):
+        if in_fence:
+            out.append(line)
+            continue
+        if not line.strip():
+            if out and not out[-1].strip():
+                continue  # collapse blank runs (e.g. left by a dropped claim), never inside a fence
+            out.append(line)
+            continue
+        if not CITE.search(line):
             out.append(line)
             continue
         bad = [(m, v) for m in CITE.finditer(line) if (v := _verdict(line, m, files)[0]) != "ok"]
@@ -121,7 +141,9 @@ def drop_failed_claims(md: str, root: Path) -> tuple[str, list[dict[str, str]]]:
             continue
         # sentence spans, so a failing citation removes only the sentence it sits in (by position:
         # two sentences can cite the same range and only one of them name the wrong symbol)
-        bounds = [0] + [s.end() for s in _SENTENCE_END.finditer(line)] + [len(line)]
+        # The line's indentation / blockquote markers stay whatever sentences are dropped.
+        prefix = _BLOCK_PREFIX.match(line).group(0)
+        bounds = [len(prefix)] + [s.end() for s in _SENTENCE_END.finditer(line, len(prefix))] + [len(line)]
         kept = []
         for start, end in zip(bounds, bounds[1:]):
             sentence = line[start:end]
@@ -131,17 +153,16 @@ def drop_failed_claims(md: str, root: Path) -> tuple[str, list[dict[str, str]]]:
             else:
                 kept.append(sentence)
         if kept and "".join(kept).strip():
-            out.append(" ".join(s.strip() for s in kept) if len(kept) > 1 else kept[0])
-    text = re.sub(r"\n{3,}", "\n\n", "\n".join(out))
-    return text.strip() + "\n", dropped
+            out.append(prefix + " ".join(s.strip() for s in kept))
+    return "\n".join(out).strip() + "\n", dropped
 
 
 def cited_files(md: str, root: Path) -> dict[str, str]:
     """Repo-relative path → content hash for every cited file that exists (for rebuild checks)."""
     out: dict[str, str] = {}
     for path in sorted({m.group(1) for m in CITE.finditer(md)}):
-        f = root / path
-        if f.is_file() and (text := read_text(f)) is not None:
+        f = _confined(root, path)
+        if f is not None and (text := read_text(f)) is not None:
             out[path] = content_hash(text)
     return out
 
@@ -170,8 +191,8 @@ def cited_ranges(md: str, root: Path) -> dict[str, dict[str, object]]:
     """
     out: dict[str, dict[str, object]] = {}
     for path, ranges in _ranges(md).items():
-        f = root / path
-        if f.is_file() and (text := read_text(f)) is not None:
+        f = _confined(root, path)
+        if f is not None and (text := read_text(f)) is not None:
             h = range_hash(text.splitlines(), ranges)
             if h is not None:
                 out[path] = {"ranges": ranges, "hash": h}
@@ -192,6 +213,9 @@ def cited_code(md: str, root: Path, pad: int = 3, cap_chars: int = 120_000) -> s
             continue
         merged: list[list[int]] = []
         for a, b in sorted(rs):
+            if not (1 <= a <= b <= len(lines)):  # say so, rather than show an empty block
+                parts.append(f"\n===== {path} L{a}-L{b} (LINES DO NOT EXIST; file has {len(lines)} lines) =====")
+                continue
             a, b = max(1, a - pad), min(len(lines), b + pad)
             if merged and a <= merged[-1][1] + 1:
                 merged[-1][1] = max(merged[-1][1], b)

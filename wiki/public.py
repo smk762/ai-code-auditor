@@ -147,10 +147,8 @@ class Scrubber:
                           lambda m: lookup[m.group(0).lower()], text)
         text = _PATHS.sub("<path>", text)
         text = _LAN_HOST.sub("<host>", text)
-        for m in list(_IPV4.finditer(text)):
-            if _bad_ip(m.group(1)):
-                text = text.replace(m.group(1), "<host>")
-        return text
+        # replace exactly the matched spans: str.replace would also hit "10.0.0.1" inside "110.0.0.12"
+        return _IPV4.sub(lambda m: "<host>" if _bad_ip(m.group(1)) else m.group(0), text)
 
 
 def public_ecosystem_doc(text: str, private_names: list[str]) -> str:
@@ -242,7 +240,9 @@ def bundle_hash_of(directory: str | Path) -> str:
 def _pypi_name(repo_path: str | None) -> str | None:
     import tomllib
 
-    p = Path(repo_path or "") / "pyproject.toml"
+    if not repo_path:  # Path("") would read the process CWD's pyproject.toml
+        return None
+    p = Path(repo_path) / "pyproject.toml"
     try:
         return (tomllib.loads(p.read_text(encoding="utf-8")).get("project") or {}).get("name")
     except (OSError, ValueError):

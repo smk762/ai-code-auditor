@@ -93,6 +93,17 @@ def test_behind_states(tmp_path: Path) -> None:
     assert ui_wiki._behind(RepoConfig("x", str(tmp_path)), "a", "b") == {"behind": True, "commits": None, "tip_sha": "b"}
 
 
+def test_not_behind_when_git_counts_zero_commits(tmp_path: Path) -> None:
+    repo = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=ENV)
+    old = _commit(repo, "a")
+    new = _commit(repo, "b")
+    cfg = RepoConfig("r", str(repo))
+    assert ui_wiki._behind(cfg, new, new[:10]) == {"behind": False, "commits": 0, "tip_sha": new[:10]}
+    assert ui_wiki._behind(cfg, new, old)["behind"] is False  # built from a commit newer than the tip
+    assert ui_wiki._behind(cfg, old, new) == {"behind": True, "commits": 1, "tip_sha": new}
+
+
 def test_page_render(wiki: Path) -> None:
     page = ui_wiki.render_wiki_page(wiki, "svc", "overview")
     assert '<a href="/ui/wiki/svc/overview" aria-current="page">Overview</a>' in page

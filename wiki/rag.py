@@ -54,28 +54,46 @@ def _page_of(doc_id: str) -> str:
     return parts[2] if len(parts) > 3 else ""
 
 
+def _index(output_dir: str | Path, repo: str) -> dict[str, Any] | None:
+    """The repo's wiki INDEX.json, or None if it is missing, unreadable or not an object."""
+    try:
+        idx = json.loads((Path(output_dir) / "wiki" / repo / "INDEX.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return idx if isinstance(idx, dict) else None
+
+
 def documents_for_repo(output_dir: str | Path, repo: str, pages: set[str] | None = None,
                        base_url: str = "") -> list[dict[str, Any]]:
     d = Path(output_dir) / "wiki" / repo
-    try:
-        idx = json.loads((d / "INDEX.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    idx = _index(output_dir, repo)
+    if idx is None:
         return []
     docs: list[dict[str, Any]] = []
-    for entry in idx.get("pages", []):
+    entries = idx.get("pages")
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):  # one bad entry must not cost the repo its other pages
+            continue
         slug = entry.get("slug")
         if slug not in PAGES or (pages is not None and slug not in pages):
+            continue
+        if not isinstance(entry.get("file"), str):
             continue
         path = d / entry["file"]
         if path.parent != d or not path.is_file():
             continue
-        md = path.read_text(encoding="utf-8")
-        seen: dict[str, int] = {}
+        try:
+            md = path.read_text(encoding="utf-8")
+        except (OSError, ValueError):  # unreadable or not UTF-8
+            continue
+        used: set[str] = set()
         for heading, body in sections(md):
-            anchor = _slug(heading)
-            n = seen.get(anchor, 0)
-            seen[anchor] = n + 1
-            section_id = anchor if n == 0 else f"{anchor}-{n}"
+            anchor = section_id = _slug(heading)
+            n = 0
+            while section_id in used:  # "Foo", "Foo" and "Foo 1" must not share an id
+                n += 1
+                section_id = f"{anchor}-{n}"
+            used.add(section_id)
             docs.append({
                 "id": f"wiki::{repo}::{slug}::{section_id}",
                 "title": f"{repo} — {entry.get('title', slug)} — {heading}",
@@ -99,9 +117,20 @@ def ingest(output_dir: str | Path, repos: dict[str, set[str] | None] | None = No
     result: dict[str, Any] = {"repos": {}, "count": 0, "ingested": True}
     for repo, pages in sorted(repos.items()):
         docs = documents_for_repo(output_dir, repo, pages, base)
-        if not docs:
-            continue
         considered = None if pages is None else (lambda i, p=frozenset(pages): _page_of(i) in p)
+        if not docs:
+            # Requested pages that are gone (deleted or renamed) still have to leave the index.
+            # A whole-repo send that yields nothing is skipped instead: that is more likely a
+            # failed build than a wiki that really is empty, and must not wipe the repo.
+            if pages is not None and _index(output_dir, repo) is not None:
+                from auditor.rag_client import recorded_ids, retire
+
+                scope = f"wiki:{repo}"
+                d = retire(output_dir, scope, {i for i in recorded_ids(output_dir, scope) if considered(i)})
+                result["repos"][repo] = {"ingested": True, "count": 0, "retired": d.get("count", 0),
+                                         **({} if d.get("deleted") else {"retire_error": d.get("error")})}
+                result["retired"] = result.get("retired", 0) + d.get("count", 0)
+            continue
         r = sync_documents(output_dir, f"wiki:{repo}", docs, tags=["kind:wiki", f"repo:{repo}"],
                            considered=considered)
         result["repos"][repo] = {k: r.get(k) for k in ("ingested", "count", "retired", "status_code", "error",

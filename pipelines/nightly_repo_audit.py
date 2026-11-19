@@ -43,6 +43,7 @@ def run() -> None:
 
         record_run_start(meta.run_id, "repo-audit")
         batch_mode = os.getenv("AI_AUDIT_LLM_BATCH", "").strip().lower() in {"1", "true", "yes", "on"}
+        prev_cache_only = os.environ.get("AI_AUDIT_LLM_CACHE_ONLY")
         with pipeline_lock("repo-audit", ttl_s=8 * 3600 if batch_mode else 7200):
             if batch_mode:
                 from auditor.batch_review import prefetch_reviews
@@ -53,27 +54,36 @@ def run() -> None:
                 stats = prefetch_reviews(cfg.repos)
                 logger.info("batch prefetch stats: %s", stats)
                 os.environ["AI_AUDIT_LLM_CACHE_ONLY"] = "1"
-            t0 = time.monotonic()
-            for repo in cfg.repos:
-                attempts = 0
-                try:
-                    attempts += 1
-                    units, findings = with_retries(lambda: run_repo_audit(repo, llm=llm), retries=3, base_delay_s=1.0)
-                    meta.scanned_repos.append(repo.name)
-                    # The commit the scan read, so trust metrics only count findings from code
-                    # that could contain a fix (the mirrors lag dev until the nightly sync).
-                    code = head_commit(resolve_scan_root(repo))
-                    if code:
-                        meta.extra.setdefault("scanned_code", {})[repo.name] = code
-                    meta.scanned_files += len({u.file_path for u in units})
-                    meta.code_units += len(units)
-                    all_findings.extend(findings)
-                    upsert_repo_run(meta.run_id, repo.name, "completed", attempts=attempts)
-                    write_checkpoint("repo-audit", meta.run_id, repo.name, "completed", {"units": len(units)})
-                except Exception as repo_exc:
-                    upsert_repo_run(meta.run_id, repo.name, "failed", attempts=attempts, error_message=str(repo_exc))
-                    write_checkpoint("repo-audit", meta.run_id, repo.name, "failed", {"error": str(repo_exc)})
-                    meta.add_error(f"{repo.name}: {repo_exc}")
+            try:
+                t0 = time.monotonic()
+                for repo in cfg.repos:
+                    attempts = 0
+                    try:
+                        attempts += 1
+                        units, findings = with_retries(lambda: run_repo_audit(repo, llm=llm), retries=3, base_delay_s=1.0)
+                        meta.scanned_repos.append(repo.name)
+                        # The commit the scan read, so trust metrics only count findings from code
+                        # that could contain a fix (the mirrors lag dev until the nightly sync).
+                        code = head_commit(resolve_scan_root(repo))
+                        if code:
+                            meta.extra.setdefault("scanned_code", {})[repo.name] = code
+                        meta.scanned_files += len({u.file_path for u in units})
+                        meta.code_units += len(units)
+                        all_findings.extend(findings)
+                        upsert_repo_run(meta.run_id, repo.name, "completed", attempts=attempts)
+                        write_checkpoint("repo-audit", meta.run_id, repo.name, "completed", {"units": len(units)})
+                    except Exception as repo_exc:
+                        upsert_repo_run(meta.run_id, repo.name, "failed", attempts=attempts, error_message=str(repo_exc))
+                        write_checkpoint("repo-audit", meta.run_id, repo.name, "failed", {"error": str(repo_exc)})
+                        meta.add_error(f"{repo.name}: {repo_exc}")
+            finally:
+                # Cache-only covers the per-repo pass alone: post-run steps (pack classes)
+                # need live calls, and a long-lived caller's next run must not inherit it.
+                if batch_mode:
+                    if prev_cache_only is None:
+                        os.environ.pop("AI_AUDIT_LLM_CACHE_ONLY", None)
+                    else:
+                        os.environ["AI_AUDIT_LLM_CACHE_ONLY"] = prev_cache_only
             meta.mark_stage("repo_scan_and_audit", int((time.monotonic() - t0) * 1000), status="partial_success" if meta.errors else "success")
 
             t1 = time.monotonic()

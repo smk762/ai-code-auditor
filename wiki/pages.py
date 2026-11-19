@@ -85,11 +85,13 @@ def repo_context(repo, notes: list[dict[str, Any]], structure: str, *, ecosystem
         parts += ["## Ecosystem topology (shared doc)\n", eco]
     try:
         base = resolve_repo_path(repo)
-        readme = next(iter(sorted(base.glob("README*"))), None)
-    except Exception:  # noqa: BLE001 — a missing README is fine
-        readme = None
-    if readme:
-        parts += [f"\n## {readme.name}\n", readme.read_text(encoding="utf-8", errors="replace")[:README_MAX_CHARS]]
+        # files only: a README.assets/ dir sorts before README.md
+        readme = next((p for p in sorted(base.glob("README*")) if p.is_file()), None)
+        readme_text = readme.read_text(encoding="utf-8", errors="replace") if readme else None
+    except Exception:  # noqa: BLE001 — a missing or unreadable README is fine
+        readme, readme_text = None, None
+    if readme and readme_text is not None:
+        parts += [f"\n## {readme.name}\n", readme_text[:README_MAX_CHARS]]
     parts.append(f"\n## File notes ({len(notes)} files)\n")
     for n in sorted(notes, key=lambda n: n["path"]):
         parts.append(f"\n### {n['path']} ({n['lines']} lines) — {n['role']}\n{n['summary']}")

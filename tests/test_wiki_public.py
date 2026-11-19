@@ -189,7 +189,10 @@ def test_public_build_scrubs_every_model_input(tmp_path: Path, monkeypatch, memd
     assert rep.repos["voluptas"].skipped == "not a public argus repo"
     page_reqs = [r for batch in fake.batches_created for r in batch if r["params"]["model"].startswith("claude-opus")]
     assert page_reqs and all(pages_mod.PUBLIC_RULES in r["params"]["system"][0]["text"] for r in page_reqs)
-    sent = json.dumps(page_reqs)
+    # every request of the public build, whatever its model; only the file notes are exempt, being the same
+    # internal notes the internal wiki uses (their text is scrubbed where it enters a page's context)
+    public_reqs = [r for batch in fake.batches_created for r in batch if not r["custom_id"].startswith("n-")]
+    sent = json.dumps(public_reqs)
     for leak in ("voluptas", "Jarrah", "192.168.1.198"):
         assert leak.lower() not in sent.lower(), leak
     d = out / "wiki" / "_public" / "argus-good"
@@ -203,10 +206,23 @@ def test_public_build_scrubs_every_model_input(tmp_path: Path, monkeypatch, memd
 
 
 
-def test_bundle_hash_ignores_manifest_timestamp(wiki: Path) -> None:
+def test_bundle_hash_ignores_manifest_timestamp(wiki: Path, monkeypatch) -> None:
+    from datetime import datetime, timezone
+
     deny = wiki.parent / "deny.txt"
+    clock = iter([datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc)])
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(clock)
+
+    monkeypatch.setattr(public, "datetime", _Clock)  # two exports, two different manifest timestamps
     first = public.export(wiki, denylist_path=deny, visibility=VIS.get).bundle_sha256
+    stamp1 = json.loads((wiki / "wiki_public" / "manifest.json").read_text())["generated_at"]
     second = public.export(wiki, denylist_path=deny, visibility=VIS.get).bundle_sha256
+    stamp2 = json.loads((wiki / "wiki_public" / "manifest.json").read_text())["generated_at"]
+    assert stamp1 != stamp2
     assert first == second  # nothing changed, so no new commit or pin bump
 
 
@@ -270,6 +286,24 @@ def test_scrubber_replaces_longest_names_first() -> None:
     assert out == "calls an external Bar service and an external service, stored on an internal host and an internal host"
 
 
+def test_scrubber_replaces_only_the_matched_ip_spans() -> None:
+    # str.replace("10.0.0.1") also rewrote "110.0.0.1" and "10.0.0.12" into "1<host>" / "<host>2"
+    out = public.Scrubber([], {})("a 10.0.0.1 b 110.0.0.1 c 10.0.0.12 d 8.8.8.8")
+    assert out == "a <host> b 110.0.0.1 c <host> d 8.8.8.8"
+
+
+def test_scrubber_keeps_backslashes_in_neutral_descriptions() -> None:
+    scrub = public.Scrubber([], {"secretsvc": r"an external C:\\svc \\d service"})
+    assert scrub("calls secretsvc") == r"calls an external C:\\svc \\d service"
+
+
+def test_pypi_name_without_repo_path_is_none(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "cwd-project"\n')
+    monkeypatch.chdir(tmp_path)
+    assert public._pypi_name(None) is None and public._pypi_name("") is None
+    assert public._pypi_name(str(tmp_path)) == "cwd-project"
+
+
 def test_gate_refuses_a_private_argus_repo_named_on_a_public_page(wiki: Path) -> None:
     (wiki / "wiki" / "argus-good" / "interfaces.md").write_text("# Interfaces\n\nTalks to argus-private.\n")
     rep = public.export(wiki, denylist_path=wiki.parent / "deny.txt", visibility=VIS.get)
@@ -305,3 +339,54 @@ def test_publish_pushes_a_bundle_committed_locally_before_the_remote_branch_exis
     assert again["pushed"]
     remote_head = subprocess.run(["git", "-C", remote, "rev-parse", "main"], capture_output=True, text=True).stdout.strip()
     assert remote_head == first["commit"]
+
+
+def _rehash(b: Path) -> None:
+    m = json.loads((b / "manifest.json").read_text())
+    m["bundle_sha256"] = public.bundle_hash_of(b)
+    (b / "manifest.json").write_text(json.dumps(m))
+
+
+def test_publish_gate_refuses_a_binary_file_with_a_runtime_error(wiki: Path, tmp_path: Path) -> None:
+    from wiki import publish as pub
+
+    deny = wiki.parent / "deny.txt"
+    public.export(wiki, denylist_path=deny, visibility=VIS.get)
+    b = wiki / "wiki_public"
+    (b / "argus-good" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe\x00Jarrah")
+    _rehash(b)  # hash matches, so only the gate stands between it and the docs repo
+    with pytest.raises(RuntimeError, match="opsec gate failed on argus-good/logo.png: not UTF-8"):
+        pub.publish(b, repo=_bare(tmp_path), checkout=tmp_path / "co", denylist_path=deny, visibility=VIS.get)
+    assert not (tmp_path / "co").exists()
+
+
+@pytest.mark.parametrize("repos", ["missing", None, ["argus-good"]])
+def test_publish_refuses_a_manifest_without_repos_before_touching_the_checkout(
+        wiki: Path, tmp_path: Path, repos) -> None:
+    from wiki import publish as pub
+
+    deny = wiki.parent / "deny.txt"
+    public.export(wiki, denylist_path=deny, visibility=VIS.get)
+    b = wiki / "wiki_public"
+    m = json.loads((b / "manifest.json").read_text())
+    if repos == "missing":
+        del m["repos"]
+    else:
+        m["repos"] = repos
+    (b / "manifest.json").write_text(json.dumps(m))  # manifest.json is outside the bundle hash
+    with pytest.raises(RuntimeError, match="no 'repos' mapping"):
+        pub.publish(b, repo=_bare(tmp_path), checkout=tmp_path / "co", denylist_path=deny, visibility=VIS.get)
+    assert not (tmp_path / "co").exists()
+
+
+def test_publish_tolerates_a_null_generated_at(wiki: Path, tmp_path: Path) -> None:
+    from wiki import publish as pub
+
+    deny = wiki.parent / "deny.txt"
+    public.export(wiki, denylist_path=deny, visibility=VIS.get)
+    b = wiki / "wiki_public"
+    m = json.loads((b / "manifest.json").read_text())
+    m["generated_at"] = None
+    (b / "manifest.json").write_text(json.dumps(m))
+    res = pub.publish(b, repo=_bare(tmp_path), checkout=tmp_path / "co", denylist_path=deny, visibility=VIS.get)
+    assert res["changed"] and res["commit"] and res["repos"] == ["argus-good"]

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import fcntl
+import math
+import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,7 +11,9 @@ import re
 
 
 def _estimate_tokens(text: str) -> int:
-    return max(1, len(text.split()))
+    # BPE splits code, paths and unspaced text into many tokens per "word": ~4 chars a token is
+    # the usual rule of thumb, and prose is still counted at least once per word
+    return max(1, len(text.split()), math.ceil(len(text) / 4))
 
 
 def _clip_words(text: str, max_words: int) -> str:
@@ -26,6 +32,44 @@ def _note_field(text: str, limit: int = _NOTE_FIELD_MAX) -> str:
     later requests read back as context."""
     flat = re.sub(r"\s+", " ", _CONTROL.sub(" ", text or "")).strip()
     return flat if len(flat) <= limit else flat[: limit - 1] + "\u2026"
+
+
+# the notes file is a rolling log: only its tail is read, and it is cut back once it passes the cap
+_NOTES_MAX_BYTES = 256 * 1024
+_NOTES_TAIL_BYTES = 16 * 1024
+
+
+@contextmanager
+def _notes_lock(path: Path):
+    """Serialise writers of one notes file (a sidecar lock: trimming replaces the file itself)."""
+    with open(path.with_name(path.name + ".lock"), "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _read_tail(path: Path, max_bytes: int) -> str:
+    with path.open("rb") as fh:
+        size = fh.seek(0, os.SEEK_END)
+        fh.seek(max(0, size - max_bytes))
+        data = fh.read()
+    if size > max_bytes:
+        data = data.split(b"\n", 1)[1] if b"\n" in data else b""  # drop the partial first line
+    return data.decode("utf-8", errors="replace")
+
+
+def _trim_notes(path: Path) -> None:
+    """Keep the newest entries (about half the cap) once the file passes the cap."""
+    if path.stat().st_size <= _NOTES_MAX_BYTES:
+        return
+    tail = _read_tail(path, _NOTES_MAX_BYTES // 2)
+    start = tail.find("## ")
+    tail = tail[start:] if start >= 0 else ""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(tail, encoding="utf-8")
+    tmp.replace(path)
 
 
 def _now_iso() -> str:
@@ -245,7 +289,7 @@ class ContextOrchestrator:
         path = Path(self.options.notes_path)
         if not path.exists():
             return ""
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = _read_tail(path, _NOTES_TAIL_BYTES).splitlines()
         if not lines:
             return ""
         return _clip_words("\n".join(lines[-16:]), 180)
@@ -261,5 +305,7 @@ class ContextOrchestrator:
             f"- citations: {_note_field(', '.join(citations)) if citations else 'none'}",
             "",
         ]
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write("\n".join(note))
+        with _notes_lock(path):
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write("\n".join(note))
+            _trim_notes(path)

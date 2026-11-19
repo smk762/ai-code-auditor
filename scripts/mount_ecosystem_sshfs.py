@@ -71,6 +71,8 @@ def _is_exact_mountpoint(local: str) -> bool:
             timeout=10,
         )
         return r.returncode == 0
+    except subprocess.TimeoutExpired:
+        return True  # the mount table lookup hung on this path: a hung FUSE mount sits there
     except FileNotFoundError:
         # findmnt missing: fall back to util-linux mountpoint
         try:
@@ -80,6 +82,8 @@ def _is_exact_mountpoint(local: str) -> bool:
                 timeout=10,
             )
             return r.returncode == 0
+        except subprocess.TimeoutExpired:
+            return True  # stat() hung: an unresponsive mount, not an empty directory
         except FileNotFoundError:
             return False
 
@@ -109,6 +113,9 @@ def _fuse_sshfs_fstype(local: str) -> str | None:
             return None
         fs = (r2.stdout or "").strip()
         return fs or None
+    except subprocess.TimeoutExpired:
+        print(f"findmnt timed out on {local} (hung mount?); filesystem type unknown", file=sys.stderr)
+        return None
     except FileNotFoundError:
         return None
 
@@ -118,6 +125,15 @@ def _is_sshfs_mount(local: str) -> bool:
     if not fs:
         return False
     return fs.lower() in ("fuse.sshfs", "fuse.ssh")
+
+
+def _run_unmount(cmd: list[str], **kw) -> subprocess.CompletedProcess | None:
+    """Run an unmount command; None if it hung past its timeout (a stale mount's peer is gone)."""
+    try:
+        return subprocess.run(cmd, text=True, timeout=60, **kw)
+    except subprocess.TimeoutExpired:
+        print(f"timed out after 60s: {' '.join(cmd)}", file=sys.stderr)
+        return None
 
 
 def _clear_stale_fuse_mountpoint(local: str, fusermount: str | None) -> None:
@@ -136,11 +152,11 @@ def _clear_stale_fuse_mountpoint(local: str, fusermount: str | None) -> None:
         file=sys.stderr,
     )
     if fusermount:
-        subprocess.run([fusermount, "-u", local], capture_output=True, text=True, timeout=60)
-        subprocess.run([fusermount, "-uz", local], capture_output=True, text=True, timeout=60)
+        _run_unmount([fusermount, "-u", local], capture_output=True)
+        _run_unmount([fusermount, "-uz", local], capture_output=True)
     umount = _find_executable("umount")
     if umount:
-        subprocess.run([umount, "-l", local], capture_output=True, text=True, timeout=60)
+        _run_unmount([umount, "-l", local], capture_output=True)
 
 
 def _ensure_mountpoint_dir(local: str, fusermount: str | None) -> tuple[bool, str | None]:
@@ -261,11 +277,13 @@ def cmd_umount(config_path: Path, quiet: bool = False) -> int:
         cmd = [fusermount, "-u", local]
         if not quiet:
             print(" ".join(cmd), file=sys.stderr)
-        r = subprocess.run(cmd, capture_output=quiet, text=True, timeout=60)
-        if r.returncode != 0:
+        r = _run_unmount(cmd, capture_output=quiet)
+        if r is None:  # hung: detach it lazily so the rest of the teardown still runs
+            r = _run_unmount([fusermount, "-uz", local], capture_output=quiet)
+        if r is None or r.returncode != 0:
             failures += 1  # still mounted: callers must not treat the dirs as free
             if not quiet:
-                print(r.stderr or r.stdout or f"umount failed: {local}", file=sys.stderr)
+                print((r and (r.stderr or r.stdout)) or f"umount failed: {local}", file=sys.stderr)
     return 1 if failures else 0
 
 

@@ -141,7 +141,11 @@ class Runner:
 
     def _store(self, r: Result) -> None:
         self.results_dir.mkdir(parents=True, exist_ok=True)
-        self._result_path(r.custom_id).write_text(json.dumps(r.__dict__), encoding="utf-8")
+        # tmp + replace, as _save_state: a truncated file reads as missing and would be paid for again
+        path = self._result_path(r.custom_id)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(r.__dict__), encoding="utf-8")
+        tmp.replace(path)
 
     def _record(self, custom_id: str, msg: Any, note: str, *, batch: bool) -> Result:
         cost = get_ledger().record_usage(self.lane, getattr(msg, "model", ""), msg.usage, batch=batch, note=note)

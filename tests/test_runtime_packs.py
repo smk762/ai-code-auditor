@@ -51,3 +51,45 @@ def test_real_level_names_are_honoured(monkeypatch):
     monkeypatch.setattr(logging, "basicConfig", lambda **kw: seen.update(kw))
     runtime.setup_logging(level="debug")
     assert seen["level"] == logging.DEBUG
+
+
+@pytest.fixture
+def _restore_root_logging():
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    yield
+    for h in root.handlers[:]:
+        if h not in handlers:
+            root.removeHandler(h)
+            h.close()
+    for h in handlers:
+        if h not in root.handlers:
+            root.addHandler(h)
+    root.setLevel(level)
+
+
+def test_second_setup_logging_call_takes_effect(tmp_path: Path, _restore_root_logging):
+    runtime.setup_logging(level="INFO", log_file_path="first.log", output_dir=str(tmp_path))
+    first = [h for h in logging.getLogger().handlers if isinstance(h, logging.FileHandler)]
+    runtime.setup_logging(level="DEBUG", log_file_path="second.log", output_dir=str(tmp_path))
+    logging.getLogger("packs.runtime").debug("hello-second")
+    for h in logging.getLogger().handlers:
+        h.flush()
+    assert logging.getLogger().level == logging.DEBUG
+    assert "hello-second" in (tmp_path / "second.log").read_text()
+    assert all(h.stream is None for h in first)  # the first file handler was closed, not leaked
+
+
+def test_auth_code_is_compared_in_constant_time(monkeypatch):
+    import hmac
+
+    calls = []
+    real = hmac.compare_digest
+    monkeypatch.setattr(hmac, "compare_digest", lambda a, b: calls.append(1) or real(a, b))
+    monkeypatch.setenv("PACKS_AUTH", "s3cret")
+    runtime.require_auth(True, "PACKS_AUTH", "s3cret")
+    with pytest.raises(PermissionError):
+        runtime.require_auth(True, "PACKS_AUTH", "s3creX")
+    with pytest.raises(PermissionError):
+        runtime.require_auth(True, "PACKS_AUTH", "pässword")
+    assert len(calls) == 3

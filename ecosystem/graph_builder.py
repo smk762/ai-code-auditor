@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -54,7 +55,8 @@ class GraphBuilder:
                     file_path=excluded.file_path,
                     metadata=excluded.metadata
                 """,
-                (unit.id, unit.kind.upper(), unit.symbol, unit.repo, unit.file_path, str(unit.ast_features)),
+                (unit.id, unit.kind.upper(), unit.symbol, unit.repo, unit.file_path,
+                 json.dumps(unit.ast_features, default=str, sort_keys=True)),  # JSON, not a Python repr
             )
             # Re-indexing replaces the unit's imports, so drop edges for imports it no longer has.
             cur.execute("DELETE FROM edges WHERE source_id = ? AND edge_type = 'IMPORTS'", (unit.id,))

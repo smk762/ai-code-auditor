@@ -191,11 +191,12 @@ class LLMClient:
                     "model": self.model,
                     "prompt": prompt,
                     "stream": False,
-                    "temperature": self.provider_config.temperature,
+                    # Ollama reads sampling parameters only from "options"; top level is ignored.
+                    "options": {"temperature": self.provider_config.temperature},
                 }
                 # Pass num_gpu only when we want explicit CPU offload control.
                 if self.num_gpu_layers >= 0:
-                    payload["options"] = {"num_gpu": self.num_gpu_layers}
+                    payload["options"]["num_gpu"] = self.num_gpu_layers
             headers: dict[str, str] = {}
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
@@ -277,7 +278,11 @@ class LLMClient:
             except requests.RequestException as exc:
                 return False, str(exc)
             # Server up is not enough: a missing model 404s every generate call.
-            names = {str(m.get("name", "")) for m in (resp.json().get("models") or [])}
+            try:
+                models = resp.json().get("models") or []
+                names = {str(m.get("name", "")) for m in models}
+            except (ValueError, AttributeError, TypeError) as exc:
+                return False, f"unreadable {tags_url} response: {exc}"
             if self.model not in names and f"{self.model}:latest" not in names:
                 return False, f"model {self.model!r} not on {tags_url} (have: {sorted(names)})"
             return True, "ok"
@@ -304,7 +309,8 @@ class LLMClient:
         file_ctx = build_file_briefing(
             repo_name=unit.repo,
             file_path=__import__("pathlib").Path(unit.file_path),
-            repo_path=__import__("pathlib").Path(repo_path or unit.file_path).parent,
+            repo_path=(__import__("pathlib").Path(repo_path) if repo_path
+                       else __import__("pathlib").Path(unit.file_path).parent),
         )
         return prompt_blocks(
             [

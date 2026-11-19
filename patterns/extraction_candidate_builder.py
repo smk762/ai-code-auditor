@@ -13,6 +13,11 @@ from typing import Iterable
 from auditor.contracts import CodeUnit
 
 
+# ast.parse raises ValueError for NUL bytes before Python 3.12, and RecursionError/MemoryError
+# on pathologically nested input; any of these must skip one unit, not abort the whole pass
+_PARSE_ERRORS = (SyntaxError, ValueError, RecursionError, MemoryError)
+
+
 def _float_env(name: str, default: float) -> float:
     raw = os.getenv(name)
     if raw is None:
@@ -108,13 +113,16 @@ def collect_git_metrics(cluster: dict, repo_roots: dict[str, str]) -> dict:
     changes_30 = 0
     changes_90 = 0
     contributors: set[str] = set()
+    # a file's commits count once, however many of the cluster's units it holds
+    files: dict[tuple[str, str], None] = {}
     for unit in units[:20]:
         repo_root = repo_roots.get(unit.repo)
         if not repo_root:
             continue
         rel_path = _relative_to_repo(unit.file_path, repo_root)
-        if not rel_path:
-            continue
+        if rel_path:
+            files[(repo_root, rel_path)] = None
+    for repo_root, rel_path in files:
         changes_30 += _count_git_changes(repo_root, rel_path, "30 days")
         changes_90 += _count_git_changes(repo_root, rel_path, "90 days")
         contributors |= _git_contributors(repo_root, rel_path, "90 days")
@@ -219,7 +227,7 @@ def _normalized_ast_repr(unit: CodeUnit) -> str:
     try:
         # Methods and nested functions keep their indentation; dedent so they parse.
         tree = ast.parse(textwrap.dedent(unit.raw_text), filename=unit.file_path)
-    except SyntaxError:
+    except _PARSE_ERRORS:
         return ""
 
     class Canonicalizer(ast.NodeTransformer):
@@ -232,9 +240,12 @@ def _normalized_ast_repr(unit: CodeUnit) -> str:
         def visit_arg(self, node: ast.arg):  # noqa: N802
             return ast.copy_location(ast.arg(arg="ARG", annotation=None), node)
 
-    normalized = Canonicalizer().visit(tree)
-    ast.fix_missing_locations(normalized)
-    return ast.dump(normalized, include_attributes=False)
+    try:
+        normalized = Canonicalizer().visit(tree)
+        ast.fix_missing_locations(normalized)
+        return ast.dump(normalized, include_attributes=False)
+    except (RecursionError, MemoryError):  # pathologically nested: no fingerprint for this unit
+        return ""
 
 
 def _embedding_similarity(left: CodeUnit, right: CodeUnit) -> float:
@@ -274,13 +285,14 @@ def _extract_signature(text: str, language: str) -> dict:
             tree = ast.parse(textwrap.dedent(text), filename="<extract-signature>")
             node = tree.body[0] if tree.body else None
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                arg_count = len(node.args.args) + len(node.args.kwonlyargs)
+                a = node.args
+                arg_count = len(a.posonlyargs) + len(a.args) + len(a.kwonlyargs)
                 raise_count = sum(1 for n in ast.walk(node) if isinstance(n, ast.Raise))
                 return {"kind": "function", "args": arg_count, "raises": raise_count}
             if isinstance(node, ast.ClassDef):
-                methods = [n for n in node.body if isinstance(n, ast.FunctionDef)]
+                methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
                 return {"kind": "class", "args": len(methods), "raises": 0}
-        except SyntaxError:
+        except _PARSE_ERRORS:  # malformed input falls through to the heuristic
             pass
     # fallback heuristic
     args = text.count(",")
@@ -349,45 +361,50 @@ def _relative_to_repo(file_path: str, repo_root: str) -> str:
         return ""
 
 
+# Domains are matched on whole tokens of the symbol (split on "_", ".", "-" and camelCase), so "log"
+# no longer matches "catalog" or "login", "auth" no longer matches "author", and "token" alone
+# (count_tokens, tokenizer) is not authentication. Phrases (consecutive tokens) are checked first.
+_DOMAIN_PHRASES = (
+    # authentication / access control
+    ("verify key", "authentication"), ("check key", "authentication"), ("api key", "authentication"),
+    ("access token", "authentication"), ("refresh token", "authentication"), ("verify token", "authentication"),
+    ("auth token", "authentication"), ("bearer token", "authentication"),
+    # rate limiting
+    ("rate limit", "rate_limiting"), ("rate limiter", "rate_limiting"), ("rate limiting", "rate_limiting"),
+    # orchestration / job lifecycle
+    ("run status", "orchestration"), ("job status", "orchestration"), ("observe job", "orchestration"),
+    ("task status", "orchestration"),
+    # model / adapter management
+    ("hf kind", "model_management"), ("hf checkpoint", "model_management"),
+)
+_DOMAIN_WORDS = (  # any one of these tokens
+    ("auth authn authz authenticate authenticated authentication authorize authorized authorization oauth "
+     "jwt login logout password credentials", "authentication"),
+    ("ratelimit ratelimiter throttle throttled throttles throttling", "rate_limiting"),
+    ("runstatus taskstatus jobstatus orchestrate orchestrates orchestrated orchestrator orchestration",
+     "orchestration"),
+    ("adapter adapters lora loras civitai checkpoint checkpoints sidecar sidecars", "model_management"),
+    ("retry retries retrying retried backoff", "resilience"),
+    ("log logs logger loggers logging logged metric metrics observe observer observability telemetry",
+     "observability"),
+    ("cache caches cached caching", "caching"),
+    ("http https httpx", "networking"),
+)
+_DOMAIN_RULES: list[tuple[tuple[frozenset[str], ...], str]] = (
+    [(tuple(frozenset({w}) for w in phrase.split()), domain) for phrase, domain in _DOMAIN_PHRASES]
+    + [((frozenset(forms.split()),), domain) for forms, domain in _DOMAIN_WORDS]
+)
+
+
+def _symbol_tokens(symbol: str) -> list[str]:
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", symbol)
+    return [t for t in re.split(r"[^a-z0-9]+", spaced.lower()) if t]
+
+
 def _infer_domain(symbol: str) -> str:
-    keywords = {
-        # authentication / access control
-        "verify_key": "authentication",
-        "check_key": "authentication",
-        "auth": "authentication",
-        "token": "authentication",
-        # rate limiting
-        "rate_limit": "rate_limiting",
-        "ratelimit": "rate_limiting",
-        "throttle": "rate_limiting",
-        # orchestration / job lifecycle
-        "runstatus": "orchestration",
-        "run_status": "orchestration",
-        "orchestrat": "orchestration",
-        "job_status": "orchestration",
-        "observe_job": "orchestration",
-        "taskstatus": "orchestration",
-        # model / adapter management
-        "adapter": "model_management",
-        "lora": "model_management",
-        "civitai": "model_management",
-        "checkpoint": "model_management",
-        "sidecar": "model_management",
-        "hf_kind": "model_management",
-        "hf_checkpoint": "model_management",
-        # observability
-        "retry": "resilience",
-        "log": "observability",
-        "metric": "observability",
-        "observe": "observability",
-        # infrastructure
-        "cache": "caching",
-        "http": "networking",
-    }
-    s = symbol.lower()
-    for key, domain in keywords.items():
-        if key in s:
+    tokens = _symbol_tokens(symbol)
+    for seq, domain in _DOMAIN_RULES:
+        n = len(seq)
+        if any(all(tokens[i + k] in seq[k] for k in range(n)) for i in range(len(tokens) - n + 1)):
             return domain
     return "shared-logic"
-
-

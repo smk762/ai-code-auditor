@@ -33,3 +33,20 @@ def test_the_client_collection_is_sent(ingest, monkeypatch) -> None:
     monkeypatch.setenv("AI_AUDIT_RAG_COLLECTION", "staging_docs")
     assert mod._ingest_document("http://x", "s", "staging_docs", "d2", "text", {}, False) is True
     assert [d[0]["id"] for d in sent] == ["d1", "d2"]
+
+
+def test_endpoint_list_keeps_the_repo_document_within_its_cap(ingest) -> None:
+    mod, _ = ingest
+    endpoints = [f"GET /api/v1/resource_{i:04d}" for i in range(500)]
+    doc = mod._with_endpoints("briefing " * 400, endpoints, max_chars=6000)
+    assert len(doc) <= 6000
+    assert doc.rstrip().endswith("more")
+    shown = doc.count("GET /api/v1/resource_")
+    assert f"… and {500 - shown} more" in doc
+
+
+def test_a_short_endpoint_list_is_appended_whole(ingest) -> None:
+    mod, _ = ingest
+    doc = mod._with_endpoints("b", ["GET /b", "GET /a", "GET /a"])
+    assert doc == "b\n\nAll discovered endpoints:\n  GET /a\n  GET /b"
+    assert mod._with_endpoints("b", []) == "b"

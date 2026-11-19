@@ -245,3 +245,42 @@ def test_every_drawn_service_has_a_safe_icon() -> None:
     assert drawn <= set(icons)
     for body in (i["body"] for i in icons.values()):
         assert "<script" not in body.lower() and " on" not in body.lower() and body.startswith("<path")
+
+
+def test_flow_connects_only_the_names_touching_each_arrow() -> None:
+    doc = DOC.replace("  quarry ──► curator ──► voluptas (ComfyUI :8188)\n",
+                      "  quarry ──► curator      lens ──► lightbox\n"
+                      "  forge ──► proof via eval\n"
+                      "  cull / mask ──► halo / atlas\n")
+    _meta, flow = ui_topology.parse_ecosystem_doc(doc)
+    assert ("quarry", "curator") in flow and ("lens", "lightbox") in flow
+    assert ("forge", "proof") in flow
+    assert {("cull", "halo"), ("cull", "atlas"), ("mask", "halo"), ("mask", "atlas")} <= set(flow)
+    phantom = {("quarry", "lens"), ("curator", "lightbox"), ("forge", "via"), ("forge", "eval")}
+    assert not phantom & set(flow)
+
+
+def test_head_of_a_repo_without_commits_is_empty(tmp_path: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(tmp_path / "empty")], check=True)
+    assert ui_topology._head(str(tmp_path / "empty")) == ""
+
+
+def test_cache_is_per_output_dir(eco: Path, tmp_path: Path) -> None:
+    (eco / "service_topology.json").unlink()
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "wiki" / "argus-forge").mkdir(parents=True)
+    (other / "wiki" / "argus-forge" / "INDEX.json").write_text("{}")
+    first = {n["id"]: n for n in ui_topology.topology_data(eco)["nodes"]}
+    second = {n["id"]: n for n in ui_topology.topology_data(other)["nodes"]}
+    assert first["argus-forge"]["wiki"] is False and second["argus-forge"]["wiki"] is True
+
+
+@pytest.mark.parametrize("body", ['{"nodes": [', "[1, 2]"], ids=["truncated", "not_an_object"])
+def test_malformed_sidecar_degrades_to_no_policy_data(eco: Path, body: str) -> None:
+    (eco / "service_topology.json").write_text(body)
+    d = ui_topology.topology_data(eco)
+    assert _edges(d, "violation") == [] and d["topology_generated_at"] is None
+    assert _edges(d, "flow")  # the rest of the map still builds

@@ -16,7 +16,10 @@ Storage: AI_AUDIT_SPEND_DB (default index/llm_spend.db — shared with the audit
 """
 from __future__ import annotations
 
+import logging
+import math
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -43,6 +46,11 @@ CACHE_READ_MULT: dict[str, float] = {
 }
 DEFAULT_LANE_CAPS = {"audit": 15.0, "audit_batch": 100.0, "conductor": 80.0, "wiki": 30.0, "classes": 5.0}
 DEFAULT_PATH = "index/llm_spend.db"
+# Providers that run on our own hardware: their calls really are free.
+LOCAL_PROVIDERS = ("ollama/", "ollama_chat/")
+
+logger = logging.getLogger(__name__)
+_WARNED_UNPRICED: set[str] = set()
 
 
 class BudgetExceeded(RuntimeError):
@@ -53,11 +61,35 @@ def bare_model(model: str) -> str:
     return model.split("/", 1)[-1]
 
 
+def _priced_name(model: str) -> str | None:
+    """The PRICES key for *model* (provider prefix and a trailing -YYYYMMDD date dropped), or None."""
+    name = bare_model(model)
+    if name in PRICES:
+        return name
+    undated = re.sub(r"-\d{8}$", "", name)
+    return undated if undated in PRICES else None
+
+
+def model_rates(model: str) -> tuple[float, float]:
+    """$ per 1M (input, output) tokens. A model missing from PRICES is charged the dearest known
+    rate, with a warning, so an unpriced model can never slip past a budget cap as $0."""
+    if model.startswith(LOCAL_PROVIDERS):
+        return (0.0, 0.0)
+    name = _priced_name(model)
+    if name is not None:
+        return PRICES[name]
+    if model not in _WARNED_UNPRICED:
+        _WARNED_UNPRICED.add(model)
+        logger.warning("no price for model %r; charging the highest known rate — add it to "
+                       "auditor/spend_ledger.PRICES", model)
+    return max(PRICES.values(), key=lambda p: (p[1], p[0]))
+
+
 def cost_usd(model: str, input_tokens: int, output_tokens: int, *, cache_write: int = 0,
              cache_read: int = 0, cache_write_1h: int = 0, batch: bool = False) -> float:
     """*cache_write_1h* is the part of *cache_write* written with the 1-hour TTL."""
-    name = bare_model(model)
-    pin, pout = PRICES.get(name, (0.0, 0.0))
+    name = _priced_name(model) or bare_model(model)
+    pin, pout = model_rates(model)
     write_1h = min(cache_write_1h, cache_write)
     usd = (input_tokens * pin + (cache_write - write_1h) * pin * 1.25 + write_1h * pin * 2.0
            + cache_read * pin * CACHE_READ_MULT.get(name, 0.1) + output_tokens * pout) / 1e6
@@ -191,6 +223,11 @@ class SpendLedger:
                 (self._since(),),
             ).fetchall()
         caps = self.caps()
+
+        def left(lane: str) -> float | None:  # None = uncapped (inf is not valid JSON)
+            r = self.remaining(lane)
+            return round(r, 4) if math.isfinite(r) else None
+
         lanes = sorted({r[0] for r in rows} | set(DEFAULT_LANE_CAPS))
         return {
             "month_start": budget_month_start().isoformat(),
@@ -198,7 +235,7 @@ class SpendLedger:
             "total_cap": caps["total"],
             "lanes": {
                 lane: {"spent": round(self.spent(lane), 4), "cap": caps.get(lane),
-                       "remaining": round(self.remaining(lane), 4)}
+                       "remaining": left(lane)}
                 for lane in lanes
             },
             "by_model": [

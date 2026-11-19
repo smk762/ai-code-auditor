@@ -14,7 +14,7 @@ _TYPE_SUFFIX = re.compile(r"^(?P<tgt>.*[^:]):(?P<type>[A-Za-z_]+)$")
 
 def _parse_forbidden(pattern: str) -> tuple[str, str, str | None] | None:
     """Split a forbidden pattern into (src, tgt, type); type None means any edge type."""
-    text = pattern.replace(" ", "").upper()
+    text = _norm(pattern).upper()
     if "->" not in text:
         return None
     src, tgt = text.split("->", 1)
@@ -27,9 +27,14 @@ def _parse_forbidden(pattern: str) -> tuple[str, str, str | None] | None:
     return src, tgt, edge_type
 
 
+def _norm(text: str) -> str:
+    """Patterns and entity names are compared without spaces (patterns are written "a -> b")."""
+    return text.replace(" ", "")
+
+
 def _names(entity: str) -> set[str]:
-    """The fully-qualified and the short (``::``-stripped) name of an entity, upper-cased."""
-    full = entity.upper()
+    """The fully-qualified and the short (``::``-stripped) name of an entity, normalised as patterns are."""
+    full = _norm(entity).upper()
     return {full, full.split("::")[-1]}
 
 
@@ -76,9 +81,10 @@ class ArchitectureEngine:
                             rule_name=rule_name,
                             violating_path=f"{src} -> {tgt}",
                             entities=[src, tgt],
-                            evidence=f"Matched forbidden pattern {raw.replace(' ', '').upper()}",
+                            evidence=f"Matched forbidden pattern {_norm(raw).upper()}",
                         )
                     )
+                    break  # one violation per edge and rule, however many patterns overlap
         return violations
 
     def _match_allowed_direction(
@@ -89,14 +95,14 @@ class ArchitectureEngine:
     ) -> list[RuleViolation]:
         if not allowed_edges:
             return []
-        allowed = {item.replace(" ", "").lower() for item in allowed_edges}
+        allowed = {_norm(item).lower() for item in allowed_edges}
         violations: list[RuleViolation] = []
         for src, tgt, edge_type in edges:
             if edge_type != "DEPENDS_ON":
                 continue
             src_name = src.split("::")[-1].lower()
             tgt_name = tgt.split("::")[-1].lower()
-            directional = f"{src_name}->{tgt_name}"
+            directional = f"{_norm(src_name)}->{_norm(tgt_name)}"
             if directional not in allowed:
                 violations.append(
                     RuleViolation(

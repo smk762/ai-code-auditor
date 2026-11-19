@@ -1101,6 +1101,7 @@ def _run_repair(
             event_name = ""
             for line in resp.iter_lines(decode_unicode=True):
                 if not line:
+                    event_name = ""  # a blank line ends the SSE event; its name doesn't carry over
                     continue
                 if line.startswith("event:"):
                     event_name = line[6:].strip()
@@ -1108,6 +1109,9 @@ def _run_repair(
                 elif line.startswith("data:"):
                     try:
                         data = json.loads(line[5:].strip())
+                        if not isinstance(data, dict):
+                            print(line)
+                            continue
                         if event_name == "pack_loaded":
                             print(f"  Pack:          {data.get('pack_id')} — {data.get('title')}")
                             print(f"  Repo:          {data.get('repo')}")
@@ -1253,7 +1257,8 @@ def _budget(args: argparse.Namespace) -> None:
           + (f" of ${cap:.2f} (${cap - summary['total_spent']:.2f} left)" if cap is not None else ""))
     for lane, info in summary["lanes"].items():
         lane_cap = f"${info['cap']:.2f}" if info["cap"] is not None else "no cap"
-        print(f"  {lane:12s} ${info['spent']:8.2f}  cap {lane_cap:>8s}  left ${info['remaining']:.2f}")
+        left = f"${info['remaining']:.2f}" if info["remaining"] is not None else "unlimited"
+        print(f"  {lane:12s} ${info['spent']:8.2f}  cap {lane_cap:>8s}  left {left}")
     if summary["by_model"]:
         print("By lane/model:")
         for r in summary["by_model"]:
