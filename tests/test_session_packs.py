@@ -88,6 +88,7 @@ def test_time_budget_keeps_bookkeeping_for_finished_tasks(monkeypatch: pytest.Mo
     assert status["worker_stats"]["escalated"] == 1
     assert any(d.get("id") == "t2" for d in status["decisions_needed"])
     assert status["findings"]["confirmed"] == 2
+    assert status["ended_reason"] == "time_budget"  # a later escalation doesn't relabel the stop
     handoffs = list((tmp_path / "out" / "conductor").rglob("*"))
     assert sum(1 for h in handoffs if "t2" in h.name) >= 1
 

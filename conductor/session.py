@@ -183,7 +183,9 @@ def run_rest_session(
         write_worker_handoff(task, result, handoff_dir)
         state.tasks_done.append(result)
         if result.status == "ESCALATE":
-            state.ended_reason = "escalation"
+            # A time-budget stop stays the session's reason: later tasks are only bookkept.
+            if state.ended_reason != "time_budget":
+                state.ended_reason = "escalation"
             state.decisions.append(
                 DecisionNeeded(
                     id=result.task_id,
