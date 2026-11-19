@@ -131,3 +131,11 @@ def test_pack_savings_page_in_shell(client: TestClient) -> None:
     assert r.status_code == 200
     assert 'aria-current="page">Pack savings</a>' in r.text
     assert "/audit/pack-savings.json" in r.text
+
+
+def test_heading_anchors_never_collide_with_a_natural_suffixed_slug() -> None:
+    import re
+
+    out = ui.render_markdown("# Foo\n\n# Foo\n\n# Foo 1\n\n# Foo 1\n")
+    ids = re.findall(r'<h1 id="([^"]+)"', out)
+    assert len(ids) == 4 and len(set(ids)) == 4, ids

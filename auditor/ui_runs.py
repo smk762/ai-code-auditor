@@ -335,8 +335,11 @@ def _pack_lookup(output_dir: str | Path) -> dict[tuple[str, str, str], dict[str,
         if e.get("layer") == "world_model" or not e.get("title"):
             continue
         k = (str(e.get("repo") or ""), str(e.get("file_path") or ""), str(e["title"]))
-        dup = e.get("duplicate_of")
-        e = (by_id.get(dup) if dup else None) or e  # a closed duplicate stands for its keeper
+        # A closed duplicate stands for its keeper, following A→B→C chains (cycle-safe).
+        visited = {e["id"]}
+        while (dup := e.get("duplicate_of")) and dup not in visited and dup in by_id:
+            visited.add(dup)
+            e = by_id[dup]
         status = str(e.get("status") or "open")
         cur = out.get(k)
         if cur is None or rank.get(status, len(rank)) < rank.get(cur["status"], len(rank)):
