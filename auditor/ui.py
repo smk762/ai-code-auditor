@@ -109,7 +109,7 @@ def render_markdown(text: str) -> str:
     ``style`` attributes, and headings get stable, de-duplicated ``id`` anchors.
     """
     tokens: list[Token] = _md.parse(text or "")
-    seen: dict[str, int] = {}
+    used: set[str] = set()  # ids emitted so far, so "Foo", "Foo", "Foo 1" can't collide
     for i, tok in enumerate(tokens):
         if tok.type in ("th_open", "td_open"):
             style = tok.attrGet("style")
@@ -119,10 +119,13 @@ def render_markdown(text: str) -> str:
                 if m:
                     tok.attrSet("class", f"align-{m.group(1)}")
         elif tok.type == "heading_open" and i + 1 < len(tokens):
-            base = _slug(tokens[i + 1].content)
-            n = seen.get(base, 0)
-            seen[base] = n + 1
-            tok.attrSet("id", base if n == 0 else f"{base}-{n}")
+            base = cand = _slug(tokens[i + 1].content)
+            n = 0
+            while cand in used:
+                n += 1
+                cand = f"{base}-{n}"
+            used.add(cand)
+            tok.attrSet("id", cand)
     return _md.renderer.render(tokens, _md.options, {})
 
 
