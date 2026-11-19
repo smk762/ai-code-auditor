@@ -275,3 +275,17 @@ def test_failed_page_retry_also_rebuilds_stale_pages(eco) -> None:
     assert item.reasons == {"overview": "last build failed", "interfaces": "cited lines changed: other.py"}
     rf.refresh(out, runner=Runner(out, client=fake, poll_s=0), publish=False)
     assert rf.plan(out).skipped["svc/internal"] == "up to date with the mirror"
+
+
+def test_text_at_survives_a_file_that_is_not_utf8(tmp_path: Path) -> None:
+    # a Latin-1 or binary file at the source SHA must give text (decoded as read_text does), not raise
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=ENV)
+    (repo / "latin.py").write_bytes(b"name = 'caf\xe9'\n\xff\xfe\x00\n")
+    _commit(repo, "init")
+    sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True,
+                         check=True).stdout.strip()
+    text = rf._text_at(RepoConfig("r", str(repo)), sha, "latin.py")
+    assert text is not None and text.splitlines()[0] == "name = 'caf�'"
+    assert rf._text_at(RepoConfig("r", str(repo)), sha, "missing.py") is None

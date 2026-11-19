@@ -66,9 +66,10 @@ def _text_at(repo, sha: str, path: str) -> str | None:
     sub = (getattr(repo, "subpath", "") or "").strip("/")
     try:
         r = subprocess.run(["git", "-C", repo.path, "show", f"{sha}:{'/'.join(p for p in (sub, path) if p)}"],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, encoding="utf-8", errors="replace", timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return None
+    # decoded as read_text() decodes the live file, so a stray byte can't raise or skew the range hash
     return r.stdout if r.returncode == 0 else None
 
 
