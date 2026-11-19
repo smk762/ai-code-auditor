@@ -25,7 +25,13 @@ def test_verify_github_signature_roundtrip():
     sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     assert verify_github_signature(body, sig, secret) is True
     assert verify_github_signature(body, "sha256=deadbeef", secret) is False
-    assert verify_github_signature(body, None, "") is True  # secret unset → allow
+    # Secret unset → nothing verifies (the route falls back to the API token, never to open).
+    assert verify_github_signature(body, None, "") is False
+    assert verify_github_signature(body, sig, "") is False
+
+
+def test_verify_github_signature_refuses_non_ascii_instead_of_raising():
+    assert verify_github_signature(b"{}", "sha256=é" + "0" * 63, "whsec_test") is False
 
 
 def test_parse_github_push_event_filters_branch(monkeypatch):
@@ -111,6 +117,29 @@ def test_scheduler_serialises_repos_with_global_gap(monkeypatch):
             time.sleep(0.05)
 
     assert order == ["repo-one", "repo-two"]
+    assert stamps[1] - stamps[0] >= 0.9
+
+
+def test_global_gap_holds_when_the_next_merge_arrives_after_the_worker_exits(monkeypatch):
+    """The worker exits on an empty queue; a merge arriving next must still wait out the gap."""
+    monkeypatch.setenv("AI_AUDIT_MERGE_HOOK_ENABLED", "1")
+    monkeypatch.setenv("AI_AUDIT_MERGE_DEBOUNCE_S", "0")
+    monkeypatch.setenv("AI_AUDIT_MERGE_GLOBAL_GAP_S", "1")
+
+    sched = MergeHookScheduler()
+    stamps: list[float] = []
+
+    def fake_run(event, **kwargs):
+        stamps.append(time.time())
+        return {"repo": event.repo, "ok": True}
+
+    with patch("auditor.merge_hook.run_merge_refresh", side_effect=fake_run):
+        sched.enqueue(MergeEvent(repo="repo-one", force=True))
+        assert sched.wait_idle(timeout=5, poll_s=0.01)
+        sched.enqueue(MergeEvent(repo="repo-two", force=True))
+        assert sched.wait_idle(timeout=5, poll_s=0.01)
+
+    assert len(stamps) == 2
     assert stamps[1] - stamps[0] >= 0.9
 
 

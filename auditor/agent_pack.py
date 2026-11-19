@@ -314,7 +314,15 @@ def index_path(output_dir: str | Path) -> Path:
 
 
 def pack_file_path(output_dir: str | Path, pack_id: str) -> Path:
+    """File for ``pack_id``. Safe ids map to themselves, so existing pack files keep their names.
+
+    An id that sanitizing would change (disallowed characters, edge dashes, over 120 chars, empty)
+    gets a hash of the original id appended, so two distinct ids can never share one file.
+    """
     safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", pack_id).strip("-")[:120]
+    if safe != pack_id or not safe:
+        digest = hashlib.sha1(pack_id.encode("utf-8", "surrogatepass")).hexdigest()[:10]
+        safe = f"{safe[:109]}-{digest}" if safe else f"pack-{digest}"
     return packs_dir(output_dir) / f"{safe}.yaml"
 
 
@@ -470,6 +478,17 @@ def build_pack_from_finding(
     )
 
 
+def _worker_call_path(raw: Any) -> list[str]:
+    """Worker ``call_path`` as a list; a single string is one hop chain, not a list of characters."""
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        return [p.strip() for p in raw.split("->") if p.strip()]
+    if isinstance(raw, (list, tuple)):
+        return [str(p) for p in raw]
+    return [str(raw)]
+
+
 def build_pack_from_worker_finding(
     finding: dict[str, Any],
     *,
@@ -484,7 +503,8 @@ def build_pack_from_worker_finding(
     public_base_url: str = "",
 ) -> AgentCodingPack:
     file_path = str(finding.get("file") or finding.get("file_path") or "")
-    line = int(finding.get("line") or 0)
+    line_m = re.match(r"\D*(\d+)", str(finding.get("line") or ""))  # "42", "42-50", "L42", "12.0"
+    line = int(line_m.group(1)) if line_m else 0
     title = str(finding.get("title") or f"{mission} finding")
     sev = _normalize_severity(str(finding.get("severity") or "MEDIUM"))
     description = str(finding.get("missing_evidence") or worker_summary or title)
@@ -509,7 +529,7 @@ def build_pack_from_worker_finding(
         kind=mission,
         run_id=run_id,
         task_id=task_id,
-        call_path=[str(p) for p in (finding.get("call_path") or [])],
+        call_path=_worker_call_path(finding.get("call_path")),
         draft_pr_url=draft_pr_url,
         handoff_path=handoff_path,
         public_base_url=public_base_url,
@@ -732,9 +752,12 @@ def _index_entries(output_dir: str | Path) -> list[dict[str, Any]]:
     idx_file = index_path(output_dir)
     if idx_file.exists():
         try:
-            return list(json.loads(idx_file.read_text(encoding="utf-8")).get("packs") or [])
-        except (OSError, json.JSONDecodeError):
-            pass
+            data = json.loads(idx_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):  # ValueError covers JSONDecodeError and bad UTF-8
+            data = None
+        packs = data.get("packs") if isinstance(data, dict) else None
+        if isinstance(packs, list):
+            return list(packs)
     return list(rebuild_index(output_dir).get("packs") or [])
 
 
@@ -854,7 +877,7 @@ def snapshot_pack_lifecycle(output_dir: str | Path) -> dict[str, dict[str, Any]]
         if not data or not data.get("work_item_id"):
             continue
         pack = AgentCodingPack.from_dict(data)
-        if pack.status == DEFAULT_PACK_STATUS and not pack.status_history:
+        if pack.status == DEFAULT_PACK_STATUS and not pack.status_history and not pack.repair.get("draft_pr_url"):
             continue
         snap[pack.work_item_id] = {
             "status": pack.status,

@@ -240,6 +240,19 @@ def test_findings_show_a_closed_duplicate_as_its_keeper(history, tmp_path) -> No
     assert packs["fresh"] == {"id": "pack-keeper", "status": "claimed", "kind": "nightly"}
 
 
+def test_findings_follow_a_duplicate_chain_to_the_live_keeper(history, tmp_path) -> None:
+    a = {**_pk("pack-a", "fresh", status="wontfix"), "duplicate_of": "pack-b"}
+    b = {**_pk("pack-b", "fresh, reworded", status="wontfix"), "duplicate_of": "pack-c"}
+    out = _pack_index(tmp_path, [a, b, _pk("pack-c", "fresh, again", status="claimed")])
+    packs = {f["title"]: f["pack"] for f in ui_runs.findings_data("x-2", output_dir=out)["findings"]}
+    assert packs["fresh"] == {"id": "pack-c", "status": "claimed", "kind": "nightly"}
+    # a cycle stops instead of looping forever
+    a2 = {**a, "duplicate_of": "pack-b"}
+    b2 = {**b, "duplicate_of": "pack-a"}
+    out = _pack_index(tmp_path, [a2, b2])
+    assert ui_runs._pack_lookup(out)[("x", "a.py", "fresh")]["id"] in {"pack-a", "pack-b"}
+
+
 def test_findings_without_pack_index(history, tmp_path) -> None:
     d = ui_runs.findings_data("x-2", output_dir=tmp_path)
     assert all(f["pack"] is None for f in d["findings"])
@@ -336,15 +349,27 @@ def test_json_endpoints(client: TestClient, history) -> None:
     assert client.get("/audit/findings.json?change=bogus").status_code == 422
 
 
-def test_report_page_renders_markdown_and_refuses_other_paths(client: TestClient, tmp_path: Path) -> None:
-    (tmp_path / "security_report.md").write_text("# Security\n\n<script>x</script>\n\n| a |\n|:-:|\n| 1 |\n")
-    (tmp_path.parent / "secret.md").write_text("# nope")
+def test_report_page_renders_markdown_and_refuses_other_paths(
+        client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from auditor.ui import render_report_page
+
+    out = tmp_path / "out"  # the decoy sits beside it, inside this test's own tmp_path
+    out.mkdir()
+    monkeypatch.setattr("auditor.audit_api._output_dir", lambda: str(out))
+    (out / "security_report.md").write_text("# Security\n\n<script>x</script>\n\n| a |\n|:-:|\n| 1 |\n")
+    (tmp_path / "secret.md").write_text("# nope")
+    (out / "sub").mkdir()
+    (out / "sub" / "nested.md").write_text("# nope")
     r = client.get("/ui/reports/security_report.md")
     assert r.status_code == 200
     assert '<h1 id="security">Security</h1>' in r.text and "&lt;script&gt;" in r.text
     assert '<td class="align-center">1</td>' in r.text
     assert client.get("/ui/reports/missing.md").status_code == 404
-    assert client.get("/ui/reports/..%2Fsecret.md").status_code == 404
+    # The guard itself: the router never hands it a "/" name, so call it with one directly.
+    for name in ("../secret.md", "sub/nested.md", str(tmp_path / "secret.md"), "sub/../security_report.md"):
+        assert render_report_page(name, out) is None, name
+    r = client.get("/ui/reports/..%2Fsecret.md")
+    assert r.status_code == 404 and "nope" not in r.text
 
 
 def test_combined_report_accepts_pipeline_success_status(client: TestClient, tmp_path: Path) -> None:

@@ -125,6 +125,36 @@ def test_parse_vitest_json(tmp_path: Path) -> None:
         "src/a.test.ts::todo": "skipped"}
 
 
+def test_parse_vitest_json_duplicate_names_keep_the_worst_outcome(tmp_path: Path) -> None:
+    data = {"testResults": [{"name": str(tmp_path / "a.test.ts"), "assertionResults": [
+        {"fullName": "dup", "status": "failed"}, {"fullName": "dup", "status": "passed"},
+        {"fullName": "skip", "status": "passed"}, {"fullName": "skip", "status": "pending"},
+        {"status": "failed"}, {"status": "passed"}]}]}
+    assert evidence.parse_vitest_json(data, tmp_path) == {
+        "a.test.ts::dup": "failed", "a.test.ts::skip": "skipped", "a.test.ts::#4": "failed",
+        "a.test.ts::#5": "passed"}
+
+
+def test_copy_into_never_leaves_either_tree(tmp_path: Path) -> None:
+    src, dst, host = tmp_path / "src", tmp_path / "out" / "dst", tmp_path / "host"
+    for d in (src, dst, host):
+        d.mkdir(parents=True)
+    (host / "secret.txt").write_text("host secret")
+    (host / "victim.txt").write_text("untouched")
+    (src / "ok.py").write_text("ok")
+    (src / "leak.txt").symlink_to(host / "secret.txt")  # a symlink committed in the audited repo
+    (src / "victim.txt").write_text("overwritten")
+    (dst / "victim.txt").symlink_to(host / "victim.txt")  # base tree symlink pointing at a host file
+    evidence._copy_into(src, dst, ["ok.py", "leak.txt", "victim.txt"])
+    assert (dst / "ok.py").read_text() == "ok"
+    assert not (dst / "leak.txt").exists()
+    assert (host / "victim.txt").read_text() == "untouched"
+    evidence._copy_into(src, dst, ["../host/secret.txt"])  # read from tmp/host, would write to tmp/out/host
+    assert not (tmp_path / "out" / "host").exists()
+    evidence._copy_into(src, dst, [str(host / "secret.txt")])  # absolute: must not touch the host at all
+    assert sorted(p.name for p in host.iterdir()) == ["secret.txt", "victim.txt"]
+
+
 # ── running on real trees ────────────────────────────────────────────────────
 
 BASE_FILES = {

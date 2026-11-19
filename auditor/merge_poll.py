@@ -24,9 +24,10 @@ from auditor.config import _bool_env
 
 logger = logging.getLogger(__name__)
 
-_GITHUB_OWNER_REPO = re.compile(
-    r"(?:github\.com[:/]|git@github\.com:)(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
-)
+# scp-like remote: [user@]host:path (no scheme)
+_SCP_REMOTE = re.compile(r"^(?:[^@/:]+@)?(?P<host>[^@/:]+):(?P<path>.+)$")
+_GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
+_SLUG_PART = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def merge_poll_enabled() -> bool:
@@ -55,19 +56,28 @@ def parse_github_slug(url: str) -> str | None:
     raw = (url or "").strip()
     if not raw:
         return None
-    m = _GITHUB_OWNER_REPO.search(raw)
-    if m:
-        return f"{m.group('owner')}/{m.group('repo')}"
-    # Fallback: path-style https://github.com/owner/repo
-    try:
-        parsed = urlparse(raw)
-        if "github.com" in (parsed.netloc or "") and parsed.path:
-            parts = [p for p in parsed.path.strip("/").split("/") if p]
-            if len(parts) >= 2:
-                return f"{parts[0]}/{parts[1].removesuffix('.git')}"
-    except Exception:
+    # The host must be GitHub exactly: notgithub.com, github.com.evil.example or
+    # user:github.com@other.host would otherwise name a real GitHub repo.
+    if "://" in raw:
+        try:
+            parsed = urlparse(raw)
+            host, path = (parsed.hostname or "").lower(), parsed.path
+        except ValueError:
+            return None
+    else:
+        m = _SCP_REMOTE.match(raw)
+        if not m:
+            return None
+        host, path = m.group("host").lower(), m.group("path")
+    if host not in _GITHUB_HOSTS:
         return None
-    return None
+    parts = [p for p in path.strip("/").split("/") if p]
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[0], parts[1].removesuffix(".git")
+    if not all(_SLUG_PART.match(x) and x not in (".", "..") for x in (owner, repo)):
+        return None
+    return f"{owner}/{repo}"
 
 
 @dataclass

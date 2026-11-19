@@ -132,8 +132,15 @@ class ReproResult:
 
 
 def _copy_into(src_tree: Path, dst_tree: Path, files: list[str]) -> None:
+    """Copy *files* from one tree to the other. Paths come from an untrusted patch, so an absolute or
+    ``..`` path, or a symlink resolving outside either tree, is skipped rather than followed."""
+    src_root, dst_root = src_tree.resolve(), dst_tree.resolve()
     for f in files:
+        if Path(f).is_absolute() or ".." in Path(f).parts:
+            continue
         src, dst = src_tree / f, dst_tree / f
+        if not src.resolve().is_relative_to(src_root) or not dst.resolve().is_relative_to(dst_root):
+            continue
         if src.is_file():
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, dst)
@@ -251,6 +258,9 @@ def python_repro(tree: Path, fresh_base: Callable[[], Path | None], tests: list[
     return res
 
 
+_VITEST_RANK = {"passed": 0, "skipped": 1, "failed": 2}
+
+
 def parse_vitest_json(data: dict[str, Any], root: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     for f in data.get("testResults") or []:
@@ -259,10 +269,13 @@ def parse_vitest_json(data: dict[str, Any], root: Path) -> dict[str, str]:
             rel = str(Path(name).resolve().relative_to(root.resolve()))
         except ValueError:
             rel = name
-        for a in f.get("assertionResults") or []:
+        for i, a in enumerate(f.get("assertionResults") or []):
             st = str(a.get("status") or "")
-            out[f"{rel}::{a.get('fullName') or a.get('title')}"] = (
-                "passed" if st == "passed" else "failed" if st == "failed" else "skipped")
+            status = "passed" if st == "passed" else "failed" if st == "failed" else "skipped"
+            key = f"{rel}::{a.get('fullName') or a.get('title') or f'#{i}'}"
+            # vitest allows duplicate names (repeated it() titles, test.each): keep the worst outcome
+            if _VITEST_RANK[status] > _VITEST_RANK.get(out.get(key, ""), -1):
+                out[key] = status
     return out
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from auditor.agent_pack import (
@@ -273,6 +274,60 @@ def test_build_pack_from_worker_finding_includes_call_path(tmp_path: Path):
     assert pack.impact["call_path"] == ["a", "b"]
     assert pack.location["symbol"] == "fn"
     assert pack.priority["severity"] == "HIGH"
+
+
+def _build_worker_pack(tmp_path: Path, **extra):
+    return build_pack_from_worker_finding(
+        {"file": "a.py", "title": "t", **extra},
+        repo="r", repo_path=tmp_path, mission="security", run_id="run", task_id="task",
+    )
+
+
+def test_worker_finding_string_call_path_is_one_chain(tmp_path: Path):
+    # a string call_path is a hop chain, not a list of characters
+    pack = _build_worker_pack(tmp_path, call_path="a.py:f -> b.py:g")
+    assert pack.impact["call_path"] == ["a.py:f", "b.py:g"]
+
+
+def test_worker_finding_odd_line_values_do_not_abort(tmp_path: Path):
+    def build(**extra):
+        return _build_worker_pack(tmp_path, **extra)
+
+    # loosely formed line values parse to their leading integer instead of aborting the pack
+    assert [build(line=v).location["line"] for v in ("42-50", "L42", "12.0", "N/A", None)] == [42, 42, 12, 0, 0]
+
+
+def test_pack_file_path_never_collides_and_keeps_safe_ids(tmp_path: Path):
+    from auditor.agent_pack import pack_file_path, packs_dir
+
+    # existing ids keep their filename, so pack files on disk are not orphaned
+    assert pack_file_path(tmp_path, "pack-ai-code-auditor-0ff1c1ac84").name == "pack-ai-code-auditor-0ff1c1ac84.yaml"
+    lossy = ["a/b", "a b", "a-b", "-a-b-", "", "///", "x" * 130, "x" * 131]
+    names = {pack_file_path(tmp_path, i).name for i in lossy}
+    assert len(names) == len(lossy)
+    assert all(not n.startswith(".") for n in names)
+    assert all(pack_file_path(tmp_path, i).parent == packs_dir(tmp_path) for i in lossy)
+
+
+@pytest.mark.parametrize("raw", [b"[]", b"null", b'"x"', b'{"packs": 5}', b"\xff\xfe\x00garbage"])
+def test_corrupt_index_rebuilds_instead_of_raising(tmp_path: Path, raw: bytes):
+    from auditor.agent_pack import index_path
+
+    write_pack(_mk_pack("pack-one"), tmp_path)
+    index_path(tmp_path).write_bytes(raw)
+    assert [e["id"] for e in list_packs(tmp_path)] == ["pack-one"]
+
+
+def test_snapshot_keeps_draft_pr_url_on_a_default_status_pack(tmp_path: Path):
+    from auditor.agent_pack import snapshot_pack_lifecycle
+
+    pack = _mk_pack("pack-draft")
+    pack.repair["draft_pr_url"] = "https://example.invalid/o/r/pull/1"
+    write_pack(pack, tmp_path)
+    write_pack(_mk_pack("pack-plain"), tmp_path)
+    snap = snapshot_pack_lifecycle(tmp_path)
+    assert snap["pack-draft"]["draft_pr_url"] == "https://example.invalid/o/r/pull/1"
+    assert "pack-plain" not in snap
 
 
 # ── Bundle / status lifecycle / closure ───────────────────────────────────────

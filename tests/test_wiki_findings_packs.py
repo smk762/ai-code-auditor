@@ -31,3 +31,7 @@ def test_backslash_before_pipe_does_not_split_the_cell() -> None:
 def test_every_line_break_is_collapsed() -> None:
     for brk in ("\r", "\r\n", " ", "\n"):
         assert _esc(f"a{brk}b") == "a b"
+
+
+def test_falsy_values_other_than_none_are_shown() -> None:
+    assert (_esc(0), _esc(False), _esc(None), _esc("")) == ("0", "False", "", "")

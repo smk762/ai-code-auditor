@@ -37,6 +37,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from auditor.fsutil import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 SEEDED_NAME = "eval_seeded.json"
@@ -210,7 +212,8 @@ def _kill(clean: Path, root: Path, mod: Path, fn: str, t_rel: str, python: Path,
     """The first operator flip in *fn* that the test catches: (description, source, killing tests)."""
     from auditor import evidence
 
-    original = mod.read_text(encoding="utf-8")
+    original_bytes = mod.read_bytes()  # restored byte for byte: read_text would rewrite CRLF endings
+    original = original_bytes.decode("utf-8")
     ms = mutants(original, fn)
     rng.shuffle(ms)
     clean_out, _ = evidence._pytest(root, python, [t_rel], timeout_s)
@@ -219,7 +222,7 @@ def _kill(clean: Path, root: Path, mod: Path, fn: str, t_rel: str, python: Path,
             mod.write_text(src, encoding="utf-8")
             out, _ = evidence._pytest(root, python, [t_rel], timeout_s)
         finally:
-            mod.write_text(original, encoding="utf-8")
+            mod.write_bytes(original_bytes)
         killed = sorted(t for t in _passing(clean_out) if out.get(t) in ("failed", "error"))
         if killed:
             return desc, src, killed
@@ -272,6 +275,7 @@ def run(output_dir: str | Path | None = None, *, repos: list[str] | None = None,
     y, w, _ = now.isocalendar()
     seed = seed or f"{y}-W{w:02d}"
     rng = random.Random(seed)
+    out.mkdir(parents=True, exist_ok=True)  # before the long run, so the report can always be written
     venv_cache = Path(os.getenv("AI_AUDIT_VALIDATE_VENV_DIR") or out / "_validate_venvs")
     mirrors = {k: v for k, v in _mirror_paths(mirrors_path).items() if (v / ".git").exists()}
     names = sorted(repos or mirrors)
@@ -302,5 +306,5 @@ def run(output_dir: str | Path | None = None, *, repos: list[str] | None = None,
         "seconds": round(time.monotonic() - t0, 1),
         "scenarios": [asdict(s) for s in scenarios],
     }
-    (out / SEEDED_NAME).write_text(json.dumps(report, indent=1))
+    atomic_write_text(out / SEEDED_NAME, json.dumps(report, indent=1))
     return report

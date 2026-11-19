@@ -54,6 +54,20 @@ def test_two_repos_qualify_with_any_count_and_unguarded_classes_never_do(tmp_pat
     assert "class_parent" not in gov(tmp_path, "closed")
 
 
+def test_children_without_a_repo_are_not_a_phantom_repo(tmp_path: Path) -> None:
+    child(tmp_path, "a", repo="r1")
+    child(tmp_path, "b", repo="")
+    assert not cp.qualifies([{"repo": {"name": "r1"}}, {"repo": {}}], min_instances=5, min_repos=2)
+    assert cp.emit(tmp_path)["class_packs"] == []
+
+
+def test_explicit_zero_thresholds_are_honoured(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AI_AUDIT_CLASS_PACK_MIN", "50")
+    child(tmp_path, "a", repo="r1")
+    assert cp.emit(tmp_path)["class_packs"] == []
+    assert cp.emit(tmp_path, min_instances=0)["class_packs"] == ["pack-class-ssrf"]
+
+
 def test_re_emit_is_idempotent_and_keeps_guards_and_status(tmp_path: Path) -> None:
     child(tmp_path, "a", repo="r1")
     child(tmp_path, "b", repo="r2")
@@ -178,6 +192,21 @@ def test_not_proven_before_merge_or_without_the_files(mirror) -> None:
     missing = cp.prove(rec(mirror.guard, fixtures=["tests/gone.py"]), mirror.path, never)
     assert missing["status"] == "failed" and "tests/gone.py" in missing["note"]
     assert cp.prove(rec(mirror.guard), None, never)["status"] == "pending"
+
+
+@pytest.mark.parametrize("bad", ["../outside_test.py", "/abs/test_x.py", "tests/../../outside_test.py"])
+def test_guard_paths_outside_the_export_fail_and_never_run(mirror, bad: str) -> None:
+    host = mirror.path.parent  # a host file next to the mirror, never in the exported tree
+    for name in ("outside_test.py", "abs_test.py"):
+        (host / name).write_text("def test_x():\n    assert True\n")
+    path = str(host / "abs_test.py") if bad.startswith("/") else bad
+
+    def never(*a):
+        pytest.fail("ran")
+
+    for r in (rec(mirror.guard, proof_test=path), rec(mirror.guard, fixtures=[path])):
+        res = cp.prove(r, mirror.path, never)
+        assert res["status"] == "failed" and "outside the repo" in res["note"]
 
 
 # ── closing children ─────────────────────────────────────────────────────────

@@ -120,7 +120,8 @@ def scan(repo_name: str, repo_root: str | Path, paths: list[str] | None = None, 
         return []
     root = Path(repo_root)
     try:
-        r = _run(cdir, ["scan", "--root", str(root), "--json", *(paths or [])])
+        # "--": a repo path starting with "-" is a path, never an option such as --root
+        r = _run(cdir, ["scan", "--root", str(root), "--json", "--", *(paths or [])])
         if r.returncode != 0:
             logger.warning("suite rules scan of %s failed: %s", repo_name, r.stderr.strip()[-300:])
             return []
@@ -175,7 +176,12 @@ def fixtures(output_dir: str | Path | None = None, *, cdir: Path | None = None) 
         rules = []
         note = f"fixtures did not run: {exc}"
     else:
-        note = "" if rules else f"fixtures produced no results: {r.stderr.strip()[-200:]}"
+        if not isinstance(rules, list):  # e.g. null or {"error": ...}: a degraded report, not a crash
+            note = f"unexpected fixtures output: {type(rules).__name__}"
+            rules = []
+        else:
+            rules = [x for x in rules if isinstance(x, dict)]
+            note = "" if rules else f"fixtures produced no results: {r.stderr.strip()[-200:]}"
     rep = {"at": datetime.now(UTC).isoformat(), "catalogue": str(cdir), "n": len(rules),
            "ok": sum(1 for x in rules if x.get("ok")), "rules": rules, "note": note}
     rep["rate"] = round(rep["ok"] / rep["n"], 4) if rep["n"] else None

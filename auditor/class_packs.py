@@ -79,7 +79,7 @@ def child_class(data: dict[str, Any]) -> str:
 
 
 def qualifies(children: list[dict[str, Any]], *, min_instances: int, min_repos: int) -> bool:
-    repos = {str((c.get("repo") or {}).get("name") or "") for c in children}
+    repos = {n for c in children if (n := str((c.get("repo") or {}).get("name") or ""))}  # unattributed: no repo
     return len(children) >= min_instances or len(repos) >= min_repos
 
 
@@ -179,8 +179,8 @@ def emit(output_dir: str | Path, *, min_instances: int | None = None, min_repos:
     )
 
     out = Path(output_dir)
-    min_instances = min_instances or _int_env("AI_AUDIT_CLASS_PACK_MIN", 5)
-    min_repos = min_repos or _int_env("AI_AUDIT_CLASS_PACK_MIN_REPOS", 2)
+    min_instances = min_instances if min_instances is not None else _int_env("AI_AUDIT_CLASS_PACK_MIN", 5)
+    min_repos = min_repos if min_repos is not None else _int_env("AI_AUDIT_CLASS_PACK_MIN_REPOS", 2)
     tax = taxonomy()
     packs = [d for p in sorted(packs_dir(out).glob("*.yaml")) if (d := _read_pack_yaml(p)) and d.get("work_item_id")]
     by_id = {d["work_item_id"]: d for d in packs}
@@ -316,6 +316,13 @@ def prove(rec: dict[str, Any], mirror: Path | None, runner: ProofRunner) -> dict
         tree, before = Path(tmp) / "dev", Path(tmp) / "before"
         if not _export(m.path, dev_sha, tree):
             return {"status": "pending", "note": "could not export dev", "at": now}
+        # the record is re-read from a pack file, so check containment again: an absolute or ``..`` path
+        # would test (and run) a host file instead of one in the exported dev tree
+        root = tree.resolve()
+        escaping = [t for t in tests if Path(t).is_absolute() or not (tree / t).resolve().is_relative_to(root)]
+        if escaping:
+            return {"status": "failed", "note": f"outside the repo: {', '.join(escaping)}", "at": now,
+                    "dev_sha": dev_sha}
         missing = [t for t in tests if not (tree / t).is_file()]
         if missing:
             return {"status": "failed", "note": f"not on dev: {', '.join(missing)}", "at": now, "dev_sha": dev_sha}

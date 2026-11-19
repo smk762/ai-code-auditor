@@ -123,14 +123,17 @@ class MergeJobStatus:
 
 
 def verify_github_signature(body: bytes, signature_header: str | None, secret: str) -> bool:
-    """Validate ``X-Hub-Signature-256`` when a webhook secret is configured."""
+    """Validate ``X-Hub-Signature-256`` against *secret*. Fails closed: with no secret nothing
+    verifies (the webhook route then asks for the API token instead, without calling this)."""
     if not secret:
-        return True
+        return False
     if not signature_header or not signature_header.startswith("sha256="):
         return False
     digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
     expected = f"sha256={digest}"
-    return hmac.compare_digest(expected, signature_header.strip())
+    # Bytes: compare_digest raises TypeError on a str with non-ASCII characters (a 500, not a 401).
+    provided = signature_header.strip().encode("utf-8", "surrogateescape")
+    return hmac.compare_digest(expected.encode("ascii"), provided)
 
 
 def parse_github_push_event(payload: dict[str, Any]) -> MergeEvent | None:
@@ -303,6 +306,8 @@ class MergeHookScheduler:
         self._history: deque[dict[str, Any]] = deque(maxlen=50)
         self._running_repo: str | None = None
         self._worker_thread: threading.Thread | None = None
+        # When the last refresh finished; the global gap runs from here, across worker restarts.
+        self._last_finished: float = 0.0
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -423,6 +428,15 @@ class MergeHookScheduler:
                     self._running_repo = None
                     self._worker_thread = None
                     return
+                # The gap counts from the last refresh, even one run by an earlier worker that
+                # exited because the queue was briefly empty.
+                wait = (self._last_finished + gap - time.time()) if gap > 0 and self._last_finished else 0.0
+            if wait > 0:
+                time.sleep(wait)
+                continue
+            with self._lock:
+                if not self._ready:
+                    continue
                 repo = self._ready.popleft()
                 event = self._pending.pop(repo, None)
                 self._timers.pop(repo, None)
@@ -468,12 +482,8 @@ class MergeHookScheduler:
                         }
                     )
 
-            if gap > 0:
-                # Peek: if more work is queued, honour the inter-repo quiet window.
-                with self._lock:
-                    more = bool(self._ready)
-                if more:
-                    time.sleep(gap)
+            with self._lock:
+                self._last_finished = time.time()
 
 
 _SCHEDULER: MergeHookScheduler | None = None

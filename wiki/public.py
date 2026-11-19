@@ -83,8 +83,10 @@ def load_denylist(path: str | Path | None = None) -> list[str]:
         raise FileNotFoundError(
             f"opsec deny-list not found at {p}: the public export won't run without it. "
             "Create it (one private term per line) or set AI_AUDIT_OPSEC_DENYLIST.")
-    terms = [ln.split("#", 1)[0].strip() for ln in p.read_text(encoding="utf-8").splitlines()]
-    return [t for t in terms if t]
+    terms = [t for t in (ln.split("#", 1)[0].strip() for ln in p.read_text(encoding="utf-8").splitlines()) if t]
+    if not terms:  # an empty or comment-only file filters nothing: fail closed as for a missing one
+        raise ValueError(f"opsec deny-list at {p} contains no terms: the public export won't run without them.")
+    return terms
 
 
 def _bad_ip(text: str) -> str | None:
@@ -220,8 +222,10 @@ def _sha256(data: str) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
-# Covers content only (not manifest.json, whose timestamp changes on every export), so an export
-# that changes nothing keeps the same bundle hash and needs no new commit or pin bump.
+# Covers content only (not the top-level manifest.json, whose timestamp changes on every export), so an
+# export that changes nothing keeps the same bundle hash and needs no new commit or pin bump.
+# The string is unchanged from when the rule matched any file named manifest.json: the export never
+# writes a nested one, so every bundle it produces hashes the same under both rules.
 BUNDLE_HASH_ALGORITHM = "sha256 of the sorted lines '<sha256 of file>  <path>\\n' over every file except manifest.json"
 
 
@@ -233,7 +237,9 @@ def bundle_hash_of(directory: str | Path) -> str:
     """Recompute a bundle's hash from its files (what a consumer does to verify a pin)."""
     d = Path(directory)
     files = {f.relative_to(d).as_posix(): hashlib.sha256(f.read_bytes()).hexdigest()
-             for f in d.rglob("*") if f.is_file() and f.name != "manifest.json" and ".git" not in f.relative_to(d).parts}
+             for f in d.rglob("*")
+             # only the root manifest is exempt: a nested manifest.json is content like any other file
+             if f.is_file() and f.relative_to(d).as_posix() != "manifest.json" and ".git" not in f.relative_to(d).parts}
     return bundle_sha256(files)
 
 
