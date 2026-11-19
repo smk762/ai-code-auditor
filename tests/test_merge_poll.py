@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from auditor.merge_poll import parse_github_slug, poll_dev_tips
 
 
@@ -73,6 +75,25 @@ def test_poll_baselines_then_queues_on_change(tmp_path: Path, monkeypatch):
     assert enqueued[0].before == "aaa"
     assert enqueued[0].after == "bbb"
     assert second.queued[0]["accepted"] is True
+
+
+@pytest.mark.parametrize("url", [
+    "https://notgithub.com/x/y.git",
+    "https://github.com.evil.example/x/y",
+    "https://user:github.com@other.host/x/y",
+    "https://mygithub.company.internal/x/y",
+    "git@github.com.evil.example:x/y.git",
+    "https://github.com/x/..",
+    "https://github.com/x",
+])
+def test_parse_github_slug_refuses_hosts_that_only_contain_github(url: str):
+    assert parse_github_slug(url) is None
+
+
+def test_parse_github_slug_accepts_other_github_url_shapes():
+    assert parse_github_slug("ssh://git@github.com/smk762/argus-ci.git") == "smk762/argus-ci"
+    assert parse_github_slug("https://www.github.com/smk762/argus-ci/") == "smk762/argus-ci"
+    assert parse_github_slug("https://GitHub.com/smk762/argus-ci/tree/dev") == "smk762/argus-ci"
 
 
 def test_parse_github_slug_dotted_repo_name():
