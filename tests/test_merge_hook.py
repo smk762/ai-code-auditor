@@ -25,7 +25,13 @@ def test_verify_github_signature_roundtrip():
     sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     assert verify_github_signature(body, sig, secret) is True
     assert verify_github_signature(body, "sha256=deadbeef", secret) is False
-    assert verify_github_signature(body, None, "") is True  # secret unset → allow
+    # Secret unset → nothing verifies (the route falls back to the API token, never to open).
+    assert verify_github_signature(body, None, "") is False
+    assert verify_github_signature(body, sig, "") is False
+
+
+def test_verify_github_signature_refuses_non_ascii_instead_of_raising():
+    assert verify_github_signature(b"{}", "sha256=é" + "0" * 63, "whsec_test") is False
 
 
 def test_parse_github_push_event_filters_branch(monkeypatch):
