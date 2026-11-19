@@ -130,8 +130,12 @@ def _cell(text: str) -> str:
 
 def range_pack_ids(repo_path: str | Path, rev_range: str) -> list[str]:
     """Pack ids from the trailers of every commit in *rev_range* (e.g. ``origin/dev..HEAD``)."""
-    r = subprocess.run(["git", "log", "--format=%B%x1e", rev_range], cwd=repo_path, capture_output=True,
-                       text=True, timeout=60, check=False)
+    # A value such as --output=/path would be read as an option: refuse it, and end the options
+    # before the range so it can only ever be a revision.
+    if not rev_range or rev_range.startswith("-"):
+        raise ValueError(f"not a revision range: {rev_range[:60]!r}")
+    r = subprocess.run(["git", "log", "--format=%B%x1e", "--end-of-options", rev_range, "--"], cwd=repo_path,
+                       capture_output=True, text=True, timeout=60, check=False)
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip()[:300] or f"git log {rev_range} failed")
     out: list[str] = []
