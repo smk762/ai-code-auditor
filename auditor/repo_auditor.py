@@ -16,7 +16,10 @@ def run_repo_audit(
     repo: RepoConfig,
     llm: LLMClient | None = None,
     graph=None,
+    unreviewed: set[str] | None = None,
 ) -> tuple[list[CodeUnit], list[Finding]]:
+    """Units and findings for one repo. Files with a unit the model didn't review are added to
+    *unreviewed*, when given: the scan can't vouch for their silence."""
     resolved_root = resolve_scan_root(repo)
 
     # Build a repo-scoped briefing and give the client a context-aware copy.
@@ -42,4 +45,6 @@ def run_repo_audit(
             findings.extend(llm.analyze_code(unit, repo_path=str(resolved_root)))
 
     findings.extend(run_static_checks(repo.name, str(resolved_root)))
+    if unreviewed is not None:
+        unreviewed.update(llm.unreviewed_files)
     return all_units, findings

@@ -176,7 +176,9 @@ function historySeries(d, repo) {
       for (const [s, n] of Object.entries(c)) sev[s] = (sev[s] || 0) + n;
     const fresh = (pt.new_repos || []).filter((r) => !repo || r === repo);
     const added = fresh.reduce((a, r) => a + sum(pt.by_repo[r]), 0);
-    return { ...pt, sev, total: sum(sev), fresh, added };
+    // Files the run couldn't review: their findings went missing, not away.
+    const blind = Object.entries(pt.unreviewed || {}).reduce((a, [r, n]) => a + (!repo || r === repo ? n : 0), 0);
+    return { ...pt, sev, total: sum(sev), fresh, added, blind };
   });
 }
 
@@ -305,7 +307,8 @@ function trend(d) {
     // Like-for-like: repos this run counts for the first time are marked, not added to the change.
     const ch = prevPt ? change(p, prevPt) : 0;
     const chTxt = prevPt && slot >= 80 ? ` <tspan class="${ch > 0 ? "up" : ch < 0 ? "down" : ""}">${ch > 0 ? "+" : ch < 0 ? "−" : "±"}${int(Math.abs(ch))}</tspan>` +
-      (p.fresh.length ? ` <tspan class="new-repos">+${UI.plural(p.fresh.length, "repo")}</tspan>` : "") : "";
+      (p.fresh.length ? ` <tspan class="new-repos">+${UI.plural(p.fresh.length, "repo")}</tspan>` : "") +
+      (p.blind ? ` <tspan class="new-repos">partial</tspan>` : "") : "";
     const lbl = (showLabels || i === pts.length - 1) && p.total
       ? `<text class="lbl" x="${cx}" y="${y(p.total) - 5}" text-anchor="middle">${int(p.total)}${chTxt}</text>` : "";
     const xl = (i % every === 0 || i === pts.length - 1)
@@ -323,6 +326,7 @@ function trend(d) {
       `<table>${SEV_STACK.map((s) => `<tr><td><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${sevVar(s)}"></i> ${s.toLowerCase()}</td><td class="n">${int(p.sev[s] || 0)}</td><td>${q ? dl((p.sev[s] || 0) - (q.sev[s] || 0), true) : ""}</td></tr>`).join("")}` +
       `<tr><td><b>total</b></td><td class="n"><b>${int(p.total)}</b></td><td>${q ? dl(change(p, q)) : ""}</td></tr></table>` +
       (q && p.fresh.length ? `${addedNote(p)}: ${esc(p.fresh.join(", "))}<br>` : "") +
+      (p.blind ? `<span class="muted">Partial: ${UI.plural(p.blind, "file")} not reviewed (budget or cache-only), so findings there are missing, not fixed</span><br>` : "") +
       (i === cur && ws.resolved ? `<span class="muted">${int(ws.resolved)} resolved by agents, waiting for rescan</span><br>` : "") +
       `<span class="muted">${UI.plural(p.scanned_repos.length, "repo")} scanned in this run</span>`;
     tip.hidden = false;

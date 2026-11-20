@@ -188,6 +188,13 @@ class Scan:
     # When the code this scan read was committed: the run's record, else the mirror's reflog.
     # None means unknown, and the scan start stands in for it.
     code_at: datetime | None = None
+    # Files with code the model didn't review in this scan (cache-only miss, budget, backend
+    # down). Their absence from ``findings`` proves nothing.
+    unreviewed: frozenset[str] = frozenset()
+
+    def covers(self, path: str) -> bool:
+        """Whether this scan's silence about *path* means something."""
+        return path not in self.unreviewed
 
     @property
     def code_time(self) -> datetime:
@@ -246,9 +253,12 @@ def load_scans(session, *, since: datetime | None = None) -> list[Scan]:
         at = as_utc(run.started_at) if run is not None and run.started_at else as_utc(first_seen.get(run_id))
         if at is None:
             continue
-        code = (((run.metadata_json or {}).get("extra") or {}).get("scanned_code") or {}).get(repo) if run else None
+        extra = ((run.metadata_json or {}).get("extra") or {}) if run else {}
+        code = (extra.get("scanned_code") or {}).get(repo)
         code_at = _parse_ts((code or {}).get("committed_at"))
-        scans.append(Scan(run_id=run_id, repo=repo, at=at, findings=findings, code_at=code_at))
+        unreviewed = frozenset((extra.get("unreviewed_files") or {}).get(repo) or ())
+        scans.append(Scan(run_id=run_id, repo=repo, at=at, findings=findings, code_at=code_at,
+                          unreviewed=unreviewed))
     scans.sort(key=lambda s: (s.at, s.run_id, s.repo))
     return scans
 
@@ -595,7 +605,7 @@ def scan_persistence_metric(scans: list[Scan], packs: list[PackView]) -> dict[st
             for f in prev.findings:
                 fixed = any(prev.at < t <= cur.at and _same_issue(f["title"], f["line"], pk.title, pk.line)
                             for t, pk in resolved.get((repo, f["path"]), []))
-                if fixed:
+                if fixed or not cur.covers(f["path"]):
                     continue
                 p_total += 1
                 p_refound += any(g["path"] == f["path"] and _same_issue(f["title"], f["line"], g["title"], g["line"])
@@ -623,7 +633,9 @@ def flow_metric(scans: list[Scan]) -> dict[str, Any]:
         for prev, cur in pairwise(sorted(seq, key=lambda x: x.at)):
             y, w, _ = cur.at.isocalendar()
             wk = f"{y}-W{w:02d}"
-            new, gone = _pair_delta(prev.findings, cur.findings)
+            # A file one side didn't review can't show a finding as new or gone.
+            new, gone = _pair_delta([f for f in prev.findings if cur.covers(f["path"])],
+                                    [f for f in cur.findings if prev.covers(f["path"])])
             for f in new:
                 weeks[wk]["new"][f["type"] or "unknown"] += 1
             for f in gone:

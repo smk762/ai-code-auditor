@@ -251,7 +251,7 @@ def _code_changed(p: PackView, seq: list[Scan], m: Mirror | None) -> str:
         return ""
     if not nightly_covers(p.path):
         return f"the cited lines around L{p.line} are gone from {m.ref} (a file the nightly scan doesn't read)"
-    later = [s for s in seq if s.at > seen]
+    later = [s for s in seq if s.at > seen and s.covers(p.path)]
     if later and not any(_reported(p, s) for s in later):
         return (f"the cited lines around L{p.line} are gone from {m.ref}, and "
                 f"{len(later)} nightly scan(s) since {seen:%Y-%m-%d} don't report it")
@@ -285,6 +285,8 @@ def _judge(p: PackView, seq: list[Scan], m: Mirror | None, *, now: datetime, mis
     if p.kind in HUMAN_KINDS:
         return None
     seen = p.detected_at
+    # A scan that couldn't review the pack's file says nothing about it (#blind-scans).
+    seq = [s for s in seq if s.covers(p.path)]
     later = [s for s in seq if seen and s.at > seen]
     if p.kind in SCAN_KINDS:
         recent = later[-misses:]

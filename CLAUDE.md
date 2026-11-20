@@ -20,6 +20,7 @@ here and in code. Don't add a rule to remember.
 | Keep a wiki claim whose citation is missing, out of range, or names nothing in the cited lines | `test_wiki::test_drop_failed_claims` |
 | Commit the opsec deny-list, the classes gold set, or anything quoting real findings | Location only: they live under `~/.config/ai-code-auditor/`, and `reports/_classes/` is gitignored. **UNENFORCED** for a copy placed elsewhere |
 | Pack GC closing a claimed, in-progress or unverified pack, a wontfix pack whose cited code is still there, or a mass close without `--force` | `test_pack_gc::test_only_open_finding_packs_are_considered`, `::test_wontfix_is_kept_while_its_code_is_there`, `::test_mass_closure_is_held_unless_forced`, `::test_broken_latest_scan_skips_the_repo_but_not_file_gone`, `test_pack_write_integrity::test_gc_never_overwrites_a_claim_that_lands_mid_apply`; for architecture packs `test_architecture_packs::test_only_open_architecture_packs_are_closed`, `::test_a_pack_claimed_after_planning_is_left_alone`, `::test_mass_architecture_closure_is_held_unless_forced` |
+| Read a scan's silence about a file it couldn't review (cache-only miss, over budget, backend down) as the issue being gone: no GC closure, no "gone" or "not refound" in the trust metrics | `test_blind_scans::test_blind_scans_never_close_a_pack_as_not_rescanned`, `::test_blind_scans_dont_confirm_code_changed`, `::test_metrics_ignore_findings_a_blind_scan_could_not_see`, `test_nightly_repo_audit_packs::test_batch_mode_restores_cache_only_after_the_repo_pass` |
 | Revalidation demoting a pack, or touching one not resolved on a waiver or unverified | `test_evidence::test_revalidate_never_demotes`, `::test_revalidate_leaves_a_proven_resolution_alone`, `::test_revalidate_does_nothing_with_the_bar_off` |
 | Two agents holding the same pack, or a pack writer overwriting another's change | `test_pack_write_integrity::test_concurrent_claims_have_exactly_one_winner`, `::test_a_second_claim_gets_409_unless_forced`. Writers that load, check and write a pack hold `pack_lock` for the whole step |
 | Record a class guard by a sha prefix (a mistyped one waits as `pending` forever, like an unsynced mirror) | `test_class_packs::test_record_guard_validates` |
@@ -73,7 +74,7 @@ on purpose. Topology: [`ecosystem/ecosystem.md`](ecosystem/ecosystem.md).
 `~/.claude/settings.json`, so coding agents in any repo have it.
 
 **Findings and runs.** Only repo audits store findings rows; ecosystem runs store none, so they never count as scans
-(trust metrics, GC, the findings trend). Findings match on repo, file, type and title, never line, and LLM rewordings in
+(trust metrics, GC, the findings trend). A nightly run records the files it couldn't review per repo (`extra.unreviewed_files`), and a `Scan` doesn't `cover` them, so a budget-capped night is a blind spot rather than a night of fixes. Findings match on repo, file, type and title, never line, and LLM rewordings in
 the same file are paired by title word overlap (`auditor/finding_match.py`). Pack dedupe uses the same match.
 
 **The scan's LLM prompt** is `AUDIT_INSTRUCTIONS_V2` in `auditor/llm_client.py`, chosen by the 2026-11-13 eval.

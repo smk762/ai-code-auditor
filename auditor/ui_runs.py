@@ -172,7 +172,9 @@ def _history(session, upto: AuditRun) -> list[dict[str, Any]]:
     run are not counted until they are audited again inside it.
 
     ``new_repos`` lists the repos a point counts for the first time (none on the first point), so
-    a run that widens the scan set isn't read as findings appearing.
+    a run that widens the scan set isn't read as findings appearing. ``unreviewed`` counts, per
+    repo, the files the run couldn't review (over budget, cache-only miss): a drop there is a
+    blind spot, not fixes.
     """
     if upto.started_at is None:
         return []
@@ -211,6 +213,8 @@ def _history(session, upto: AuditRun) -> list[dict[str, Any]]:
             "started_at": r.started_at.isoformat() if r.started_at else None,
             "scanned_repos": sorted(scanned),
             "new_repos": new_repos,
+            "unreviewed": {repo: len(files) for repo, files in sorted(
+                (((r.metadata_json or {}).get("extra") or {}).get("unreviewed_files") or {}).items()) if files},
             "by_repo": {repo: dict(c) for repo, c in sorted(state.items()) if c},
         })
     return points
