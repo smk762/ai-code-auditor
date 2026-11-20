@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 from pathlib import Path
 import shutil
@@ -96,6 +97,8 @@ def append_architecture_rule_for_extraction(candidate: dict, rules_path: str = "
 
 
 def _append_rule(path: Path, rules_path: str, candidate: dict) -> Path:
+    if path.suffix == ".json":
+        return _append_rule_json(path, rules_path, candidate)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     data = (yaml.safe_load(text) or {}) if text else {}
     if not isinstance(data, dict):
@@ -118,6 +121,28 @@ def _append_rule(path: Path, rules_path: str, candidate: dict) -> Path:
         tmp.write_text(new_text, encoding="utf-8")
         if path.exists():
             shutil.copymode(path, tmp)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return path
+
+
+def _append_rule_json(path: Path, rules_path: str, candidate: dict) -> Path:
+    """The approved-rules file (``auditor.config.approved_rules_path``): ``{"rules": [...]}``."""
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    data = json.loads(text) if text.strip() else {}
+    if not isinstance(data, dict):
+        raise TypeError(f"{rules_path}: expected a JSON object at the top level")
+    rules = data.get("rules") or []
+    if not isinstance(rules, list):
+        raise TypeError(f"{rules_path}: 'rules' must be a list")
+    generated = _rule_for_extraction(candidate)
+    if any(isinstance(r, dict) and r.get("name") == generated["name"] for r in rules):
+        return path
+    data["rules"] = [*rules, generated]
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)

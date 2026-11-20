@@ -108,7 +108,9 @@ def _build_parser() -> argparse.ArgumentParser:
     approve = sub.add_parser("approve-extraction", help="Approve extraction candidate and auto-generate architecture rule")
     approve.add_argument("--candidate-id", required=True, help="Candidate id from reports/extraction_candidates.yaml")
     approve.add_argument("--report", default="reports/extraction_candidates.yaml", help="Extraction candidate YAML report path")
-    approve.add_argument("--rules-path", default="config/architecture_rules.yaml", help="Architecture rules file to append")
+    approve.add_argument("--rules-path", default="",
+                         help="Rules file to append (default: AI_AUDIT_ARCH_RULES_PATH, else rules/architecture_rules.json, "
+                              "the approved rules merged into config/architecture_rules.yaml)")
     approve.add_argument("--auth-token", default="", help="JWT token with admin role")
 
     repair_cmd = sub.add_parser("repair", help="Run agentic repair loop via rag-chat repair API")
@@ -1661,8 +1663,12 @@ def main() -> None:
         target = next((c for c in candidates if c.get("id") == args.candidate_id), None)
         if target is None:
             raise ValueError(f"Candidate id not found: {args.candidate_id}")
-        append_architecture_rule_for_extraction(target, rules_path=args.rules_path)
-        print(f"Approved candidate {args.candidate_id} and updated {args.rules_path}")
+        from auditor.config import approved_rules_path
+
+        rules_path = args.rules_path or approved_rules_path()
+        Path(rules_path).parent.mkdir(parents=True, exist_ok=True)
+        append_architecture_rule_for_extraction(target, rules_path=rules_path)
+        print(f"Approved candidate {args.candidate_id} and updated {rules_path}")
     else:
         parser.print_help()
 

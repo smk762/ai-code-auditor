@@ -112,11 +112,34 @@ def load_ecosystem_config(path: str | Path = "config/ecosystem.yaml") -> Ecosyst
     )
 
 
-def load_architecture_rules(path: str | Path = "config/architecture_rules.yaml") -> dict[str, Any]:
+def approved_rules_path() -> str:
+    """Where approved rules (``use_<library>`` from extraction approvals) go: a file outside git,
+    merged into the rules on load. Docker mounts ``rules/`` so the API can write it."""
+    return os.getenv("AI_AUDIT_ARCH_RULES_PATH", "").strip() or "rules/architecture_rules.json"
+
+
+def approved_rules(path: str | Path | None = None) -> list[dict[str, Any]]:
+    """The approved rules (JSON or YAML; a missing file is none)."""
+    raw = _read_yaml(path or approved_rules_path())
+    rules = raw.get("rules") if isinstance(raw, dict) else None
+    if rules is None:
+        return []
+    if not isinstance(rules, list):
+        raise ValueError(f"{path or approved_rules_path()}: 'rules' must be a list")
+    return [r for r in rules if isinstance(r, dict)]
+
+
+def load_architecture_rules(path: str | Path = "config/architecture_rules.yaml", *,
+                            approved: str | Path | None = None) -> dict[str, Any]:
+    """The rules file plus the approved rules (``approved_rules_path``) it doesn't already name."""
     raw = _read_yaml(path)
     rules = raw.get("rules", [])
     if not isinstance(rules, list):
         raise ValueError("architecture_rules.yaml must contain rules as a list")
+    extra_path = Path(approved or approved_rules_path())
+    if extra_path.resolve() != Path(path).resolve():
+        names = {r.get("name") for r in rules if isinstance(r, dict)}
+        rules = [*rules, *(r for r in approved_rules(extra_path) if r.get("name") not in names)]
     domain_ownership = raw.get("domain_ownership", [])
     if not isinstance(domain_ownership, list):
         raise ValueError("architecture_rules.yaml domain_ownership must be a list")

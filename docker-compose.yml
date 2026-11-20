@@ -11,6 +11,9 @@ x-auditor-base: &auditor-base
     - ./graph:/app/graph
     - ./index:/app/index
     - ./memory:/app/memory
+    # Approved architecture rules (AI_AUDIT_ARCH_RULES_PATH, default rules/architecture_rules.json):
+    # outside git, written by the API's Approve button, merged into config/architecture_rules.yaml.
+    - ./rules:/app/rules
     - ./:/repos/ai-code-auditor
     # Match repo `path:` entries in config/ecosystem.yaml (host paths → same path in container),
     # read-only. The wiki viewer, "Ask this repo" citations, repo cards and the topology scan all

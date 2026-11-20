@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections import Counter
 from pathlib import Path
@@ -14,9 +13,11 @@ DEFAULT_RULES_PATH = "config/architecture_rules.yaml"
 
 
 def rules_path() -> str:
-    """Rules file approvals write to. In Docker, config/ is baked into the image; point this at
-    the mounted checkout (e.g. /repos/ai-code-auditor/config/architecture_rules.yaml) to persist."""
-    return os.getenv("AI_AUDIT_ARCH_RULES_PATH", "").strip() or DEFAULT_RULES_PATH
+    """Where approvals write: ``AI_AUDIT_ARCH_RULES_PATH``, default ``rules/architecture_rules.json``
+    (outside git, mounted in Docker, merged into the rules by ``load_architecture_rules``)."""
+    from auditor.config import approved_rules_path
+
+    return approved_rules_path()
 
 # Markdown section titles (auditor/reporter.py) → rule_name, for reports written before the
 # JSON sidecar existed. graph rules share one section, so they map to the first name.
@@ -86,11 +87,13 @@ def _rule_name(candidate: dict[str, Any]) -> str:
 
 
 def _existing_rules(rules_path: str | Path) -> set[str]:
-    path = Path(rules_path)
-    if not path.is_file():
-        return set()
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return {str(r.get("name")) for r in data.get("rules") or [] if isinstance(r, dict)}
+    """Rule names in the checked-in rules file and in *rules_path* (where approvals go)."""
+    names: set[str] = set()
+    for path in {Path(DEFAULT_RULES_PATH), Path(rules_path)}:
+        if path.is_file():
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}  # JSON is YAML too
+            names |= {str(r.get("name")) for r in data.get("rules") or [] if isinstance(r, dict)}
+    return names
 
 
 def _candidates(output_dir: Path, rules_path: str | Path) -> dict[str, Any] | None:
