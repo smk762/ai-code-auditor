@@ -1028,7 +1028,14 @@ def post_approve_extraction(candidate_id: str) -> JSONResponse:
     """Approve an extraction candidate: add its use_<library> rule (same as `ai-audit approve-extraction`)."""
     from auditor.ui_arch import approve_extraction, rules_path
 
-    out = approve_extraction(_output_dir(), candidate_id, rules_path())
+    path = rules_path()
+    try:
+        out = approve_extraction(_output_dir(), candidate_id, path)
+    except OSError as exc:  # e.g. rules/ not mounted, or not writable by the API's user
+        raise HTTPException(status_code=503, detail=f"Can't write approved rules to {path}: {exc.strerror or exc}. "
+                            "In Docker, ./rules must be mounted (docker-compose.yml).") from exc
+    except (TypeError, ValueError) as exc:  # a malformed rules file
+        raise HTTPException(status_code=422, detail=f"{path}: {exc}") from exc
     if out is None:
         raise HTTPException(status_code=404, detail=f"Extraction candidate {candidate_id!r} not found.")
     return JSONResponse(out)

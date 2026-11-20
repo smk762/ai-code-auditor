@@ -215,3 +215,24 @@ def test_approve_endpoint_needs_auth_and_writes_rules(client: TestClient, arch: 
     assert r.status_code == 200 and r.json()["rule_name"] == "use_retry_core"
     assert "use_retry_core" in (arch / "rules.yaml").read_text()
     assert client.post("/audit/extraction/ext-nope/approve", headers={"X-API-Token": "s3cret"}).status_code == 404
+
+
+def test_approve_writes_the_json_overlay_and_reports_an_unwritable_one(client: TestClient, arch: Path,
+                                                                       monkeypatch) -> None:
+    import json
+
+    monkeypatch.setattr("auditor.audit_api._output_dir", lambda: str(arch))
+    monkeypatch.setenv("AI_AUDIT_API_TOKEN", "s3cret")
+    auth = {"X-API-Token": "s3cret"}
+    url = "/audit/extraction/ext-retr-001/approve"
+    (arch / "rules").mkdir()
+    monkeypatch.setenv("AI_AUDIT_ARCH_RULES_PATH", str(arch / "rules" / "architecture_rules.json"))
+    r = client.post(url, headers=auth)
+    assert r.status_code == 200 and not r.json()["already_present"]
+    assert [x["name"] for x in json.loads((arch / "rules" / "architecture_rules.json").read_text())["rules"]] \
+        == ["use_retry_core"]
+    assert client.post(url, headers=auth).json()["already_present"]
+    # The 500 of 2026-11-21: the rules folder wasn't writable in the container.
+    monkeypatch.setenv("AI_AUDIT_ARCH_RULES_PATH", "/proc/nope/architecture_rules.json")
+    r = client.post(url, headers=auth)
+    assert r.status_code == 503 and "Can't write approved rules" in r.json()["detail"]
