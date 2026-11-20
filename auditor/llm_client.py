@@ -8,11 +8,15 @@ from typing import Any
 
 import requests
 
-from auditor.config import ModelProviderConfig, get_secret_from_env, load_model_provider_config
+from auditor.config import (
+    ModelProviderConfig,
+    get_secret_from_env,
+    load_model_provider_config,
+)
 from auditor.contracts import CodeUnit, Finding
-from auditor.llm_cache import ReviewCache, review_key
-from auditor.retry import breaker_for, with_retries
 from auditor.ecosystem_briefing import build_ecosystem_overview, build_file_briefing
+from auditor.llm_cache import ReviewCache, legacy_review_key, review_key
+from auditor.retry import breaker_for, with_retries
 from auditor.spend_ledger import get_ledger
 
 logger = logging.getLogger(__name__)
@@ -336,10 +340,17 @@ class LLMClient:
             instructions=self.instructions, unit=unit,
         )
 
+    def legacy_cache_keys(self, unit: CodeUnit) -> tuple[str, ...]:
+        """Keys this unit's review may still be cached under from before key normalisation."""
+        return (legacy_review_key(
+            provider=self.provider, model=self.model, effort=self.effort,
+            instructions=self.instructions, unit=unit,
+        ),)
+
     def analyze_code(self, unit: CodeUnit, repo_path: str = "") -> list[Finding]:
         key = self.cache_key(unit) if self.cache else ""
         if self.cache:
-            cached = self.cache.get(key)
+            cached = self.cache.get(key, *self.legacy_cache_keys(unit))
             if cached is not None:
                 parsed = _parse_findings_json(cached, unit)
                 if parsed is not None:

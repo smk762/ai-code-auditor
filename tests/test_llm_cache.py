@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import textwrap
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -120,3 +121,95 @@ def test_batch_prefetch_fills_cache_then_skips(cache_env: Path, monkeypatch: pyt
     c = _client()
     monkeypatch.setattr(c, "generate", lambda p: pytest.fail("should be a cache hit"))
     assert [f.title for f in c.analyze_code(units[0])] == ["batched"]
+
+
+# ── TTL jitter and format-only changes (#cost) ─────────────────────────────────
+
+def test_ttl_jitter_spreads_expiry_but_is_fixed_per_key(tmp_path: Path) -> None:
+    c = ReviewCache(tmp_path / "c.db", ttl_days=60, ttl_jitter=0.25)
+    ttls = [c.ttl_for(f"k{i}") for i in range(400)]
+    days = [t / 86400 for t in ttls]
+    assert 45 <= min(days) < 48 and 72 < max(days) <= 75
+    assert c.ttl_for("k1") == c.ttl_for("k1")
+    # A night's worth of entries written together expires over weeks, not on one night.
+    assert len({int(d) for d in days}) >= 25
+    # Expiry honours the key's own TTL.
+    short = min(range(400), key=lambda i: ttls[i])
+    key = f"k{short}"
+    c.put(key, "m", "[]")
+    c._conn.execute("UPDATE reviews SET created_at = ?", (time.time() - ttls[short] - 60,))
+    assert c.get(key) is None
+    c._conn.execute("UPDATE reviews SET created_at = ?", (time.time() - ttls[short] + 3600,))
+    assert c.get(key) == "[]"
+
+
+def test_no_jitter_keeps_the_plain_ttl(tmp_path: Path) -> None:
+    c = ReviewCache(tmp_path / "c.db", ttl_days=1)
+    assert c.ttl_for("anything") == 86400
+    assert ReviewCache(tmp_path / "d.db", ttl_days=0).ttl_for("k") is None
+
+
+PY = 'def f(a, b):\n    if a:\n        return call(a, b)  # why\n    return "x  y"\n'
+
+
+@pytest.mark.parametrize("variant", [
+    PY.replace("    ", "  "),                                            # re-indent
+    PY.replace("\n", "\r\n"),                                            # line endings
+    PY.replace("\n", "   \n"),                                           # trailing whitespace
+    PY.replace("    return \"", "\n    return \""),                     # blank line
+    PY.replace("call(a, b)", "call(\n            a,\n            b\n        )"),  # re-wrapped
+    PY.replace("call(a, b)", "call( a ,b )"),                            # spacing
+    textwrap.indent(PY, "    "),                                         # nested one level
+])
+def test_format_only_python_change_keeps_the_key(variant: str) -> None:
+    c = _client()
+    assert c.cache_key(_unit(variant)) == c.cache_key(_unit(PY))
+
+
+@pytest.mark.parametrize("variant", [
+    PY.replace("return call(a, b)", "return call(b, a)"),
+    PY.replace('"x  y"', '"x y"'),                                       # string contents
+    PY.replace("# why", "# TODO: unsafe"),                               # comments count
+    PY.replace("        return call", "    return call"),                # dedent changes meaning
+])
+def test_real_python_change_gets_a_new_key(variant: str) -> None:
+    c = _client()
+    assert c.cache_key(_unit(variant)) != c.cache_key(_unit(PY))
+
+
+def test_other_languages_ignore_whitespace_only() -> None:
+    def ts(text: str) -> CodeUnit:
+        return CodeUnit(id="t", repo="r", file_path="r/a.ts", symbol="a.ts", kind="file",
+                        language="ts", start_line=1, end_line=3, raw_text=text)
+    c = _client()
+    js = "export function f(a) {\n  return a + 1;\n}\n"
+    assert c.cache_key(ts(js)) == c.cache_key(ts("export function f(a)  {\n\n\treturn a + 1;  \n}"))
+    assert c.cache_key(ts(js)) != c.cache_key(ts(js.replace("+ 1", "+ 2")))
+
+
+def test_unparseable_python_falls_back_to_line_normalising() -> None:
+    c = _client()
+    broken = 'def f(:\n    x = """unterminated\n'
+    assert c.cache_key(_unit(broken)) == c.cache_key(_unit(broken.replace("\n", "  \n")))
+
+
+def test_reviews_under_the_old_key_are_reused_without_a_rescan(
+        cache_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from auditor.llm_cache import legacy_review_key
+
+    c = _client()
+    u = _unit()
+    old = legacy_review_key(provider=c.provider, model=c.model, effort=c.effort,
+                            instructions=c.instructions, unit=u)
+    assert old != c.cache_key(u)
+    written = time.time() - 10 * 86400
+    c.cache.put(old, c.model, '[{"title": "old"}]')
+    c.cache._conn.execute("UPDATE reviews SET created_at = ?", (written,))
+    monkeypatch.setattr(c, "generate", lambda p: pytest.fail("should reuse the legacy review"))
+    assert [f.title for f in c.analyze_code(u)] == ["old"]
+    # Copied under the new key with its original age, so it still expires on schedule.
+    row = c.cache._conn.execute("SELECT created_at FROM reviews WHERE key = ?",
+                                (c.cache_key(u),)).fetchone()
+    assert row and row[0] == pytest.approx(written)
+    # The batch prefetch sees it as cached too.
+    assert c.cache.has(c.cache_key(u), *c.legacy_cache_keys(u))
