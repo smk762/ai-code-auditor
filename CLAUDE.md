@@ -19,7 +19,7 @@ here and in code. Don't add a rule to remember.
 | "Notable findings" or internal INDEX data in the public bundle | `test_wiki_public::test_export_bundle` |
 | Keep a wiki claim whose citation is missing, out of range, or names nothing in the cited lines | `test_wiki::test_drop_failed_claims` |
 | Commit the opsec deny-list, the classes gold set, or anything quoting real findings | Location only: they live under `~/.config/ai-code-auditor/`, and `reports/_classes/` is gitignored. **UNENFORCED** for a copy placed elsewhere |
-| Pack GC closing a claimed, in-progress or unverified pack, or a mass close without `--force` | `test_pack_gc::test_only_open_finding_packs_are_considered`, `::test_mass_closure_is_held_unless_forced`, `::test_broken_latest_scan_skips_the_repo_but_not_file_gone`, `test_pack_write_integrity::test_gc_never_overwrites_a_claim_that_lands_mid_apply` |
+| Pack GC closing a claimed, in-progress or unverified pack, a wontfix pack whose cited code is still there, or a mass close without `--force` | `test_pack_gc::test_only_open_finding_packs_are_considered`, `::test_wontfix_is_kept_while_its_code_is_there`, `::test_mass_closure_is_held_unless_forced`, `::test_broken_latest_scan_skips_the_repo_but_not_file_gone`, `test_pack_write_integrity::test_gc_never_overwrites_a_claim_that_lands_mid_apply` |
 | Revalidation demoting a pack, or touching one not resolved on a waiver or unverified | `test_evidence::test_revalidate_never_demotes`, `::test_revalidate_leaves_a_proven_resolution_alone`, `::test_revalidate_does_nothing_with_the_bar_off` |
 | Two agents holding the same pack, or a pack writer overwriting another's change | `test_pack_write_integrity::test_concurrent_claims_have_exactly_one_winner`, `::test_a_second_claim_gets_409_unless_forced`. Writers that load, check and write a pack hold `pack_lock` for the whole step |
 | Write a finding class onto a pack without all three models agreeing, or with an unmeasured prompt | `test_pack_classes::test_consensus_needs_every_model`, `::test_no_frozen_prompt_skips` |
@@ -116,8 +116,9 @@ call. Convention rules such as `silent-except` are not findings. The `rules.fixt
 passing their fixtures. In CI, a repo's `.suite-rules-baseline.json` may only shrink.
 
 **Pack GC** (`auditor/pack_gc.py`) and revalidation are the only things besides an agent or a person that close finding
-packs. GC only closes `open` packs, as `obsolete`, which means "no longer reported", not a fix. A re-found issue reopens
-the same pack. Revalidation (`auditor/revalidate.py`, `ai-audit revalidate`) re-sends a merged fix for a waived or
+packs. GC closes `open` packs as `obsolete`, which means "no longer reported", not a fix. A re-found issue reopens
+the same pack. A `wontfix` pack is what keeps a re-found false positive closed, so GC closes one only when its file or
+cited lines are gone, or it duplicates a pack now resolved or obsolete; never for not being rescanned. Revalidation (`auditor/revalidate.py`, `ai-audit revalidate`) re-sends a merged fix for a waived or
 unverified pack through `validate_patch` with `revalidate=true` and only ever records stronger evidence.
 
 **Night page.** Mission outcomes come from the mission files, because mithrandir's worker stats don't count `PARTIAL`.

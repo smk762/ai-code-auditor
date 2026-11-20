@@ -7,8 +7,24 @@ the board and every trust metric. ``obsolete`` means "no longer reported". It is
 found again (``agent_pack._carry_over_lifecycle``), and the trust metrics count those reopenings
 as the GC's false-close rate.
 
-Only ``open`` packs are considered. Claimed, in-progress and unverified packs have someone on
-them or a fix in hand, so they are never touched.
+Only ``open`` packs are considered by those rules. Claimed, in-progress and unverified packs have
+someone on them or a fix in hand, so they are never touched.
+
+``wontfix`` packs are a decision, and the decision is what keeps a re-reported false positive from
+reopening, so they are kept unless the decision has nothing left to apply to. Those are closed as
+``obsolete`` too, so a later report reopens them for a fresh look instead of staying suppressed:
+
+==========================  ==================================================================
+Rule                        Closes a wontfix pack when
+==========================  ==================================================================
+``keeper_closed``           It is a duplicate, and the pack it duplicates is resolved or obsolete.
+``wontfix_file_gone``       (Not a duplicate.) As ``file_gone``.
+``wontfix_code_changed``    (Not a duplicate, not ``ask``.) As ``code_changed``: the cited lines
+                            are gone, and a scanned file has had a silent nightly scan since.
+==========================  ==================================================================
+
+A wontfix pack is never closed for not being rescanned or for age: with its code unchanged, the
+detector may report it again, and the decision should still hold.
 
 ======================  ======================================================================
 Rule                    Closes an open finding pack when
@@ -31,7 +47,7 @@ never have reported it.
 
 Two safety holds apply. A repo whose latest scan reports nothing although the scan before it
 didn't is skipped (likely a broken scan). A plan that would close more than half of a repo's open
-packs, and more than ``HOLD_MIN``, is held unless ``force``.
+packs, or of its wontfix packs, and more than ``HOLD_MIN``, is held unless ``force``.
 """
 from __future__ import annotations
 
@@ -79,6 +95,7 @@ class Closure:
     kind: str
     rule: str
     reason: str
+    from_status: str = "open"
 
 
 # ── mirror facts ─────────────────────────────────────────────────────────────
@@ -188,30 +205,74 @@ def plan(packs: list[PackView], scans: list[Scan], mirrors: dict[str, Mirror], *
     scans_by_repo: dict[str, list[Scan]] = defaultdict(list)
     for s in scans:
         scans_by_repo[s.repo].append(s)
-    open_by_repo: dict[str, int] = defaultdict(int)
+    status_of = {p.id: p.status for p in packs}
+    considered: dict[tuple[str, str], int] = defaultdict(int)  # (repo, status) -> packs looked at
     closures: list[Closure] = []
     skipped: dict[str, str] = {}
     for p in packs:
-        if not p.is_finding or p.status != "open" or p.duplicate_of or not p.path or (repo and p.repo != repo):
+        if not p.is_finding or not p.path or (repo and p.repo != repo):
             continue
-        open_by_repo[p.repo] += 1
+        if not (p.status == "open" and not p.duplicate_of) and p.status != "wontfix":
+            continue
+        considered[(p.repo, p.status)] += 1
         seq = scans_by_repo.get(p.repo, [])
         if _broken_latest_scan(seq):
             skipped[p.repo] = f"latest scan {seq[-1].run_id} reports nothing; the one before it didn't"
         m = mirrors.get(p.repo)
-        c = _judge(p, seq if p.repo not in skipped else [], m, now=now, misses=misses, ttl_days=ttl_days)
+        seq = seq if p.repo not in skipped else []
+        if p.status == "wontfix":
+            c = _judge_wontfix(p, seq, m, keeper_status=status_of.get(p.duplicate_of, ""))
+        else:
+            c = _judge(p, seq, m, now=now, misses=misses, ttl_days=ttl_days)
         if c:
             closures.append(c)
     held: dict[str, str] = {}
     if not force:
-        per_repo: dict[str, int] = defaultdict(int)
+        per_repo: dict[tuple[str, str], int] = defaultdict(int)
         for c in closures:
-            per_repo[c.repo] += 1
-        for r, n in per_repo.items():
-            if n > HOLD_MIN and n > HOLD_SHARE * open_by_repo[r]:
-                held[r] = f"would close {n} of {open_by_repo[r]} open packs (> {HOLD_SHARE:.0%}); rerun with force"
+            per_repo[(c.repo, c.from_status)] += 1
+        for (r, st), n in per_repo.items():
+            if n > HOLD_MIN and n > HOLD_SHARE * considered[(r, st)]:
+                held[r] = (f"would close {n} of {considered[(r, st)]} {st} packs (> {HOLD_SHARE:.0%}); "
+                           "rerun with force")
         closures = [c for c in closures if c.repo not in held]
-    return {"closures": closures, "held": held, "skipped": skipped, "open_considered": sum(open_by_repo.values())}
+    return {"closures": closures, "held": held, "skipped": skipped,
+            "open_considered": sum(n for (_, st), n in considered.items() if st == "open"),
+            "wontfix_considered": sum(n for (_, st), n in considered.items() if st == "wontfix")}
+
+
+def _code_changed(p: PackView, seq: list[Scan], m: Mirror | None) -> str:
+    """Why the pack's cited lines count as changed away, or "" when they don't."""
+    seen = p.detected_at
+    if not (m is not None and m.ok and seen and (core := cited_core(p.snippet, p.line))):
+        return ""
+    current = m.lines(p.path)
+    if current is None or code_still_there(core, current):
+        return ""
+    if not nightly_covers(p.path):
+        return f"the cited lines around L{p.line} are gone from {m.ref} (a file the nightly scan doesn't read)"
+    later = [s for s in seq if s.at > seen]
+    if later and not any(_reported(p, s) for s in later):
+        return (f"the cited lines around L{p.line} are gone from {m.ref}, and "
+                f"{len(later)} nightly scan(s) since {seen:%Y-%m-%d} don't report it")
+    return ""
+
+
+def _judge_wontfix(p: PackView, seq: list[Scan], m: Mirror | None, *, keeper_status: str) -> Closure | None:
+    def close(rule: str, reason: str) -> Closure:
+        return Closure(p.id, p.repo, p.path, p.title, p.kind, rule, reason, from_status="wontfix")
+
+    if p.duplicate_of:
+        if keeper_status in {"resolved", "obsolete"}:
+            return close("keeper_closed", f"duplicate of {p.duplicate_of}, which is {keeper_status}")
+        return None
+    if m is not None and m.ok and p.path not in m.files():
+        return close("wontfix_file_gone", f"{p.path} is not on {m.ref}")
+    if p.kind in HUMAN_KINDS:
+        return None
+    if why := _code_changed(p, seq, m):
+        return close("wontfix_code_changed", why)
+    return None
 
 
 def _judge(p: PackView, seq: list[Scan], m: Mirror | None, *, now: datetime, misses: int,
@@ -239,15 +300,8 @@ def _judge(p: PackView, seq: list[Scan], m: Mirror | None, *, now: datetime, mis
             return close("not_rescanned", f"not reported by the last {misses} nightly scans since "
                          f"{seen:%Y-%m-%d}; {how}")
         return None
-    if m is not None and m.ok and seen and (core := cited_core(p.snippet, p.line)):
-        current = m.lines(p.path)
-        if current is not None and not code_still_there(core, current):
-            if not nightly_covers(p.path):
-                return close("code_changed", f"the cited lines around L{p.line} are gone from {m.ref} "
-                             "(a file the nightly scan doesn't read)")
-            if later and not any(_reported(p, s) for s in later):
-                return close("code_changed", f"the cited lines around L{p.line} are gone from {m.ref}, and "
-                             f"{len(later)} nightly scan(s) since {seen:%Y-%m-%d} don't report it")
+    if why := _code_changed(p, seq, m):
+        return close("code_changed", why)
     if p.kind in TTL_KINDS and seen and now - seen > timedelta(days=ttl_days):
         return close("expired", f"open {(now - seen).days} days since last seen (TTL {ttl_days})")
     return None
@@ -256,7 +310,8 @@ def _judge(p: PackView, seq: list[Scan], m: Mirror | None, *, now: datetime, mis
 # ── applying ─────────────────────────────────────────────────────────────────
 
 def apply(output_dir: str | Path, closures: list[Closure], *, public_base_url: str = "") -> int:
-    """Set each pack ``obsolete`` with the reason in its history and ``governance.gc``."""
+    """Set each pack ``obsolete`` with the reason in its history and ``governance.gc``.
+    A pack whose status moved off the one it was planned from is left alone."""
     from auditor.agent_pack import (
         AgentCodingPack,
         load_pack,
@@ -276,10 +331,10 @@ def apply(output_dir: str | Path, closures: list[Closure], *, public_base_url: s
             if data is None:
                 continue
             pack = AgentCodingPack.from_dict(data, fallback_id=c.pack_id)
-            if pack.status != "open":  # changed since planning
+            if pack.status != c.from_status:  # changed since planning
                 continue
             pack.apply_status("obsolete", f"gc ({c.rule}): {c.reason}"[:2000])
-            pack.governance["gc"] = {"rule": c.rule, "reason": c.reason, "at": now}
+            pack.governance["gc"] = {"rule": c.rule, "reason": c.reason, "at": now, "from": c.from_status}
             write_pack(pack, output_dir, preserve_status=False)
             closed.append(pack)
         upsert_index_entries(output_dir, closed, public_base_url=public_base_url)
@@ -314,7 +369,8 @@ def run(output_dir: str | Path | None = None, *, dry_run: bool = False, force: b
         by_repo[c.repo] += 1
     report = {
         "at": now.isoformat(), "dry_run": dry_run, "force": force, "misses": misses, "ttl_days": ttl,
-        "open_considered": p["open_considered"], "planned": len(p["closures"]), "closed": closed,
+        "open_considered": p["open_considered"], "wontfix_considered": p["wontfix_considered"],
+        "planned": len(p["closures"]), "closed": closed,
         "by_rule": dict(by_rule), "by_repo": dict(sorted(by_repo.items())),
         "held": p["held"], "skipped": p["skipped"],
         "closures": [asdict(c) for c in p["closures"]],

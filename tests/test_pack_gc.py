@@ -130,10 +130,59 @@ def test_diff_audit_ttl_and_ask_never_expires() -> None:
 
 def test_only_open_finding_packs_are_considered() -> None:
     m = {"x": FakeMirror({})}  # every file gone
-    packs = [pack(f"s-{st}", status=st) for st in ("claimed", "in_progress", "unverified", "resolved", "wontfix")]
+    packs = [pack(f"s-{st}", status=st) for st in ("claimed", "in_progress", "unverified", "resolved")]
     packs += [pack("w", kind="world_model"), pack("arch", kind="architecture"), pack("dup", duplicate_of="s-claimed")]
     r = plan(packs, [], m, now=NOW)
     assert ids(r) == {} and r["open_considered"] == 0
+
+
+# ── wontfix ──────────────────────────────────────────────────────────────────
+
+def test_wontfix_is_kept_while_its_code_is_there() -> None:
+    """The decision is what keeps a re-found false positive closed: no rescans, age or moved code ends it."""
+    moved = {"x": FakeMirror({"app/calc.py": ["# moved", *CODE]}, {"app/calc.py": at(0)})}
+    silent = [scan(f"s{i}", 10 * i) for i in range(1, 6)]
+    packs = [pack("n", status="wontfix", seen=1), pack("d", kind="diff_audit", status="wontfix", seen=1),
+             pack("a", kind="ask", status="wontfix", seen=1, snip=snippet(1, ["gone()"]))]
+    r = plan(packs, silent, moved, now=NOW + timedelta(days=400), misses=3, ttl_days=30)
+    assert ids(r) == {} and r["wontfix_considered"] == 3
+    assert ids(plan(packs, silent, {}, now=NOW, misses=3)) == {}  # no mirror: nothing to judge by
+
+
+def test_wontfix_closes_when_its_code_is_gone() -> None:
+    gone = {"x": FakeMirror({"other.py": ["x"]})}
+    r = plan([pack("n", status="wontfix"), pack("a", kind="ask", status="wontfix")], [], gone, now=NOW)
+    assert ids(r) == {"n": "wontfix_file_gone", "a": "wontfix_file_gone"}
+    assert {c.from_status for c in r["closures"]} == {"wontfix"}
+
+    fixed = {"x": FakeMirror({"app/calc.py": FIXED})}
+    w = pack("n", status="wontfix", seen=1)
+    assert ids(plan([w], [], fixed, now=NOW)) == {}  # code gone, but no scan has looked since
+    assert ids(plan([w], [scan("s1", 10)], fixed, now=NOW)) == {"n": "wontfix_code_changed"}
+    reported = [scan("s1", 10, [("app/calc.py", "add subtracts instead of adding", 2)])]
+    assert ids(plan([w], reported, fixed, now=NOW)) == {}
+    ask = pack("a", kind="ask", status="wontfix", seen=1)
+    assert ids(plan([ask], [scan("s1", 10)], fixed, now=NOW)) == {}  # filed by a person: file_gone only
+
+
+def test_wontfix_duplicate_follows_its_keeper() -> None:
+    statuses = ("open", "claimed", "wontfix", "resolved", "obsolete")
+    packs = [pack(f"k-{st}", status=st, path=f"{st}.py") for st in statuses]
+    m = {"x": FakeMirror({f"{st}.py": CODE for st in statuses})}  # dups' file is gone: judged by keeper alone
+    dups = [pack(f"d-{st}", status="wontfix", duplicate_of=f"k-{st}") for st in
+            ("open", "claimed", "wontfix", "resolved", "obsolete", "missing")]
+    r = plan(packs + dups, [], m, now=NOW)
+    assert ids(r) == {"d-resolved": "keeper_closed", "d-obsolete": "keeper_closed"}
+    assert "which is resolved" in next(c.reason for c in r["closures"] if c.pack_id == "d-resolved")
+
+
+def test_mass_wontfix_closure_is_held_separately() -> None:
+    m = {"x": FakeMirror({"app/calc.py": CODE})}
+    packs = [pack(f"w{i}", status="wontfix", path=f"f{i}.py") for i in range(12)]
+    packs += [pack(f"o{i}", path="app/calc.py", title=f"t{i}") for i in range(30)]  # many open: not the denominator
+    r = plan(packs, [], m, now=NOW)
+    assert ids(r) == {} and "would close 12 of 12 wontfix" in r["held"]["x"]
+    assert len(plan(packs, [], m, now=NOW, force=True)["closures"]) == 12
 
 
 def test_missing_mirror_only_disables_mirror_rules() -> None:
@@ -215,6 +264,30 @@ def test_apply_closes_records_and_reopens_on_comeback(live) -> None:
     assert data["status"] == "open" and "reported again after pack GC" in data["status_note"]
     g = tm.gc_metric(tm.load_packs(out))
     assert (g["closed"], g["reopened"], g["rate"]) == (1, 1, 1.0) and g["by_rule"]["file_gone"]["reopened"] == 1
+
+
+def test_apply_closes_stale_wontfix_and_a_later_report_reopens_it(live) -> None:
+    out = live["out"]
+    update_pack_status(out, live["gone"], "wontfix", "false positive: weights are ours")
+    update_pack_status(out, live["kept"], "wontfix", "false positive: return value unused on purpose")
+    rep = pack_gc.run(out, mirrors_path=live["mirrors"])
+    assert rep["closed"] == 1 and rep["wontfix_considered"] == 2 and rep["by_rule"] == {"wontfix_file_gone": 1}
+    data = load_pack(out, live["gone"])
+    assert data["status"] == "obsolete" and data["governance"]["gc"]["from"] == "wontfix"
+    assert any(h["status"] == "wontfix" for h in data["status_history"])  # the decision stays on record
+    assert load_pack(out, live["kept"])["status"] == "wontfix"
+    emit_packs_from_findings([live["f"]("deleted.py", "Pickle loaded with weights_only=False")],
+                             output_dir=out, kind="nightly", run_id="run-2")
+    assert load_pack(out, live["gone"])["status"] == "open"
+
+
+def test_apply_skips_a_wontfix_reopened_since_planning(live) -> None:
+    out = live["out"]
+    update_pack_status(out, live["gone"], "wontfix", "false positive")
+    planned = pack_gc.plan(tm.load_packs(out), [], {"x": Mirror(live["mirrors"].parent / "mirror" / "x")}, now=NOW)
+    assert ids(planned) == {live["gone"]: "wontfix_file_gone"}
+    update_pack_status(out, live["gone"], "open", "a person reopened it")
+    assert pack_gc.apply(out, planned["closures"]) == 0 and load_pack(out, live["gone"])["status"] == "open"
 
 
 def test_exact_id_reemit_also_reopens(live) -> None:
