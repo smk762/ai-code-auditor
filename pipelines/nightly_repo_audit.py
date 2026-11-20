@@ -60,8 +60,19 @@ def run() -> None:
                     attempts = 0
                     try:
                         attempts += 1
-                        units, findings = with_retries(lambda: run_repo_audit(repo, llm=llm), retries=3, base_delay_s=1.0)
+                        unreviewed: set[str] = set()
+
+                        def audit(repo=repo, unreviewed=unreviewed):
+                            unreviewed.clear()  # a retry starts over
+                            return run_repo_audit(repo, llm=llm, unreviewed=unreviewed)
+                        units, findings = with_retries(audit, retries=3, base_delay_s=1.0)
                         meta.scanned_repos.append(repo.name)
+                        if unreviewed:
+                            # Silence about these files proves nothing (pack GC, trust metrics).
+                            from auditor.trust_metrics import rel_path
+
+                            meta.extra.setdefault("unreviewed_files", {})[repo.name] = sorted(
+                                {rel_path(repo.name, f) for f in unreviewed})
                         # The commit the scan read, so trust metrics only count findings from code
                         # that could contain a fix (the mirrors lag dev until the nightly sync).
                         code = head_commit(resolve_scan_root(repo))

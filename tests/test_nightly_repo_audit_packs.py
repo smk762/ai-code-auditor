@@ -37,8 +37,10 @@ def test_batch_mode_restores_cache_only_after_the_repo_pass(tmp_path: Path, monk
     )
     seen: dict[str, str | None] = {}
 
-    def audit(repo, llm=None):
+    def audit(repo, llm=None, unreviewed=None):
         seen["repo_pass"] = os.environ.get("AI_AUDIT_LLM_CACHE_ONLY")
+        if unreviewed is not None:
+            unreviewed.add(f"/m/{repo.name}/src/missed.py")
         return [], []
 
     def classify(_out):
@@ -60,6 +62,7 @@ def test_batch_mode_restores_cache_only_after_the_repo_pass(tmp_path: Path, monk
         "write_nightly_repo_report", "write_security_report", "archive_reports", "write_run_metadata",
     ):
         monkeypatch.setattr(nightly, name, noop)
+    monkeypatch.setattr(nightly, "record_run_finish", lambda meta, _p: seen.__setitem__("meta", meta))
     monkeypatch.setattr(auditor.batch_review, "prefetch_reviews", lambda repos: {})
     monkeypatch.setattr(auditor.agent_pack, "emit_packs_from_findings", lambda *a, **k: [])
     monkeypatch.setattr(auditor.pack_gc, "run_quietly", noop)
@@ -75,3 +78,5 @@ def test_batch_mode_restores_cache_only_after_the_repo_pass(tmp_path: Path, monk
     assert seen["repo_pass"] == "1"
     assert seen["pack_classes"] == prev
     assert os.environ.get("AI_AUDIT_LLM_CACHE_ONLY") == prev
+    # Files the pass couldn't review are on the run's record, so their silence isn't evidence.
+    assert seen["meta"].extra["unreviewed_files"] == {"r1": ["src/missed.py"]}

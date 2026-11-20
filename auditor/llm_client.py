@@ -166,6 +166,9 @@ class LLMClient:
         # can't turn into full-price synchronous calls).
         self.cache_only = os.getenv("AI_AUDIT_LLM_CACHE_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
         self.cache_misses = 0
+        # Files with a unit this client returned no model review for (a cache-only miss, or no
+        # usable response). A scan's silence about these proves nothing (pack GC, trust metrics).
+        self.unreviewed_files: set[str] = set()
         self._note = ""  # spend-ledger label for the call in flight (repo name)
         # Pre-built ecosystem context injected into every audit prompt
         self._ecosystem_overview = build_ecosystem_overview()
@@ -358,11 +361,15 @@ class LLMClient:
                     return parsed
         if self.cache_only:
             self.cache_misses += 1
+            self.unreviewed_files.add(unit.file_path)
             return []
         self._note = unit.repo
         response = self.generate(self.build_prompt_blocks(unit, repo_path))
-        if self.cache and response and _parse_findings_json(response, unit) is not None:
+        parsed_ok = bool(response) and _parse_findings_json(response, unit) is not None
+        if self.cache and parsed_ok:
             self.cache.put(key, self.model, response)
+        if not parsed_ok:  # over budget, backend down or unparseable: heuristics at most
+            self.unreviewed_files.add(unit.file_path)
         return self.findings_from_response(response, unit)
 
     def findings_from_response(self, response: str, unit: CodeUnit) -> list[Finding]:
