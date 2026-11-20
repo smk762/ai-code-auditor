@@ -42,8 +42,12 @@ def test_draft_pr_targets_base_and_keeps_existing_intent(repo: Path, monkeypatch
 
     monkeypatch.setattr(dp, "_gh_available", lambda: True)
     monkeypatch.setattr(dp.subprocess, "run", fake_run)
-    monkeypatch.setattr(dp, "push_repair_branch", lambda *a, **kw: PushResult(
-        pushed=True, remote="origin", branch=kw.get("branch", ""), remote_url="x"))
+    pushed: dict[str, list[str]] = {}
+
+    def push(work: Path, **kw: Any) -> PushResult:  # the commit as pushed, from the scratch clone
+        pushed["changed"] = _git(work, "show", "--name-only", "--format=", "HEAD").split()
+        return PushResult(pushed=True, remote="origin", branch=kw.get("branch", ""), remote_url="x")
+    monkeypatch.setattr(dp, "push_repair_branch", push)
 
     res = dp.create_draft_pr(repo, repo_name="r", title="Fix it", body="notes", slug="fix it",
                              base_branch="dev")
@@ -52,7 +56,7 @@ def test_draft_pr_targets_base_and_keeps_existing_intent(repo: Path, monkeypatch
     create = gh_calls[-1]
     assert create[create.index("--base") + 1] == "dev"
     assert (repo / "intent.md").read_text(encoding="utf-8") == "the project's own intent\n"
-    changed = _git(repo, "show", "--name-only", "--format=", "HEAD").split()
+    changed = pushed["changed"]
     assert "intent.md" not in changed
     assert changed and changed[0].endswith("intent.md")
 
@@ -96,3 +100,76 @@ def test_gh_has_a_timeout_and_no_prompt(repo: Path, monkeypatch: pytest.MonkeyPa
     res = dp.create_draft_pr(repo, repo_name="r", title="Fix it", body="notes", slug="fix it")
     assert res.draft is None and "timed out" in res.error
     assert calls[0].get("timeout") and calls[0]["env"]["GH_PROMPT_DISABLED"] == "1"
+
+
+# ── never in the source checkout (2026-11-21: mirrors left on repair/* branches) ────────────
+
+def _state(repo: Path) -> tuple[str, str, str, str]:
+    return (_git(repo, "symbolic-ref", "-q", "HEAD"), _git(repo, "rev-parse", "HEAD"),
+            _git(repo, "for-each-ref"), _git(repo, "status", "--porcelain"))
+
+
+def test_draft_pr_never_writes_the_source_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hub = tmp_path / "hub.git"  # stands in for GitHub
+    _git(tmp_path, "init", "-q", "--bare", "-b", "dev", str(hub))
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "-q", "-b", "dev")
+    _git(seed, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "one")
+    _git(seed, "push", "-q", str(hub), "dev")
+    # The hub is a local path, which push_repair_branch refuses by design; here it stands in for GitHub.
+    import auditor.git_ops as go
+    monkeypatch.setattr(go, "_is_local_path_remote", lambda url: False)
+    mirror = tmp_path / "mirror"
+    _git(tmp_path, "clone", "-q", str(hub), str(mirror))
+    _git(mirror, "config", "user.email", "t@example.com")
+    _git(mirror, "config", "user.name", "t")
+    # dev moves on upstream after the mirror's checkout: the PR must start from origin/dev.
+    _git(seed, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "two")
+    _git(seed, "push", "-q", str(hub), "dev")
+    _git(mirror, "fetch", "-q")
+    before = _state(mirror)
+
+    real_run = subprocess.run
+    gh_cwd: list[str] = []
+
+    def fake_run(args: Any, *a: Any, **kw: Any) -> Any:
+        if args and args[0] == "gh":
+            gh_cwd.append(kw.get("cwd", ""))
+            return subprocess.CompletedProcess(args, 0, "https://github.com/o/r/pull/9\n", "")
+        return real_run(args, *a, **kw)
+    monkeypatch.setattr(dp, "_gh_available", lambda: True)
+    monkeypatch.setattr(dp.subprocess, "run", fake_run)
+
+    res = dp.create_draft_pr(mirror, repo_name="r", title="Fix it", body="notes", slug="fix it", base_branch="dev")
+    assert res.error == "", res.error
+    assert _state(mirror) == before  # same branch, commit, refs and clean tree
+    pushed = _git(hub, "rev-parse", f"refs/heads/{res.branch}").strip()
+    assert _git(hub, "rev-parse", f"{pushed}^").strip() == _git(hub, "rev-parse", "dev").strip()
+    assert gh_cwd and not Path(gh_cwd[0]).exists()  # the scratch clone is gone
+
+
+def test_git_writes_refuse_a_scan_source(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import auditor.git_ops as go
+
+    monkeypatch.setattr(go, "scan_source_paths", lambda: {repo.resolve()})
+    before = _state(repo)
+    for call in (lambda: go.create_repair_branch(repo, "x"),
+                 lambda: go.commit_repair(repo, "m", paths=["intent.md"]),
+                 lambda: go.push_repair_branch(repo)):
+        with pytest.raises(go.ScanSourceError):
+            call()
+    assert _state(repo) == before
+
+
+def test_every_configured_mirror_and_repo_path_is_a_scan_source() -> None:
+    import yaml
+
+    from auditor.git_ops import scan_source_paths
+
+    paths = scan_source_paths()
+    mirrors = yaml.safe_load(Path("config/repo_mirrors.yaml").read_text())["mirrors"]
+    repos = yaml.safe_load(Path("config/ecosystem.yaml").read_text())["repos"]
+    assert mirrors and repos
+    for item in [*mirrors, *repos]:
+        assert Path(item["path"]).resolve() in paths, item["path"]
