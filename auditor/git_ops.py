@@ -41,6 +41,39 @@ _PUSH_TIMEOUT = 90  # seconds — network push; leave headroom for slow links
 class GitError(RuntimeError):
     """Base class for all git operation failures."""
 
+class ScanSourceError(GitError):
+    """A write into a checkout the scans read (a mirror, or a repo's configured scan path)."""
+
+
+_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+
+
+def scan_source_paths() -> set[Path]:
+    """Every checkout the scans read: ``config/repo_mirrors.yaml`` and ``config/ecosystem.yaml``,
+    resolved, so an alias symlink names the same mirror. Scans, validation and the API only read
+    these (CLAUDE.md); repair work happens in a throwaway clone (``conductor.draft_pr``)."""
+    import yaml
+
+    out: set[Path] = set()
+    for name, key in (("repo_mirrors.yaml", "mirrors"), ("ecosystem.yaml", "repos")):
+        try:
+            data = yaml.safe_load((_CONFIG_DIR / name).read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        for item in data.get(key) or []:
+            if isinstance(item, dict) and item.get("path"):
+                out.add(Path(str(item["path"])).expanduser().resolve())
+    return out
+
+
+def refuse_scan_source(repo_path: Path) -> None:
+    """Raise ScanSourceError when *repo_path* is a checkout the scans read."""
+    if Path(repo_path).expanduser().resolve() in scan_source_paths():
+        raise ScanSourceError(
+            f"{repo_path} is a scan source (mirror or configured repo path); never branch, commit or "
+            "push there. Work in a throwaway clone (conductor.draft_pr.scratch_clone).")
+
+
 class GitConflictError(GitError):
     """Raised when the repo is mid-merge, mid-rebase, or mid-cherry-pick."""
 
@@ -289,6 +322,7 @@ def create_repair_branch(
     """
     if not is_git_repo(repo_path):
         raise GitError(f"Not a git repository: {repo_path}")
+    refuse_scan_source(repo_path)
 
     if is_in_conflict_state(repo_path):
         raise GitConflictError(
@@ -460,7 +494,9 @@ def commit_repair(
 
     Raises:
         GitError: If the commit subprocess fails for any reason other than an empty stage.
+        ScanSourceError: If *repo_path* is a checkout the scans read.
     """
+    refuse_scan_source(repo_path)
     branch = get_current_branch(repo_path)
     short_msg = (message.splitlines() or [""])[0][:72]
     nothing = CommitResult(sha="", branch=branch, files_staged=0, short_message=short_msg)
@@ -566,6 +602,7 @@ def push_repair_branch(
 
     Raises GitError only for unexpected failures (git binary missing, etc.).
     """
+    refuse_scan_source(repo_path)
     target_branch = branch or get_current_branch(repo_path)
     if not target_branch:
         return PushResult(

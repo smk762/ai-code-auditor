@@ -6,7 +6,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,6 +43,56 @@ def _gh_available() -> bool:
         return False
 
 
+def _git_out(args: list[str], cwd: Path) -> str:
+    r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def scratch_clone(repo_path: Path, base_branch: str | None) -> Path:
+    """A throwaway clone of *repo_path* checked out at the base, for repair work.
+
+    *repo_path* is usually a mirror the scans read, and nothing may be written there (CLAUDE.md):
+    a repair branch checked out in it was scanned instead of ``dev``, and its commits blocked the
+    sync. The clone borrows objects (``--shared``), starts from the source's ``origin/<base>``
+    (else its ``<base>``, else ``HEAD``), and takes over its ``origin`` URLs and committer, so the
+    push and ``gh`` behave as in the source. The caller deletes ``result.parent``.
+    """
+    src = Path(repo_path)
+    tmp = Path(tempfile.mkdtemp(prefix="draft-pr-"))
+    clone = tmp / (src.name or "repo")
+    try:
+        r = subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(src), str(clone)],
+                           capture_output=True, text=True, check=False)
+        if r.returncode != 0:
+            raise GitError(f"clone of {src} failed: {(r.stderr or '').strip()[:300]}")
+        sha = ""
+        for ref in ([f"refs/remotes/origin/{base_branch}", f"refs/heads/{base_branch}"] if base_branch else []) + ["HEAD"]:
+            sha = _git_out(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], src)
+            if sha:
+                break
+        if not sha:
+            raise GitError(f"no base commit for {base_branch or 'HEAD'} in {src}")
+        name = base_branch if base_branch and not base_branch.startswith("-") else "base"
+        for args in (["checkout", "--quiet", "-B", name, sha], ["remote", "remove", "origin"]):
+            r = subprocess.run(["git", *args], cwd=str(clone), capture_output=True, text=True, check=False)
+            if r.returncode != 0:
+                raise GitError(f"git {' '.join(args[:2])} in scratch clone failed: {(r.stderr or '').strip()[:300]}")
+        url = _git_out(["config", "--get", "remote.origin.url"], src)
+        if url:
+            subprocess.run(["git", "remote", "add", "origin", url], cwd=str(clone), check=True, capture_output=True)
+            push_url = _git_out(["config", "--get", "remote.origin.pushurl"], src)
+            if push_url:
+                subprocess.run(["git", "config", "remote.origin.pushurl", push_url], cwd=str(clone), check=True,
+                               capture_output=True)
+        for key in ("user.name", "user.email"):
+            if val := _git_out(["config", "--local", "--get", key], src):
+                subprocess.run(["git", "config", key, val], cwd=str(clone), check=True, capture_output=True)
+        return clone
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+
 def create_draft_pr(
     repo_path: Path,
     *,
@@ -53,7 +105,8 @@ def create_draft_pr(
     base_branch: str | None = None,
     dry_run: bool = False,
 ) -> DraftPrResult:
-    """Create repair branch, empty/notes commit if needed, push, open draft PR."""
+    """Create repair branch, notes commit, push, open draft PR: all in a throwaway clone of
+    *repo_path* (``scratch_clone``), which is never itself branched, committed to or checked out."""
     if dry_run:
         return DraftPrResult(
             draft=DraftPr(
@@ -67,7 +120,30 @@ def create_draft_pr(
         )
 
     try:
-        br = create_repair_branch(repo_path, slug, base_branch=base_branch)
+        work = scratch_clone(repo_path, base_branch)
+    except (GitError, OSError, subprocess.SubprocessError) as exc:
+        return DraftPrResult(draft=None, error=f"scratch clone failed: {exc}")
+    try:
+        return _draft_pr_in(work, repo_name=repo_name, title=title, body=body, slug=slug,
+                            severity=severity, action=action, base_branch=base_branch)
+    finally:
+        shutil.rmtree(work.parent, ignore_errors=True)
+
+
+def _draft_pr_in(
+    repo_path: Path,
+    *,
+    repo_name: str,
+    title: str,
+    body: str,
+    slug: str,
+    severity: str,
+    action: str,
+    base_branch: str | None,
+) -> DraftPrResult:
+    """The draft PR flow inside *repo_path*, a scratch clone already at the base."""
+    try:
+        br = create_repair_branch(repo_path, slug)
     except GitError as exc:
         return DraftPrResult(draft=None, error=str(exc))
 

@@ -11,7 +11,7 @@ here and in code. Don't add a rule to remember.
 
 | Never | Enforced by |
 |---|---|
-| Write to a repo mirror (validation, scans and the API only read them) | `:ro` mounts in `docker-compose.yml`; `test_validate_base::test_fetches_code_merged_after_the_nightly_sync_without_touching_the_mirror` |
+| Write to a repo mirror or a configured scan path (validation, scans and the API only read them; draft PRs are built in a throwaway clone) | `:ro` mounts in `docker-compose.yml`; `test_validate_base::test_fetches_code_merged_after_the_nightly_sync_without_touching_the_mirror`; `git_ops.refuse_scan_source` in every branch/commit/push helper (`test_draft_pr_packs::test_git_writes_refuse_a_scan_source`, `::test_every_configured_mirror_and_repo_path_is_a_scan_source`, `::test_draft_pr_never_writes_the_source_checkout`) |
 | Mirror sync discarding a unique local commit | `test_mirror_sync::test_unique_local_commit_is_never_reset` |
 | Resolve a pack without evidence (lint-only, or a bug/security fix with no test that fails on `dev` and passes patched) | `test_evidence::test_decide`; the seeded-defect eval's control gate (`auditor/eval_seeded.py`) |
 | Report a TS/JS change as passed when no check ran on it | `test_validate_node::test_missing_npm_skips_instead_of_passing`, `::test_failed_install_skips_instead_of_passing` |
