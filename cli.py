@@ -1394,13 +1394,13 @@ def main() -> None:
                 print(json.dumps(rep, indent=2))
             else:
                 for c in rep["closures"]:
-                    print(f"{c['pack_id']}  {c['rule']:<18} {c['repo']}:{c['path']}  {c['title'][:70]}\n    {c['reason']}")
+                    print(f"{c['pack_id']}  {c['rule']:<20} {c['repo']}:{c['path']}  {c['title'][:70]}\n    {c['reason']}")
                 for r, why in {**rep["skipped"], **rep["held"]}.items():
                     print(f"held {r}: {why}")
                 verb = "would close" if args.dry_run else "closed"
                 rules = ", ".join(f"{k} {v}" for k, v in sorted(rep["by_rule"].items()))
-                print(f"{verb} {rep['planned'] if args.dry_run else rep['closed']} of {rep['open_considered']} open "
-                      f"finding packs as obsolete ({rules or 'none'})")
+                print(f"{verb} {rep['planned'] if args.dry_run else rep['closed']} of {rep['open_considered']} open and "
+                      f"{rep['wontfix_considered']} wontfix finding packs as obsolete ({rules or 'none'})")
         elif args.dedupe:
             from auditor.agent_pack import dedupe_packs
 

@@ -1187,7 +1187,8 @@ def post_pack_savings_refresh() -> JSONResponse:
 
 @app.post("/audit/packs/gc", dependencies=[Depends(_require_mutating_auth)])
 def post_pack_gc(dry_run: bool = True, force: bool = False, repo: str = "") -> JSONResponse:
-    """Pack GC (#67): close open finding packs no scan reports any more as ``obsolete``.
+    """Pack GC (#67): close open finding packs no scan reports any more as ``obsolete``, and wontfix
+    packs whose code is gone or whose duplicate-of pack is closed.
     Dry run by default (``?dry_run=0`` applies); ``force`` overrides the per-repo hold."""
     from auditor import pack_gc
     from conductor.publish import public_base_url
