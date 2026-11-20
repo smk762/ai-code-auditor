@@ -310,6 +310,10 @@ function fit(animate = true) {
   (animate ? svg.transition().duration(350) : svg).call(zoom.transform, t);
 }
 
+function packLink(e) {
+  return e.pack ? ` · <a href="/ui/packs/${encodeURIComponent(e.pack)}">pack</a>` : "";
+}
+
 function evidenceList(repoId, ev) {
   return (ev || []).map((x) => { const u = ghLink(repoId, x); const label = `${x.path}:${x.line}`;
     return u ? `<a href="${esc(u)}">${esc(label)}</a>` : esc(label); }).join(" · ");
@@ -319,7 +323,7 @@ function panel(n) {
   const out = data.edges.filter((e) => (e.source.id || e.source) === n.id);
   const inc = data.edges.filter((e) => (e.target.id || e.target) === n.id);
   const name = (id) => { const m = nodeById(id); return m ? m.label : id; };
-  const row = (e, other, repoForEvidence) => `<li><b>${esc(name(other))}</b> <span class="muted">${esc(e.kind === "uses" ? e.label.replace(/^uses /, "uses ") : e.label)}${e.weight > 1 ? ` · ${int(e.weight)} files` : ""}</span>
+  const row = (e, other, repoForEvidence) => `<li><b>${esc(name(other))}</b> <span class="muted">${esc(e.kind === "uses" ? e.label.replace(/^uses /, "uses ") : e.label)}${e.weight > 1 ? ` · ${int(e.weight)} files` : ""}</span>${packLink(e)}
       ${e.evidence ? `<div class="ev">${evidenceList(repoForEvidence, e.evidence)}</div>` : ""}</li>`;
   let html;
   if (n.kind === "repo") {
@@ -347,7 +351,7 @@ function table() {
   document.querySelector("#conn tbody").innerHTML = data.edges.map((e) => {
     const s = e.source.id || e.source, t = e.target.id || e.target;
     const ev = (e.evidence || [])[0];
-    return `<tr><td>${esc(name(s))}</td><td>${esc(name(t))}</td><td>${esc(e.label)}</td><td class="num">${e.evidence ? int(e.weight) : "—"}</td>
+    return `<tr><td>${esc(name(s))}</td><td>${esc(name(t))}</td><td>${esc(e.label)}${packLink(e)}</td><td class="num">${e.evidence ? int(e.weight) : "—"}</td>
       <td class="mono">${ev ? evidenceList(s, [ev]) : ""}</td></tr>`;
   }).join("");
 }

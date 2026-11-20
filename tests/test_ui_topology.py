@@ -97,6 +97,10 @@ def test_topology_edges_from_doc_code_and_policy(eco: Path) -> None:
     assert uses[("argus-curator", "svc:nudenet")]["evidence"][0] == {"path": "a.py", "line": 2}
     assert [(m["source"], m["service"]) for m in d["mentions"]] == [("argus-forge", "qdrant")]
     assert _edges(d, "violation") == [("argus-forge", "argus-quarry")]  # wildcard policy edges dropped
+    from auditor.agent_pack import architecture_pack_id
+
+    [bad] = [e for e in d["edges"] if e["kind"] == "violation"]
+    assert bad["pack"] == architecture_pack_id("argus-forge", "call_graph_violation", "argus-forge → argus-quarry")
 
     nodes = {n["id"]: n for n in d["nodes"]}
     assert nodes["svc:nudenet"]["side"] == "left" and "svc:comfyui" not in nodes and "svc:qdrant" not in nodes

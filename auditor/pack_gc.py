@@ -392,3 +392,99 @@ def run_quietly(output_dir: str | Path | None = None, **kw: Any) -> dict[str, An
     except Exception as exc:  # noqa: BLE001
         logger.warning("pack gc failed: %s", exc)
         return {"error": str(exc)[:300]}
+
+
+# ── architecture packs ───────────────────────────────────────────────────────
+
+ARCH_REPORT_NAME = "pack_gc_architecture.json"
+
+
+def plan_architecture(entries: list[dict[str, Any]], reported: list[Any], scanned_repos: set[str], *,
+                      force: bool = False) -> dict[str, Any]:
+    """Which open architecture packs an ecosystem run no longer reports. Changes nothing.
+
+    ``reported`` holds the run's architecture findings (``agent_pack.architecture_findings``),
+    whose ids are the stable pack ids. An open pack outside them, in a repo the run scanned, is
+    either a pack from before stable ids that repeats a reported issue (closed as its duplicate,
+    ``wontfix`` with ``duplicate_of``, the same as finding-pack dedupe), or no longer reported
+    (``obsolete``; a later report reopens it). Only ``open`` packs that aren't duplicates are
+    considered. Closing more than half of them, and more than ``HOLD_MIN``, as obsolete is held
+    unless ``force``: an empty or partial run looks the same as a fixed codebase.
+    """
+    from auditor.agent_pack import _LINE_SUFFIX
+
+    reported_ids = {f.id for f in reported}
+    by_title = {(f.repo, _LINE_SUFFIX.sub("", f.title)): f.id for f in reported}
+    candidates = [e for e in entries if e.get("kind") == "architecture"
+                  and (e.get("status") or "open") == "open" and not e.get("duplicate_of")
+                  and str(e.get("repo") or "") in scanned_repos]
+    closures: list[Closure] = []
+    for e in candidates:
+        if e["id"] in reported_ids:
+            continue
+        repo, title = str(e.get("repo") or ""), str(e.get("title") or "")
+        keeper = by_title.get((repo, _LINE_SUFFIX.sub("", title)))
+        if keeper:
+            closures.append(Closure(e["id"], repo, str(e.get("file_path") or ""), title, "architecture",
+                                    "duplicate", keeper))
+        else:
+            closures.append(Closure(e["id"], repo, str(e.get("file_path") or ""), title, "architecture",
+                                    "not_reported", "the latest ecosystem run no longer reports this violation"))
+    held = ""
+    gone = [c for c in closures if c.rule == "not_reported"]
+    if not force and len(gone) > HOLD_MIN and len(gone) > HOLD_SHARE * len(candidates):
+        held = (f"would close {len(gone)} of {len(candidates)} open architecture packs as no longer "
+                f"reported (> {HOLD_SHARE:.0%}); rerun with force")
+        closures = [c for c in closures if c.rule != "not_reported"]
+    return {"closures": closures, "held": held, "open_considered": len(candidates)}
+
+
+def close_unreported_architecture(output_dir: str | Path, reported: list[Any], scanned_repos: set[str], *,
+                                  force: bool = False, dry_run: bool = False,
+                                  public_base_url: str = "") -> dict[str, Any]:
+    """Plan and (unless *dry_run*) apply ``plan_architecture``; writes ``pack_gc_architecture.json``.
+    Each pack is re-checked under the pack lock, so one claimed since planning is left alone."""
+    from auditor.agent_pack import (
+        AgentCodingPack,
+        _index_entries,
+        load_pack,
+        pack_lock,
+        refresh_pack_rag,
+        upsert_index_entries,
+        write_pack,
+    )
+
+    out = Path(output_dir)
+    p = plan_architecture(_index_entries(out), reported, scanned_repos, force=force)
+    closed: list[AgentCodingPack] = []
+    if not dry_run and p["closures"]:
+        now = datetime.now(UTC).isoformat()
+        with pack_lock(out):
+            for c in p["closures"]:
+                data = load_pack(out, c.pack_id)
+                if data is None:
+                    continue
+                pack = AgentCodingPack.from_dict(data, fallback_id=c.pack_id)
+                if (pack.status or "open") != "open" or pack.governance.get("duplicate_of"):
+                    continue  # changed since planning
+                if c.rule == "duplicate":
+                    pack.apply_status("wontfix", f"duplicate of {c.reason}")
+                    pack.governance["duplicate_of"] = c.reason
+                else:
+                    pack.apply_status("obsolete", f"gc ({c.rule}): {c.reason}")
+                    pack.governance["gc"] = {"rule": c.rule, "reason": c.reason, "at": now, "from": "open"}
+                write_pack(pack, out, preserve_status=False)
+                closed.append(pack)
+            upsert_index_entries(out, closed, public_base_url=public_base_url)
+        for pack in closed:  # network calls, outside the lock
+            refresh_pack_rag(out, pack.to_dict())
+    by_rule: dict[str, int] = defaultdict(int)
+    for c in p["closures"]:
+        by_rule[c.rule] += 1
+    report = {"at": datetime.now(UTC).isoformat(), "dry_run": dry_run, "force": force,
+              "reported": len(reported), "open_considered": p["open_considered"],
+              "planned": len(p["closures"]), "closed": len(closed), "by_rule": dict(by_rule),
+              "held": p["held"], "closures": [asdict(c) for c in p["closures"]]}
+    if not dry_run:
+        atomic_write_text(out / ARCH_REPORT_NAME, json.dumps(report, indent=1))
+    return report
