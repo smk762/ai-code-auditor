@@ -72,7 +72,7 @@ def test_re_emit_is_idempotent_and_keeps_guards_and_status(tmp_path: Path) -> No
     child(tmp_path, "a", repo="r1")
     child(tmp_path, "b", repo="r2")
     cp.emit(tmp_path)
-    cp.record_guard(tmp_path, "pack-class-ssrf", repo="r1", commit="abcdef1", proof_test="tests/test_g.py",
+    cp.record_guard(tmp_path, "pack-class-ssrf", repo="r1", commit="abcdef1000000000000000000000000000000000", proof_test="tests/test_g.py",
                     fixtures=["tests/fx/bad.py"])
     f = packs_dir(tmp_path) / "pack-class-ssrf.yaml"
     before = f.read_text()
@@ -114,6 +114,7 @@ def test_class_packs_are_not_findings_and_lead_the_bundle(tmp_path: Path) -> Non
 
 @pytest.mark.parametrize("kw,msg", [
     ({"commit": "zz-not-hex"}, "hex sha"),
+    ({"commit": "3a7fa9d0"}, "full 40-char"),  # a prefix (here a mistyped one) would wait forever as pending
     ({"proof_test": "../escape.py"}, "inside the repo"),
     ({"proof_test": ""}, "required"),
 ])
@@ -121,11 +122,11 @@ def test_record_guard_validates(tmp_path: Path, kw: dict, msg: str) -> None:
     child(tmp_path, "a", repo="r1")
     child(tmp_path, "b", repo="r2")
     cp.emit(tmp_path)
-    args = {"repo": "r1", "commit": "abcdef1", "proof_test": "tests/test_g.py", "fixtures": [], **kw}
+    args = {"repo": "r1", "commit": "abcdef1000000000000000000000000000000000", "proof_test": "tests/test_g.py", "fixtures": [], **kw}
     with pytest.raises(ValueError, match=msg):
         cp.record_guard(tmp_path, "pack-class-ssrf", **args)
     with pytest.raises(LookupError):
-        cp.record_guard(tmp_path, "a", repo="r1", commit="abcdef1", proof_test="t.py", fixtures=[])
+        cp.record_guard(tmp_path, "a", repo="r1", commit="abcdef1000000000000000000000000000000000", proof_test="t.py", fixtures=[])
 
 
 # ── proving a guard ──────────────────────────────────────────────────────────

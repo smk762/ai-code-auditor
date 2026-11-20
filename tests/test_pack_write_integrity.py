@@ -94,7 +94,7 @@ def test_writers_patch_the_index_instead_of_rebuilding(tmp_path: Path, monkeypat
         pk = _mk_pack("pack-class-x")
         pk.kind = class_packs.KIND
         write_pack(pk, tmp_path)
-        class_packs.record_guard(tmp_path, "pack-class-x", repo="r", commit="abcdef1", proof_test="tests/t.py",
+        class_packs.record_guard(tmp_path, "pack-class-x", repo="r", commit="abcdef1000000000000000000000000000000000", proof_test="tests/t.py",
                                  fixtures=[])
     entries = {e["id"] for e in agent_pack.list_packs(tmp_path, limit=100)}
     assert "pack-a" in entries
