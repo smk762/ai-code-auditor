@@ -153,7 +153,7 @@ def prefetch_reviews(repos: list[RepoConfig], *, poll_s: int = 60, max_wait_s: i
             for unit in extract_code_units(repo.name, f):
                 stats.units += 1
                 key = llm.cache_key(unit)
-                if key in seen or cache.has(key):
+                if key in seen or cache.has(key, *llm.legacy_cache_keys(unit)):
                     stats.already_cached += 1
                     continue
                 seen.add(key)
