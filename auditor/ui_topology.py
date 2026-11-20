@@ -358,10 +358,14 @@ def _build(out: Path, repos: list[Any], side: Path, doc_path: Path | None = None
             continue
         nodes.append({"id": f"svc:{sid}", "label": label, "kind": "service", "category": category, "side": side_})
 
+    from auditor.agent_pack import architecture_pack_id
+
     for e in topo.get("edges") or []:
         if "violation" in str(e.get("kind")) and e.get("from") in names and e.get("to") in names:
+            # The pack the ecosystem run filed for it (call-graph violations are "from → to").
+            pack = architecture_pack_id(e["from"], "call_graph_violation", f"{e['from']} → {e['to']}")
             edges.append({"source": e["from"], "target": e["to"], "kind": "violation", "weight": 1,
-                          "label": str(e.get("kind")).replace("_", " ")})
+                          "label": str(e.get("kind")).replace("_", " "), "pack": pack})
 
     groups = {s: label for s, (label, _l, _d) in STAGES.items()} | {"external": "Ecosystem dependency"}
     stage_colours = {s: {"light": light, "dark": dark} for s, (_label, light, dark) in STAGES.items()}

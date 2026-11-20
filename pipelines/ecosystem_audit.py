@@ -325,11 +325,14 @@ def run() -> None:
             write_architecture_violations(violations, output_dir=cfg.output_dir)
             try:
                 from auditor.agent_pack import (
+                    architecture_findings,
                     emit_packs_from_extraction_candidates,
                     emit_packs_from_violations,
                     emit_world_model_packs,
                     pack_rag_ingest_enabled,
                 )
+                from auditor.pack_gc import close_unreported_architecture
+                from auditor.pack_gc import enabled as pack_gc_enabled
                 from auditor.repo_resolver import resolve_repo_path
                 from conductor.publish import public_base_url
 
@@ -350,6 +353,15 @@ def run() -> None:
                     ingest_rag=rag_ingest,
                     repo_paths=repo_paths,
                 )
+                if pack_gc_enabled():
+                    arch_gc = close_unreported_architecture(
+                        cfg.output_dir,
+                        architecture_findings(violations),
+                        {name for name, files in repo_files.items() if files},
+                        public_base_url=base,
+                    )
+                    logger.info("architecture pack gc: %s",
+                                {k: arch_gc[k] for k in ("planned", "closed", "by_rule", "held")})
                 ext = emit_packs_from_extraction_candidates(
                     extraction_candidates if isinstance(extraction_candidates, list) else None,
                     output_dir=cfg.output_dir,

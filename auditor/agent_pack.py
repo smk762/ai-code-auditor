@@ -1417,6 +1417,40 @@ def finding_from_violation(violation: RuleViolation) -> Finding:
     )
 
 
+_LINE_SUFFIX = re.compile(r":\d+\s*$")
+
+
+def architecture_issue(rule_name: str, violating_path: str) -> str:
+    """What makes two architecture violations the same issue across runs: the rule and the
+    violating path without its line, so code moving within a file keeps one pack."""
+    return f"{rule_name}|{_LINE_SUFFIX.sub('', ' '.join((violating_path or '').split()))}"
+
+
+def architecture_pack_id(repo: str, rule_name: str, violating_path: str) -> str:
+    """The stable pack id for an architecture issue, the same on every run that reports it."""
+    digest = hashlib.sha1(architecture_issue(rule_name, violating_path).encode()).hexdigest()[:10]
+    repo_slug = re.sub(r"[^a-z0-9]+", "-", (repo or "repo").lower()).strip("-")[:32]
+    return f"pack-{repo_slug}-arch-{digest}"
+
+
+def architecture_findings(violations: list[RuleViolation]) -> list[Finding]:
+    """One finding per architecture issue, each with its stable pack id as ``Finding.id``.
+    Violations of one issue (the same rule and file at several lines) share it, evidence merged."""
+    by_issue: dict[str, Finding] = {}
+    for v in violations:
+        f = finding_from_violation(v)
+        key = architecture_issue(v.rule_name, v.violating_path)
+        if key in by_issue:
+            kept = by_issue[key]
+            if f.evidence and f.evidence not in (kept.evidence or ""):
+                kept.evidence = f"{kept.evidence}\n{f.evidence}" if kept.evidence else f.evidence
+                kept.description = kept.evidence
+            continue
+        f.id = architecture_pack_id(f.repo, v.rule_name, v.violating_path)
+        by_issue[key] = f
+    return list(by_issue.values())
+
+
 def emit_packs_from_violations(
     violations: list[RuleViolation],
     *,
@@ -1427,7 +1461,10 @@ def emit_packs_from_violations(
     repo_paths: dict[str, str | Path] | None = None,
     limit: int = 50,
 ) -> list[AgentCodingPack]:
-    findings = [finding_from_violation(v) for v in violations[: max(1, limit)]]
+    """One pack per architecture issue, under an id stable across runs, so a re-report updates
+    the same pack (keeping its status) instead of adding another. Closing the ones a run no
+    longer reports is ``pack_gc.close_unreported_architecture``."""
+    findings = architecture_findings(violations)[: max(1, limit)]
     return emit_packs_from_findings(
         findings,
         output_dir=output_dir,
