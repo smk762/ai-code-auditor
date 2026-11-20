@@ -241,8 +241,10 @@ def record_guard(output_dir: str | Path, pack_id: str, *, repo: str, commit: str
     paths = [proof_test, *fixtures]
     if any(p.startswith("/") or ".." in Path(p).parts for p in paths):
         raise ValueError("proof_test and fixtures must be paths inside the repo")
-    if len(commit) < 7 or not all(ch in "0123456789abcdef" for ch in commit.lower()):
-        raise ValueError("commit must be a hex sha (7+ chars)")
+    # The full sha, not a prefix: the mirror may not have the commit yet, so a mistyped prefix
+    # would wait as "pending" forever, indistinguishable from a mirror that hasn't synced.
+    if len(commit) != 40 or not all(ch in "0123456789abcdef" for ch in commit.lower()):
+        raise ValueError("commit must be the full 40-char hex sha (git rev-parse <commit>)")
     with pack_lock(output_dir):  # load → change → write as one step, so a concurrent status change survives
         data = load_pack(output_dir, pack_id)
         if data is None or data.get("kind") != KIND:

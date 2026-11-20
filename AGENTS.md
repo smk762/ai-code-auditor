@@ -115,6 +115,7 @@ children one by one.
 2. Once it is merged to `dev`, record it:
    `POST /audit/packs/pack-class-<class>/guard {"repo","commit","proof_test","fixtures":[...]}`
    (mutating auth), or `ai-audit packs --guard --id … --repo … --commit … --proof-test … --fixture …`.
+   `commit` is the guard commit's full 40-char sha (`git rev-parse`), not a prefix.
 3. The nightly run proves it: the proof test must pass on `dev` and must **not** pass on the tree
    just before the guard commit. Then it closes that repo's children that the next scan no longer
    reports. Any still reported are marked `class_exception` and stay open as ordinary work.
