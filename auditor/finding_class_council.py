@@ -104,14 +104,21 @@ def build_requests(rows: list[dict[str, Any]], model: str, system: str, packs_di
 
 def parse_verdicts(text: str, n: int, valid: set[str]) -> list[dict[str, str] | None]:
     out: list[dict[str, str] | None] = [None] * n
-    m = re.search(r"\{.*\}", text or "", re.DOTALL)
-    if not m:
+    # Decode at each '{' in turn: a greedy brace match spans any prose or second JSON block
+    # around the payload, fails to parse, and drops every verdict.
+    decoder, text = json.JSONDecoder(), text or ""
+    verdicts = None
+    for brace in re.finditer(r"\{", text):
+        try:
+            data, _ = decoder.raw_decode(text, brace.start())
+        except ValueError:
+            continue
+        if isinstance(data, dict) and "verdicts" in data:
+            verdicts = data["verdicts"]
+            break
+    if not isinstance(verdicts, list):
         return out
-    try:
-        data = json.loads(m.group(0))
-    except ValueError:
-        return out
-    for e in data.get("verdicts") or []:
+    for e in verdicts:
         try:
             i, v = int(e.get("i")), str(e.get("verdict") or "")
         except (TypeError, ValueError, AttributeError):

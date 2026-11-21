@@ -100,14 +100,21 @@ def build_requests(rows: list[dict[str, Any]], model: str, system: str) -> list[
 def parse_labels(text: str, n: int, valid: set[str]) -> list[str]:
     """Class per finding from the model's JSON; anything missing or invalid is unclassified."""
     labels = [UNCLASSIFIED] * n
-    m = re.search(r"\{.*\}", text or "", re.DOTALL)
-    if not m:
+    # Decode at each '{' in turn: a greedy brace match spans any prose or second JSON block
+    # around the payload, fails to parse, and drops every label.
+    decoder, text = json.JSONDecoder(), text or ""
+    entries = None
+    for brace in re.finditer(r"\{", text):
+        try:
+            data, _ = decoder.raw_decode(text, brace.start())
+        except ValueError:
+            continue
+        if isinstance(data, dict) and "labels" in data:
+            entries = data["labels"]
+            break
+    if not isinstance(entries, list):
         return labels
-    try:
-        data = json.loads(m.group(0))
-    except ValueError:
-        return labels
-    for e in data.get("labels") or []:
+    for e in entries:
         try:
             i, c = int(e.get("i")), str(e.get("class") or "")
         except (TypeError, ValueError, AttributeError):

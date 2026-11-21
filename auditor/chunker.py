@@ -96,12 +96,18 @@ def _extract_python_units(repo_name: str, file_path: Path, text: str) -> list[Co
     elif residual:
         # Module-level code outside any def/class (config, secrets, route registration,
         # import-time calls, __main__ blocks) is audited as one module unit.
-        start = residual[0].lineno
-        end = getattr(residual[-1], "end_lineno", None) or residual[-1].lineno
-        snippet = "\n".join(
-            "\n".join(source_lines[n.lineno - 1 : (getattr(n, "end_lineno", None) or n.lineno)])
-            for n in residual
-        )
+        # The text skips the defs in between, so its lines are not contiguous in the file:
+        # ast_features["segments"] keeps each run's source range (see source_line()). Statements
+        # sharing a line (`a = 1; b = 2`) share one segment, so the line appears once.
+        segments: list[list[int]] = []
+        for n in residual:
+            lo, hi = n.lineno, getattr(n, "end_lineno", None) or n.lineno
+            if segments and lo <= segments[-1][1] + 1:
+                segments[-1][1] = max(segments[-1][1], hi)
+            else:
+                segments.append([lo, hi])
+        start, end = segments[0][0], segments[-1][1]
+        snippet = "\n".join("\n".join(source_lines[lo - 1 : hi]) for lo, hi in segments)
         units.append(
             CodeUnit(
                 id=_hash_text(f"{repo_name}:{file_path}:<module>:{start}:{end}"),
@@ -112,9 +118,21 @@ def _extract_python_units(repo_name: str, file_path: Path, text: str) -> list[Co
                 language="python",
                 start_line=start,
                 end_line=end,
-                ast_features={"imports": imports},
+                ast_features={"imports": imports, "segments": segments},
                 raw_text=snippet,
                 raw_text_hash=_hash_text(snippet),
             )
         )
     return units
+
+
+def source_line(unit: CodeUnit, offset: int) -> int:
+    """The file line of line *offset* (0-based) of ``unit.raw_text``. A module unit's text is
+    stitched from separate runs of top-level code, so this walks its segments; other units are
+    contiguous from start_line."""
+    segments = unit.ast_features.get("segments") or ()
+    for lo, hi in segments:
+        if offset <= hi - lo:
+            return lo + offset
+        offset -= hi - lo + 1
+    return segments[-1][1] if segments else unit.start_line + offset

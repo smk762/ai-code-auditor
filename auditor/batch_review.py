@@ -83,22 +83,31 @@ def _harvest(client: Any, cache: ReviewCache, batch_id: str, units_by_id: dict[s
         time.sleep(poll_s)
 
     ledger = get_ledger()
+    # A harvest that raised partway (network error mid-stream, a cache write) is retried next
+    # run; results it already billed are skipped so the ledger doesn't count them twice.
+    done = cache.harvested_results(batch_id)
     for result in client.messages.batches.results(batch_id):
+        if result.custom_id in done:
+            continue
         if result.result.type != "succeeded":
             stats.errored += 1
             continue
         msg = result.result.message
         unit = units_by_id.get(result.custom_id) or _placeholder_unit()
-        stats.cost_usd += ledger.record_usage(LANE, getattr(msg, "model", model) or model,
-                                              msg.usage, batch=True,
-                                              note=os.getenv("AI_AUDIT_SPEND_NOTE_PREFIX", "") + unit.repo)
+        answered_by = getattr(msg, "model", None) or model
         text = "".join(b.text for b in msg.content if b.type == "text")
         if _parse_findings_json(text, unit) is None:
             stats.parse_failed += 1
-            continue
-        # custom_id is the cache key, so batches from earlier runs harvest correctly too.
-        cache.put(result.custom_id, model, text)
-        stats.cached_new += 1
+        else:
+            # custom_id is the cache key, so batches from earlier runs harvest correctly too.
+            # The row records the model that answered, not this run's configured one.
+            cache.put(result.custom_id, answered_by, text)
+            stats.cached_new += 1
+        # Billed only once the result is stored, and marked right after, so a retry after a
+        # failure here neither loses the review nor records its usage twice.
+        stats.cost_usd += ledger.record_usage(LANE, answered_by, msg.usage, batch=True,
+                                              note=os.getenv("AI_AUDIT_SPEND_NOTE_PREFIX", "") + unit.repo)
+        cache.mark_result_harvested(batch_id, result.custom_id)
     cache.mark_harvested(batch_id)
     return True
 
