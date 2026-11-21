@@ -12,9 +12,10 @@ Environment variables:
     RAG_INGEST_URL          Ingest endpoint (default: http://127.0.0.1:9050/ingest).
                             ``MIMIRI_URL`` is honoured as a deprecated alias.
     INGEST_SHARED_SECRET    HMAC secret matching the ingest service config.
-    QDRANT_COLLECTION       Must name the collection the shared RAG client writes to
-                            (``AI_AUDIT_RAG_COLLECTION``, default audit_docs); any other is refused,
-                            since the client cannot send to it.
+    AI_AUDIT_RAG_COLLECTION The collection the shared RAG client writes to (default: ``rag_collection``
+                            in ecosystem.yaml, audit_docs). The generic ``QDRANT_COLLECTION`` that
+                            agent-composer's services use is ignored: an empty or shared value must
+                            not redirect or break this ingest.
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -34,14 +36,17 @@ load_env_file()
 
 import requests
 
-from auditor.ecosystem_briefing import build_ecosystem_overview, build_repo_briefing, _get_repo_roles
+from auditor.ecosystem_briefing import _ENDPOINT_SKIP_DIRS, build_ecosystem_overview, build_repo_briefing, _get_repo_roles
 from auditor.config import load_ecosystem_config
 from ecosystem.api_mapper import discover_api_endpoints
 from ecosystem.graph_builder import GraphBuilder
 from auditor.repo_resolver import resolve_repo_path, resolve_scan_root
 
 _DEFAULT_INGEST_URL = "http://127.0.0.1:9050/ingest"
-_DEFAULT_COLLECTION = "project_docs"
+_DEFAULT_COLLECTION = "audit_docs"
+# tests and fixtures declare fake routes (``GET /a``, f-string formats); they are not the repo's API
+_TEST_DIRS = frozenset({"tests", "test", "testing", "fixtures", "__fixtures__"})
+_TEST_FILE = re.compile(r"^(test_.*|.*_test|conftest)\.py$")
 _REPO_BRIEFING_CHARS = 4000
 _REPO_DOC_MAX_CHARS = 6000  # briefing plus its endpoint list
 
@@ -61,6 +66,22 @@ def _with_endpoints(briefing: str, endpoints: list[str], max_chars: int = _REPO_
             return doc + f"\n  … and {len(unique) - i} more"
         doc += line
     return doc
+
+
+def _target(cfg) -> tuple[str, str]:
+    """(ingest URL, collection). Config first; env vars override only when set and non-empty."""
+    url = os.getenv("RAG_INGEST_URL") or os.getenv("MIMIRI_URL") or cfg.rag_ingest_url  # MIMIRI_URL: deprecated
+    # cfg.rag_collection already honours AI_AUDIT_RAG_COLLECTION, the variable the RAG client sends
+    return url, (cfg.rag_collection or "").strip() or _DEFAULT_COLLECTION
+
+
+def _endpoint_files(scan_root: Path) -> list[Path]:
+    """The repo's own .py files: env/build dirs pruned before descending, tests and fixtures left out."""
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(scan_root):
+        dirnames[:] = sorted(d for d in dirnames if d not in _ENDPOINT_SKIP_DIRS and d not in _TEST_DIRS)
+        files.extend(Path(dirpath) / n for n in sorted(filenames) if n.endswith(".py") and not _TEST_FILE.match(n))
+    return files
 
 
 def _ingest_document(
@@ -100,10 +121,8 @@ def main() -> None:
     cfg = load_ecosystem_config()
 
     # Config-first: ecosystem.yaml defines the isolated collection and URL.
-    # Env vars override if explicitly set.  MIMIRI_URL is the deprecated name.
-    url = os.getenv("RAG_INGEST_URL") or os.getenv("MIMIRI_URL") or cfg.rag_ingest_url
+    url, collection = _target(cfg)
     secret = os.getenv("INGEST_SHARED_SECRET", "")
-    collection = os.getenv("QDRANT_COLLECTION", cfg.rag_collection)
 
     print(f"Target: {url}  collection: {collection}")
 
@@ -136,9 +155,7 @@ def main() -> None:
         endpoints: list[str] = []
         scan_root = resolve_scan_root(repo)
         if scan_root.exists():
-            for py_file in scan_root.rglob("*.py"):
-                if any(p in py_file.parts for p in {".git", ".venv", "__pycache__"}):
-                    continue
+            for py_file in _endpoint_files(scan_root):
                 endpoints.extend(discover_api_endpoints(py_file))
 
         briefing = _with_endpoints(briefing, endpoints)
