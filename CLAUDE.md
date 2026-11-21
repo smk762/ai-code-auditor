@@ -24,6 +24,7 @@ here and in code. Don't add a rule to remember.
 | Revalidation demoting a pack, or touching one not resolved on a waiver or unverified | `test_evidence::test_revalidate_never_demotes`, `::test_revalidate_leaves_a_proven_resolution_alone`, `::test_revalidate_does_nothing_with_the_bar_off` |
 | Two agents holding the same pack, or a pack writer overwriting another's change | `test_pack_write_integrity::test_concurrent_claims_have_exactly_one_winner`, `::test_a_second_claim_gets_409_unless_forced`. Writers that load, check and write a pack hold `pack_lock` for the whole step |
 | Record a class guard by a sha prefix (a mistyped one waits as `pending` forever, like an unsynced mirror) | `test_class_packs::test_record_guard_validates` |
+| A class guard closing a child its rule never fired on, a noqa-waived hit counting as gone, or a silence-only closure counting toward `class_packs.lifecycle` | `test_class_packs::test_child_closes_only_when_its_rule_hit_is_gone`, `::test_a_waived_hit_is_not_a_closure`, `::test_rule_hits_ignores_noqa_and_never_reads_a_failure_as_clean`, `::test_lifecycle_gate_counts_rule_attributed_closures_only` |
 | Write a finding class onto a pack without all three models agreeing, or with an unmeasured prompt | `test_pack_classes::test_consensus_needs_every_model`, `::test_no_frozen_prompt_skips` |
 | A gate passing below its minimum sample | `test_trust_eval::test_failing_and_insufficient`, `::test_stale_or_missing_seeded_eval_is_insufficient` |
 | Overwrite `trust_history.jsonl`, `trust_eval_history.jsonl` or `pack_savings_history.jsonl` | `test_trust_metrics::test_refresh_writes_report_and_appends_history`, `test_trust_eval::test_evaluate_writes_report_and_history`, `test_pack_savings::test_refresh_writes_report_and_appends_history` |
@@ -110,8 +111,10 @@ at an empty dir. Only the blind-labelled `test` set counts toward the gates (pre
 2026-11-16 on that set: title rules 87.5% / 32%, the three models agreeing 95.3% / 86%. The council relabelling the gold
 set is made of the models being graded, so read scores as agreement, not ground truth. A class is written onto a pack
 only when all three models agree, the class has a guard, and the frozen prompt in `reports/_classes/` exists
-(`auditor/pack_classes.py`). One class-guard pack per guardable class closes its children once a guard is proven
-(`auditor/class_packs.py`).
+(`auditor/pack_classes.py`). One class-guard pack per guardable class closes a child only when its proven guard's
+own rule (`--guard --rule ruff:B905,…`) fired on the child's code just before the guard, by shared identifiers, never
+line numbers, and no longer fires on `dev`, noqa ignored. The scan's silence alone closes nothing. A guard with no
+static rule closes no children, and semantic fixes go through `validate_patch` (`auditor/class_packs.py`).
 
 **Suite rules** (#55, `auditor/suite_rules.py`). The lint catalogue lives in argus-ci (`suite-rules/`), not here. The
 scanner runs argus-ci's own `check.py` on the catalogue exported from the mirror's `origin/dev`, so its findings match
