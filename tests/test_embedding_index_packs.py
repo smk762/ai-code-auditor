@@ -115,7 +115,7 @@ def test_a_json_index_is_searchable_where_faiss_is_installed(tmp_path: Path, mon
 
 
 def test_json_vectors_left_in_the_index_path_by_an_older_build_still_search(tmp_path: Path, monkeypatch) -> None:
-    local = EmbedderProviderConfig(provider="local-hash", model="local-hash")
+    local = EmbedderProviderConfig(provider="local-hash", model="local-hash", dim=2)
     idx = EmbeddingIndex(path=str(tmp_path / "idx.faiss"), provider_config=local)
     idx.path.write_text("[[1.0, 0.0], [0.0, 1.0]]")
     idx.meta_path.write_text('[{"id": "u1"}, {"id": "u2"}]')
