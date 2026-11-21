@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,10 @@ logger = logging.getLogger(__name__)
 FIXTURES_NAME = "rules_fixtures.json"
 SECURITY_CLASSES = frozenset({"ssrf", "path_traversal", "secret_exposure", "injection", "info_leak", "fail_open"})
 _SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
+# An older catalogue is pruned only once nothing has used it for this long. Every use touches
+# it, and one check.py run is capped at 900s, so a concurrent run's catalogue is never pulled
+# out from under it.
+PRUNE_GRACE_S = 3600
 
 
 def catalogue_dir(mirrors_path: str | Path = "config/repo_mirrors.yaml", *,
@@ -66,6 +71,7 @@ def export_catalogue(mirror: Path, cache: Path) -> Path | None:
         return None
     dest = cache / tree[:16]
     if (dest / "suite-rules" / "check.py").is_file():
+        _touch(dest)
         return dest / "suite-rules"
     # Archive the tree object itself, not the symbolic ref: a fetch moving origin/dev between
     # the two calls would otherwise cache tree Y's files under tree X's name.
@@ -90,11 +96,32 @@ def export_catalogue(mirror: Path, cache: Path) -> Path | None:
         tmp.rename(dest)
     except OSError:  # another process exported the same tree first
         shutil.rmtree(tmp, ignore_errors=True)
-    for old in cache.iterdir():  # keep only the current catalogue
-        if old.name != dest.name and not old.name.startswith(".tmp-"):
-            shutil.rmtree(old, ignore_errors=True)
+    _touch(dest)
+    _prune(cache, keep=dest.name)
     d = dest / "suite-rules"
     return d if (d / "check.py").is_file() else None
+
+
+def _touch(d: Path) -> None:
+    """Mark *d* as in use now (its mtime is what pruning reads)."""
+    try:
+        os.utime(d)
+    except OSError:
+        pass
+
+
+def _prune(cache: Path, *, keep: str) -> None:
+    """Drop catalogues other than *keep* that nothing has used for ``PRUNE_GRACE_S``."""
+    cutoff = time.time() - PRUNE_GRACE_S
+    for old in cache.iterdir():
+        if old.name == keep or old.name.startswith(".tmp-"):
+            continue
+        try:
+            if old.stat().st_mtime > cutoff:
+                continue  # possibly another run's catalogue, still in use
+        except OSError:
+            continue
+        shutil.rmtree(old, ignore_errors=True)
 
 
 def _env() -> dict[str, str]:
@@ -136,7 +163,9 @@ def scan(repo_name: str, repo_root: str | Path, paths: list[str] | None = None, 
     hits = data.get("hits") if isinstance(data.get("hits"), list) else []
     out = []
     for h in hits:
-        if not isinstance(h, dict) or not h.get("rule") or not h.get("path"):
+        # Untrusted tool output: a list/dict rule is unhashable and an int path can't join a Path.
+        if not isinstance(h, dict) or not isinstance(h.get("rule"), str) or not h["rule"] \
+                or not isinstance(h.get("path"), str) or not h["path"]:
             continue
         m = meta.get(h.get("rule")) or {}
         if not isinstance(m, dict) or not m or m.get("kind", "guard") != "guard":
