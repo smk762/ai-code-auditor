@@ -168,7 +168,8 @@ def run_rest_session(
     handoff_dir = out / "conductor" / run_id
 
     def _cancel() -> bool:
-        return (not force) and should_freeze_launches(rest)
+        # Same bypass as the launch gate above: a forced run or a dry-run ignores the window.
+        return (not force) and (not dry_run) and should_freeze_launches(rest)
 
     # Conductor sits idle while workers run.
     results = run_workers_parallel(
@@ -210,8 +211,8 @@ def run_rest_session(
                 awareness=awareness,
             )
             if clash:
+                # Still confirmed (counted above), just no new PR: not also a dismissal.
                 logger.info("skip draft PR for %s: %s", task.repo, clash)
-                state.dismissed += 1
                 continue
             # Pack id is deterministic from finding fields; emit_packs later writes the file.
             pack_id = stable_pack_id(

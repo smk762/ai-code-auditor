@@ -74,27 +74,38 @@ def _rel(repo: str, path: str) -> str:
     return rel_path(repo, path)
 
 
+def _map(value: Any) -> dict[str, Any]:
+    """*value* if it is a mapping, else {}: a hand-edited or truncated pack may hold anything."""
+    return value if isinstance(value, dict) else {}
+
+
 def candidates(output_dir: str | Path, *, repo: str = "") -> list[Candidate]:
-    """Finding packs resolved on a waiver, or unverified."""
+    """Finding packs resolved on a waiver, or unverified. A pack that can't be read or isn't a
+    mapping (not UTF-8, bad YAML, a list or scalar at the top) is skipped, not fatal to the scan."""
     out = []
     for f in sorted(Path(output_dir, "agent_packs").glob("pack-*.yaml")):
         try:
-            d = yaml.safe_load(f.read_text()) or {}
-        except (OSError, yaml.YAMLError):
+            d = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            continue
+        if not isinstance(d, dict):
+            logger.warning("revalidate: skipping %s: not a mapping", f.name)
             continue
         if d.get("kind") in FINDING_KINDS_EXCLUDED:
             continue
-        name = str((d.get("repo") or {}).get("name") or "")
+        name = str(_map(d.get("repo")).get("name") or "")
         if repo and name != repo:
             continue
         status = str(d.get("status") or "")
-        kind = str(((d.get("verification") or {}).get("evidence") or {}).get("kind") or "")
+        kind = str(_map(_map(d.get("verification")).get("evidence")).get("kind") or "")
         if not ((status == "resolved" and kind == "waiver") or status == "unverified"):
             continue
-        path = str((d.get("location") or {}).get("file_path") or "")
+        path = str(_map(d.get("location")).get("file_path") or "")
         if not path:
             continue
-        hist = [str(h.get("at") or "") for h in d.get("status_history") or [] if h.get("at")]
+        history = d.get("status_history")
+        hist = [str(h.get("at") or "") for h in (history if isinstance(history, list) else [])
+                if isinstance(h, dict) and h.get("at")]
         out.append(Candidate(str(d.get("work_item_id")), name, _rel(name, path), status, kind, min(hist, default="")))
     return out
 
@@ -116,12 +127,31 @@ def prs_for(c: Candidate, named: dict[str, list[dict[str, Any]]], prs: list[dict
     any that don't change the pack's file."""
     out = [("named", pr) for pr in named.get(c.pack_id, [])]
     seen = {pr.get("url") for _, pr in out}
-    since = c.since.replace("+00:00", "Z")
+    since = _ts(c.since)
     for pr in sorted(prs, key=lambda p: p.get("merged_at") or ""):
-        if (pr.get("repo") == c.repo and pr.get("merge_sha") and pr.get("url") not in seen
-                and (not since or str(pr.get("merged_at") or "") >= since[:19])):
-            out.append(("file", pr))
+        if not (pr.get("repo") == c.repo and pr.get("merge_sha") and pr.get("url") not in seen):
+            continue
+        if since is not None:
+            merged = _ts(pr.get("merged_at"))
+            if merged is None or merged < since:
+                continue
+        out.append(("file", pr))
     return out
+
+
+def _ts(value: Any) -> datetime | None:
+    """An ISO timestamp as an aware datetime, offsets honoured; naive means UTC. None if unparsable."""
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 def _git(git_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -138,6 +168,35 @@ def _files(git_dir: Path, *args: str) -> list[str]:
     return [x for x in r.stdout.splitlines() if x] if r.returncode == 0 else []
 
 
+def _merge_base_of_pr(git_dir: Path, merge: str, pr: dict[str, Any]) -> tuple[str, list[str]]:
+    """``(base, rebased_shas)``: the commit *pr* merged onto, and for a rebase merge the commits it
+    landed as. ``("", [])`` when that can't be told from the cache.
+
+    A merge commit's first parent is the base; so is a squash commit's. GitHub's "rebase and merge"
+    instead replays the PR's N commits onto dev, and ``merge_sha`` is the last of them, so the base
+    is N first-parent steps back. A one-parent merge of a multi-commit PR is taken as a squash when
+    its subject ends with GitHub's ``(#<number>)``, else as a rebase merge.
+    """
+    line = _git(git_dir, "rev-list", "--parents", "-n", "1", merge).stdout.split()
+    parents = line[1:]
+    if not parents:
+        return "", []
+    n = len(pr.get("commit_shas") or [])
+    number = pr.get("number")
+    if len(parents) > 1 or n <= 1 or not number:
+        return parents[0], []
+    subject = _git(git_dir, "log", "-1", "--format=%s", merge).stdout.strip()
+    if subject.endswith(f"(#{number})"):
+        return parents[0], []
+    chain = [ln.split() for ln in
+             _git(git_dir, "rev-list", "--first-parent", "--parents", "-n", str(n), merge).stdout.splitlines()]
+    if any(len(c) > 2 for c in chain):
+        return parents[0], []  # a merge commit among them: not a rebase merge of these N commits
+    if len(chain) < n or len(chain[-1]) < 2:
+        return "", []  # the cache's history is too short to reach the PR's base
+    return chain[-1][1], [c[0] for c in chain]
+
+
 def fix_patch(git_dir: Path, pr: dict[str, Any], path: str) -> tuple[str, str, list[str]]:
     """``(base_sha, patch, files)`` for *pr*'s fix to *path*: the PR's change, from the commit it
     merged onto, to the files of every PR commit that touched *path* (else *path* and the PR's
@@ -145,14 +204,15 @@ def fix_patch(git_dir: Path, pr: dict[str, Any], path: str) -> tuple[str, str, l
     merge = str(pr.get("merge_sha") or "")
     if not merge or not _has(git_dir, merge):
         return "", "", []
-    base = _git(git_dir, "rev-parse", f"{merge}^1").stdout.strip()
+    base, rebased = _merge_base_of_pr(git_dir, merge, pr)
     if not base:
         return "", "", []
     changed = set(_files(git_dir, "diff", "--name-only", base, merge))
     if path not in changed:
-        return base, "", []
+        return "", "", []
     files: set[str] = set()
-    for sha in pr.get("commit_shas") or []:
+    # A rebase merge's original commits are rarely in the cache; the commits it landed as are.
+    for sha in rebased or pr.get("commit_shas") or []:
         if not _has(git_dir, sha):
             continue
         touched = _files(git_dir, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha)

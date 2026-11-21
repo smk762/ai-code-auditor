@@ -1,7 +1,8 @@
 """Eviction for validate_patch's cached test environments (Python venvs, npm node_modules).
 
 Each entry is ``<cache_dir>/<name>-<hash>/`` with a ``.ready`` marker once built, a lock file
-``<cache_dir>/.<entry>.lock`` held while it is built or used, and sometimes ``.<entry>.txt``.
+``<cache_dir>/.<entry>.lock`` held while it is built or used (never deleted, see :func:`_remove`),
+and sometimes ``.<entry>.txt``.
 ``.ready``'s mtime is the entry's last use (``touch`` on every reuse). After a build,
 ``evict`` removes entries unused for ``max_age_days``, then the least recently used until the
 cache is under ``max_bytes``. It never removes an entry used in the last hour or one whose lock
@@ -75,7 +76,9 @@ def _remove(cache_dir: Path, entry: Path) -> bool:
                 return False  # being built or used right now
             shutil.rmtree(entry, ignore_errors=True)
             (cache_dir / f".{entry.name}.txt").unlink(missing_ok=True)
-        lock_path.unlink(missing_ok=True)
+        # The lock file stays: another process may already have it open, waiting to lock it. Unlinked,
+        # its lock would sit on a nameless inode while the next opener creates a fresh one and locks
+        # that, so two processes would both hold "the" lock (a builder and an evictor, say).
     except OSError:
         return False
     return not entry.exists()

@@ -317,12 +317,13 @@ def pack_file_path(output_dir: str | Path, pack_id: str) -> Path:
     """File for ``pack_id``. Safe ids map to themselves, so existing pack files keep their names.
 
     An id that sanitizing would change (disallowed characters, edge dashes, over 120 chars, empty)
-    gets a hash of the original id appended, so two distinct ids can never share one file.
+    gets a hash of the original id appended after ``~``, so two distinct ids can never share one
+    file: ``~`` is never in a safe id, so a hashed name can't be spelled as a literal id.
     """
     safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", pack_id).strip("-")[:120]
     if safe != pack_id or not safe:
-        digest = hashlib.sha1(pack_id.encode("utf-8", "surrogatepass")).hexdigest()[:10]
-        safe = f"{safe[:109]}-{digest}" if safe else f"pack-{digest}"
+        digest = hashlib.sha1(pack_id.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+        safe = f"{safe[:103]}~{digest}" if safe else f"pack~{digest}"
     return packs_dir(output_dir) / f"{safe}.yaml"
 
 
@@ -352,9 +353,15 @@ def read_code_snippet(
 ) -> str:
     if not file_path:
         return ""
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = repo_path / file_path
+    # file_path comes from model output: only ever read inside the repo (no "..", no outside
+    # absolute path, no symlink out), or the pack could quote the auditor host's secrets.
+    try:
+        root = Path(repo_path).resolve()
+        path = (root / file_path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return ""
+    if not path.is_relative_to(root):
+        return ""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -563,6 +570,9 @@ def _carry_over_lifecycle(pack: AgentCodingPack, existing: dict[str, Any]) -> No
     for key in ("class_parent", "class_exception"):  # #54; the class step re-checks them nightly
         if prev.governance.get(key) and not pack.governance.get(key):
             pack.governance[key] = prev.governance[key]
+    # A draft PR outlives every status path, an explicit re-emit status included (#7fb8684665)
+    if not pack.repair.get("draft_pr_url") and prev.repair.get("draft_pr_url"):
+        pack.repair["draft_pr_url"] = prev.repair["draft_pr_url"]
     if prev.status == DEFAULT_PACK_STATUS and not prev.status_history:
         return
     if pack.status != DEFAULT_PACK_STATUS:
@@ -578,8 +588,6 @@ def _carry_over_lifecycle(pack: AgentCodingPack, existing: dict[str, Any]) -> No
     if pack.status == "obsolete":
         # GC closed it because no scan reported it; a scan just did, so it's open work again (#67)
         pack.apply_status("open", f"reported again after pack GC closed it ({prev.governance.get('gc', {}).get('rule', 'gc')})")
-    if not pack.repair.get("draft_pr_url") and prev.repair.get("draft_pr_url"):
-        pack.repair["draft_pr_url"] = prev.repair["draft_pr_url"]
 
 
 def write_pack(
@@ -695,12 +703,15 @@ def rebuild_index(output_dir: str | Path, *, public_base_url: str = "") -> dict[
         for yaml_path in sorted(root.glob("*.yaml")):
             try:
                 data = _load_yaml(yaml_path.read_text(encoding="utf-8")) or {}
-            except (OSError, yaml.YAMLError) as exc:
+            except (OSError, ValueError, yaml.YAMLError) as exc:  # ValueError: bad UTF-8
                 logger.warning("skip bad pack %s: %s", yaml_path, exc)
                 continue
             if not isinstance(data, dict) or not data.get("work_item_id"):
                 continue
-            entries.append(_index_entry(AgentCodingPack.from_dict(data), output_dir, yaml_path, public_base_url))
+            try:  # one malformed pack must not leave INDEX.json stale for every other pack
+                entries.append(_index_entry(AgentCodingPack.from_dict(data), output_dir, yaml_path, public_base_url))
+            except Exception as exc:  # noqa: BLE001 — skip the pack, keep the rebuild
+                logger.warning("skip malformed pack %s: %s", yaml_path, exc)
         return _write_index(output_dir, entries)
 
 
@@ -714,8 +725,12 @@ def upsert_index_entries(output_dir: str | Path, packs: list[AgentCodingPack], *
     if not packs:
         return
     try:
-        entries = list(json.loads(index_path(output_dir).read_text(encoding="utf-8")).get("packs") or [])
+        doc = json.loads(index_path(output_dir).read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        doc = None
+    entries = doc.get("packs") if isinstance(doc, dict) else None
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        # Valid JSON of the wrong shape is as unreadable as a torn write: rebuild it
         rebuild_index(output_dir, public_base_url=public_base_url)
         return
     fresh = {p.work_item_id: _index_entry(p, output_dir, pack_file_path(output_dir, p.work_item_id), public_base_url)
@@ -1342,15 +1357,16 @@ def emit_packs_from_findings(
             transitively_affected=transitively_affected,
             public_base_url=public_base_url,
         ))
-    merged = merge_into_existing(packs, output_dir)
-    if merged:
-        logger.info("%d of %d %s packs repeat an existing pack; reusing its id", len(merged), len(packs), kind)
-    recurred = link_recurrences([p for p in packs if p.work_item_id not in merged.values()], output_dir)
-    if recurred:
-        logger.info("%d %s packs repeat a resolved pack (recurrence_of)", len(recurred), kind)
-    # write_pack carries an existing pack's lifecycle over: read and write under the lock, or an
-    # agent's claim landing in between is overwritten. The index is patched, not rebuilt.
+    # Dedupe, recurrence and write_pack all read existing pack state: decide and write under one
+    # lock, or two emits both see "new" and write twin packs, or an agent's claim landing in
+    # between is overwritten. The index is patched, not rebuilt.
     with pack_lock(output_dir):
+        merged = merge_into_existing(packs, output_dir)
+        if merged:
+            logger.info("%d of %d %s packs repeat an existing pack; reusing its id", len(merged), len(packs), kind)
+        recurred = link_recurrences([p for p in packs if p.work_item_id not in merged.values()], output_dir)
+        if recurred:
+            logger.info("%d %s packs repeat a resolved pack (recurrence_of)", len(recurred), kind)
         for pack in packs:
             write_pack(pack, output_dir)
         upsert_index_entries(output_dir, packs, public_base_url=public_base_url)
@@ -1396,6 +1412,10 @@ def finding_from_violation(violation: RuleViolation) -> Finding:
             repo, file_path = parts[0], parts[1]
         else:
             repo = vp or "unknown"
+    if file_path and not line:  # "repo/path/file.py:123": the line is not part of the path
+        m_line = re.match(r"^(.*\.[A-Za-z0-9]+):(\d+)\s*$", file_path)
+        if m_line:
+            file_path, line = m_line.group(1), int(m_line.group(2))
 
     title = vp if len(vp) <= 120 else f"{violation.rule_name}: {vp[:100]}"
     return Finding(
@@ -1680,23 +1700,32 @@ def emit_packs_from_extraction_candidates(
 
     base = public_base_url.rstrip("/") if public_base_url else ""
     packs: list[AgentCodingPack] = []
-    for cand in items[: max(1, limit)]:
+    for cand in items[: max(0, limit)]:
         if not isinstance(cand, dict):
             continue
         cid = str(cand.get("id") or "")
         if not cid:
             continue
         pack_id = cid if cid.startswith("pack-") else f"pack-{cid}"
-        repos = list(cand.get("repos_involved") or [])
-        score = float(cand.get("extraction_score") or 0.0)
+        # The candidates file is hand-editable YAML: one oddly shaped field must not abort the
+        # run after earlier packs were written (they'd be missing from INDEX.json).
+        raw_repos = cand.get("repos_involved") or []
+        repos = [str(r) for r in (raw_repos if isinstance(raw_repos, list) else [raw_repos])]
+        try:
+            score = float(cand.get("extraction_score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
         title = str(cand.get("title") or f"Extraction {cid}")
         rationale = cand.get("rationale") or []
         if not isinstance(rationale, list):
             rationale = [rationale]
         plan = cand.get("migration_plan") or {}
         risks = cand.get("risks") or []
-        source_units = cand.get("source_units") or []
-        first = source_units[0] if source_units and isinstance(source_units[0], dict) else {}
+        raw_units = cand.get("source_units") or []
+        source_units = [u for u in raw_units if isinstance(u, dict)] if isinstance(raw_units, list) else []
+        first = source_units[0] if source_units else {}
+        lib = cand.get("proposed_library")
+        lib = lib if isinstance(lib, dict) else {}
         syms = first.get("symbols") or []
         symbols = [str(x) for x in (syms if isinstance(syms, list) else [syms])]
         desc_parts = [
@@ -1705,8 +1734,8 @@ def emit_packs_from_extraction_candidates(
             "Rationale:",
             *[f"- {r}" for r in rationale],
             "",
-            f"Proposed library: {(cand.get('proposed_library') or {}).get('name', '')}",
-            f"Public API: {(cand.get('proposed_library') or {}).get('public_api', [])}",
+            f"Proposed library: {lib.get('name', '')}",
+            f"Public API: {lib.get('public_api', [])}",
             "",
             "Migration plan:",
             yaml.safe_dump(plan, sort_keys=False)[:2000] if plan else "(none)",
@@ -1771,11 +1800,14 @@ def emit_packs_from_extraction_candidates(
                 "handoff_path": str(candidates_path or Path(output_dir) / "extraction_candidates.yaml"),
             },
         )
-        write_pack(pack, output_dir)
         packs.append(pack)
 
     if packs:
-        rebuild_index(output_dir, public_base_url=public_base_url)
+        # write_pack carries the existing lifecycle over: load and write under the claim lock
+        with pack_lock(output_dir):
+            for pack in packs:
+                write_pack(pack, output_dir)
+            rebuild_index(output_dir, public_base_url=public_base_url)
         if ingest_rag:
             ingest_packs_to_rag(packs, output_dir=output_dir)
     return packs

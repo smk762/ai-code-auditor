@@ -207,9 +207,11 @@ def test_reviews_under_the_old_key_are_reused_without_a_rescan(
     c.cache._conn.execute("UPDATE reviews SET created_at = ?", (written,))
     monkeypatch.setattr(c, "generate", lambda p: pytest.fail("should reuse the legacy review"))
     assert [f.title for f in c.analyze_code(u)] == ["old"]
-    # Copied under the new key with its original age, so it still expires on schedule.
+    # Copied under the new key so it still expires when the legacy entry would have (each
+    # key's TTL is jittered differently, so created_at is shifted by the difference).
     row = c.cache._conn.execute("SELECT created_at FROM reviews WHERE key = ?",
                                 (c.cache_key(u),)).fetchone()
-    assert row and row[0] == pytest.approx(written)
+    assert row and row[0] + c.cache.ttl_for(c.cache_key(u)) == pytest.approx(
+        written + c.cache.ttl_for(old))
     # The batch prefetch sees it as cached too.
     assert c.cache.has(c.cache_key(u), *c.legacy_cache_keys(u))

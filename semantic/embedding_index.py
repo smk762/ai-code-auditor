@@ -42,6 +42,10 @@ def _hash_embedding(text: str, dim: int = DIM) -> list[float]:
     return [v / norm for v in vec]
 
 
+class StaleIndexError(RuntimeError):
+    """The stored index can't answer this query as configured: rebuild it."""
+
+
 class EmbeddingIndex:
     def __init__(self, path: str = "index/code_embeddings.faiss", provider_config: EmbedderProviderConfig | None = None):
         self.path = Path(path)
@@ -50,6 +54,8 @@ class EmbeddingIndex:
         # Vectors stored without faiss go to their own file, so an index built where faiss is missing
         # is still readable where it is installed (and the other way round).
         self.vectors_path = self.path.with_suffix(".vectors.json")
+        # Which embedder wrote the vectors: a query embedded by another one is in a different space.
+        self.embedder_path = self.path.with_suffix(".embedder.json")
         self.records: list[dict] = []
         self._faiss_index = None
         self.provider_config = provider_config or load_embedder_provider_config()
@@ -83,6 +89,23 @@ class EmbeddingIndex:
             self.path.unlink(missing_ok=True)  # a stale faiss index would describe other records
 
         self.meta_path.write_text(json.dumps(self.records, indent=2), encoding="utf-8")
+        self.embedder_path.write_text(json.dumps(self._embedder_identity()), encoding="utf-8")
+
+    def _embedder_identity(self) -> dict:
+        cfg = self.provider_config
+        return {"provider": cfg.provider.lower(), "model": cfg.model, "dim": self.dim}
+
+    def _check_embedder(self) -> None:
+        """Refuse an index another embedder built (indexes from before this record are trusted)."""
+        if not self.embedder_path.exists():
+            return
+        try:
+            built = json.loads(self.embedder_path.read_text(encoding="utf-8"))
+        except ValueError:
+            built = None
+        if built != self._embedder_identity():
+            raise StaleIndexError(f"index {self.path} was built by embedder {built}, but "
+                                  f"{self._embedder_identity()} is configured: index stale, rebuild required")
 
     def search(self, query: str, top_k: int = 5) -> list[dict]:
         if not self.meta_path.exists():
@@ -91,6 +114,7 @@ class EmbeddingIndex:
         if not records:
             return []
 
+        self._check_embedder()
         q_vec = self._embed_text(query)
         if faiss is not None and np is not None and self.path.exists() and not self.vectors_path.exists():
             try:
@@ -98,11 +122,21 @@ class EmbeddingIndex:
             except Exception:  # noqa: BLE001 — e.g. JSON vectors written there by an older build
                 index = None
             if index is not None:
+                if index.d != len(q_vec):
+                    raise StaleIndexError(f"index {self.path} holds {index.d}-dim vectors, but queries are "
+                                          f"{len(q_vec)}-dim: index stale, rebuild required")
                 q_arr = np.array([q_vec], dtype="float32")
                 _, idxs = index.search(q_arr, min(top_k, len(records)))
                 return [records[i] for i in idxs[0] if 0 <= i < len(records)]
 
         vectors = self._json_vectors()
+        if not vectors:
+            # records but nothing readable, e.g. a faiss index where faiss isn't installed: not "no matches"
+            raise StaleIndexError(f"index {self.path} has {len(records)} records but no vectors this environment "
+                                  "can read (built with faiss?): install faiss or rebuild the index")
+        if any(len(vec) != len(q_vec) for vec in vectors):
+            raise StaleIndexError(f"index {self.path} holds vectors of another width than the {len(q_vec)}-dim "
+                                  "query: index stale, rebuild required")
         scored = []
         for i, vec in enumerate(vectors):
             score = sum(a * b for a, b in zip(q_vec, vec))

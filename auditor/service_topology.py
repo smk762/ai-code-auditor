@@ -112,6 +112,7 @@ def _write(
         observed_edges=observed_edges,
         node_names=node_names,
     )
+    nodes += _placeholder_nodes(edges, node_names)
 
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -240,11 +241,16 @@ def _build_edges(
                 }
             )
 
-    # Violations: observed but not allowed, and sender isn't a wildcard sender.
+    # Violations: observed but not allowed, and sender isn't a wildcard sender. Decided from the
+    # policy above too, so a pair is never drawn both allowed and as a violation.
     for edge in sorted(
         observed_edges, key=lambda e: (e.from_repo, e.to_service)
     ):
-        if edge.allowed:
+        if (
+            edge.allowed
+            or (edge.from_repo, edge.to_service) in explicit_allowed
+            or edge.from_repo in wildcard_senders
+        ):
             continue
         edges.append(
             {
@@ -277,6 +283,20 @@ def _build_edges(
         )
 
     return edges
+
+
+def _placeholder_nodes(edges: list[dict], node_names: set[str]) -> list[dict]:
+    """Nodes for edge endpoints outside ``service_roles`` (a policy entry or observed call to
+    an unlisted service), so no edge in the graph or the JSON points at a missing node."""
+    missing = sorted(
+        {name for e in edges for name in (e["from"], e["to"])}
+        - node_names
+        - {_WILDCARD_PHANTOM_ID}
+    )
+    return [
+        {"name": name, "role": "", "disabled": True, "violation_count": 0, "unlisted": True}
+        for name in missing
+    ]
 
 
 # ---------------------------------------------------------------------------

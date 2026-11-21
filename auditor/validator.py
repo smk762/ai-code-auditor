@@ -313,21 +313,12 @@ def extract_failure_summary(raw_output: str, tool: str) -> list[str]:
 
     lines = raw_output.splitlines()
 
-    if "+" in tool or tool in ("npm_checks", "node_check"):
-        result = []
-        for part in tool.split("+"):
-            result += _pytest_summary(lines) if part in ("pytest", "lint_only") else _node_checks_summary(lines)
-        result = list(dict.fromkeys(result))
-    elif tool in ("pytest", "lint_only"):
-        result = _pytest_summary(lines)
-    elif tool == "go_test":
-        result = _go_summary(lines)
-    elif tool == "cargo_test":
-        result = _cargo_summary(lines)
-    elif tool == "npm_test":
-        result = _npm_summary(lines)
-    else:
-        result = []
+    result: list[str] = []
+    for part in tool.split("+"):  # a composite tool ("pytest+npm_checks") reads each part's own way
+        summarize = _SUMMARIZERS.get(part)
+        if summarize is not None:
+            result += summarize(lines)
+    result = list(dict.fromkeys(result))
 
     # Universal fallback: last N non-empty, non-boilerplate lines
     if not result:
@@ -344,9 +335,12 @@ def _is_boilerplate(line: str) -> bool:
     # pytest progress dots / timing / separator lines
     if re.match(r"^[.FEs ]+\s*\[?\s*\d+%\]?", stripped):
         return True
-    if re.match(r"^={5,}|^-{5,}", stripped):
+    # only a bare rule: "==== FAILURES ====" or "==== 2 failed, 3 passed in 1s ====" carry the verdict
+    if re.fullmatch(r"[=\-]{5,}", stripped):
         return True
-    if re.match(r"^\d+ passed", stripped):
+    # a fully clean count line; one that also reports errors, warnings or xpasses is kept
+    if re.fullmatch(r"=*\s*\d+ passed(?:, \d+ (?:skipped|deselected|xfailed))*(?: in [\d.]+s(?: \([^)]*\))?)?\s*=*",
+                    stripped):
         return True
     return False
 
@@ -407,6 +401,13 @@ def _npm_summary(lines: list[str]) -> list[str]:
         if re.search(r"(✕|●\s+\S|FAIL\s|\bExpected:|\bReceived:|Error:)", l):
             out.append(l)
     return out
+
+
+_SUMMARIZERS: dict[str, Callable[[list[str]], list[str]]] = {
+    "pytest": _pytest_summary, "lint_only": _pytest_summary, "go_test": _go_summary,
+    "cargo_test": _cargo_summary, "npm_test": _npm_summary,
+    "npm_checks": _node_checks_summary, "node_check": _node_checks_summary,
+}
 
 
 # ── Patch validation (per project, clean tree) ───────────────────────────────
@@ -472,6 +473,15 @@ def ci_test_extras(root: Path) -> list[str]:
 _LOOSE_TEST_RE = re.compile(r"^(test_[^/]*|[^/]*_test)\.py$")
 _CI_WITH_RE = re.compile(r"--with[ =]([^\s'\"]+)")
 _CI_PIP_INSTALL_RE = re.compile(r"\bpip3? install\b([^\n#;&|]*)")  # one command: stop at ; && ||
+# pip install options whose value is a separate token (`--target vendor`): the value isn't a package
+_PIP_VALUE_OPTS = frozenset({
+    "-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-i", "--index-url", "--extra-index-url",
+    "-f", "--find-links", "-t", "--target", "--prefix", "--root", "--platform", "--python-version",
+    "--implementation", "--abi", "--only-binary", "--no-binary", "--src", "--upgrade-strategy", "--progress-bar",
+    "--trusted-host", "--proxy", "--cert", "--client-cert", "--cache-dir", "--log", "--timeout", "--retries",
+    "--exists-action", "--report", "--python", "-C", "--config-settings", "--global-option", "--build-option",
+    "--keyring-provider", "--root-user-action", "--use-feature", "--use-deprecated", "--group",
+})
 _PLAIN_REQ_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,-]+\])?(?:[<>=!~]=?[A-Za-z0-9.*+!-]+)?$")
 # Third-party modules loose tests commonly import whose distribution name differs or is obvious.
 # A fixed list, never the import name itself: a patch's imports must not pick what pip installs.
@@ -488,7 +498,7 @@ def _workflow_texts(root: Path) -> list[str]:
             out = []
             for f in sorted([*wf.glob("*.yml"), *wf.glob("*.yaml")]):
                 try:
-                    out.append(f.read_text(encoding="utf-8"))
+                    out.append(f.read_text(encoding="utf-8", errors="replace"))  # a stray non-UTF-8 byte
                 except OSError:
                     continue
             return out
@@ -513,7 +523,7 @@ def ci_tool_deps(root: Path) -> list[str]:
                 if skip:
                     skip = False
                     continue
-                if t in ("-r", "--requirement", "-c", "--constraint", "-e", "--editable"):
+                if t in _PIP_VALUE_OPTS:  # its value is the next token, never a package
                     skip = True
                     continue
                 found.append(t)
@@ -614,13 +624,17 @@ def _repo_boundary(path: Path) -> Path:
     return start
 
 
-def _requirement_lines(path: Path, depth: int = 0, root: Path | None = None) -> list[str]:
+def _requirement_lines(path: Path, depth: int = 0, root: Path | None = None,
+                       _seen: set[Path] | None = None) -> list[str]:
     """Lines of a requirements file with ``-r`` includes inlined (relative to the file).
 
     Lines that install the project itself (``.``, ``-e .``) and constraint files are dropped.
     An include that is absolute or resolves outside the repository (*root*, by default the
-    repo holding *path*) is skipped: the audited repo must not make us read host files."""
+    repo holding *path*) is skipped: the audited repo must not make us read host files.
+    Each file is read once: a self-include or a cycle would otherwise cost N^depth reads."""
     root = (root or _repo_boundary(path)).resolve()
+    seen = set() if _seen is None else _seen
+    seen.add(path.resolve())
     out: list[str] = []
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -637,8 +651,8 @@ def _requirement_lines(path: Path, depth: int = 0, root: Path | None = None) -> 
             if Path(inc).is_absolute() or not target.is_relative_to(root):
                 logger.warning("skipping requirements include outside the repo: %s (in %s)", inc, path.name)
                 continue
-            if depth < 5:
-                out += _requirement_lines(target, depth + 1, root)
+            if depth < 5 and target not in seen:
+                out += _requirement_lines(target, depth + 1, root, seen)
             continue
         out.append(s)
     return out
@@ -852,7 +866,7 @@ def validate_patch_tree(
     # module breaks whatever imports it. Only files that exist are linted.
     py_projects = sorted({f for f in changed if f.endswith(".py")})
     js = validate_node.node_files(tree, changed)
-    if not py and not js:
+    if not py_projects and not js:  # a patch that only deletes .py files still tests their projects
         return validate_repo(repo, path_override=tree, timeout_s=timeout_s)
     cache = cache_dir or Path(".validate_venvs")
     notes: list[str] = []

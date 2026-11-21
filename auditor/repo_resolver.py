@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -155,9 +156,11 @@ def _run_git(args: list[str], git_env: dict[str, str], repo_name: str, token: st
     try:
         result = subprocess.run(args, capture_output=True, text=True, env=git_env,
                                 timeout=GIT_NETWORK_TIMEOUT_S, check=False)
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
+        # "from None": the TimeoutExpired carries the full command and partial output, unredacted,
+        # and a chained cause would print them wherever the traceback is logged.
         msg = f"git operation timed out for repo '{repo_name}' after {GIT_NETWORK_TIMEOUT_S}s"
-        raise RuntimeError(msg) from exc
+        raise RuntimeError(msg) from None
     _ensure_git_ok(result, repo_name, token)
 
 
@@ -230,25 +233,58 @@ def _clone_with_branch_fallback(repo: RepoConfig, git_env: dict[str, str] | None
 
 _ASKPASS_LOCK = threading.Lock()
 _ASKPASS_PATH: str | None = None
+_ASKPASS_BODY = (
+    "#!/usr/bin/env sh\n"
+    "case \"$1\" in\n"
+    "*Username*) echo \"oauth2\" ;;\n"
+    "*Password*) echo \"$GIT_TOKEN\" ;;\n"
+    "*) echo \"\" ;;\n"
+    "esac\n"
+)
+
+
+def _owned_private(path: Path, *, is_dir: bool) -> bool:
+    """*path* is ours alone: not a link, the expected type, owned by this user, and writable by
+    no one else (a private dir is also unreadable to others)."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    kind_ok = stat.S_ISDIR(st.st_mode) if is_dir else stat.S_ISREG(st.st_mode)
+    others = 0o077 if is_dir else 0o022
+    return kind_ok and st.st_uid == os.geteuid() and not (st.st_mode & others)
+
+
+def _askpass_is_ours(path: str) -> bool:
+    script = Path(path)
+    if not (_owned_private(script.parent, is_dir=True) and _owned_private(script, is_dir=False)):
+        return False
+    try:
+        return script.read_text(encoding="utf-8") == _ASKPASS_BODY
+    except OSError:
+        return False
 
 
 def _askpass_script() -> str:
-    """One askpass script per process, reused. It holds no secret: it echoes ``$GIT_TOKEN``."""
+    """One askpass script per process, reused. It holds no secret: it echoes ``$GIT_TOKEN``.
+
+    git runs it with the token in its environment, so it lives in a private ``mkdtemp`` dir, and
+    the cached path is reused only while it is still the file we wrote: a temp cleaner may delete
+    it, and another local user could then put their own file at that known path.
+    """
     global _ASKPASS_PATH
     with _ASKPASS_LOCK:
-        if _ASKPASS_PATH and Path(_ASKPASS_PATH).is_file():
+        if _ASKPASS_PATH and _askpass_is_ours(_ASKPASS_PATH):
             return _ASKPASS_PATH
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, encoding="utf-8",
-                                         prefix="ai-audit-askpass-", suffix=".sh") as tmp:
-            tmp.write("#!/usr/bin/env sh\n")
-            tmp.write("case \"$1\" in\n")
-            tmp.write("*Username*) echo \"oauth2\" ;;\n")
-            tmp.write("*Password*) echo \"$GIT_TOKEN\" ;;\n")
-            tmp.write("*) echo \"\" ;;\n")
-            tmp.write("esac\n")
-        Path(tmp.name).chmod(0o700)
-        _ASKPASS_PATH = tmp.name
-        return tmp.name
+        if _ASKPASS_PATH:
+            logger.warning("askpass script %s is gone or not ours; writing a new one", _ASKPASS_PATH)
+        private_dir = Path(tempfile.mkdtemp(prefix="ai-audit-askpass-"))
+        script = private_dir / "askpass.sh"
+        fd = os.open(script, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(_ASKPASS_BODY)
+        _ASKPASS_PATH = str(script)
+        return _ASKPASS_PATH
 
 
 def _git_env(token: str, cache_root: Path) -> dict[str, str]:

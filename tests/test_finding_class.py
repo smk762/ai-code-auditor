@@ -17,7 +17,9 @@ def test_taxonomy_loads_and_every_class_has_a_guard() -> None:
     tax = fc.load_taxonomy()
     assert len(tax.ids) == len(set(tax.ids)) >= 15
     assert all(c.guard in {"ruff", "semgrep", "helper", "import_contract", "none"} for c in tax.classes)
-    assert all(c.title for c in tax.classes), "every class needs at least one pattern"
+    # FindingClass.title is the class's list of compiled title patterns (not a display name).
+    assert all(c.title and all(p.pattern for p in c.title) for c in tax.classes), \
+        "every class needs at least one non-empty title pattern"
     assert set(tax.static_rules["bandit"].values()) <= set(tax.ids)
 
 

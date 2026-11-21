@@ -238,6 +238,9 @@ def record_guard(output_dir: str | Path, pack_id: str, *, repo: str, commit: str
     for name, v in (("repo", repo), ("commit", commit), ("proof_test", proof_test)):
         if not v or not str(v).strip():
             raise ValueError(f"{name} is required")
+    # Store what was validated: a padded repo would key a guard no mirror lookup ever finds
+    repo, commit, proof_test = str(repo).strip(), str(commit).strip().lower(), str(proof_test).strip()
+    fixtures = [str(f).strip() for f in fixtures]
     paths = [proof_test, *fixtures]
     if any(p.startswith("/") or ".." in Path(p).parts for p in paths):
         raise ValueError("proof_test and fixtures must be paths inside the repo")

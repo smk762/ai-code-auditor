@@ -21,7 +21,7 @@ import logging
 import os
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -176,15 +176,25 @@ def weekly_last(rows: list[dict[str, Any]], key: str = "at") -> list[dict[str, A
     return [by[w] for w in sorted(by)]
 
 
-def gates_exit(history: list[dict[str, Any]]) -> dict[str, Any]:
-    """Every non-pending gate passed (none insufficient) in each of the last two ISO weeks."""
+def _monday(at: Any) -> date:
+    d = at if isinstance(at, datetime) else datetime.fromisoformat(str(at))
+    return d.date() - timedelta(days=d.isocalendar()[2] - 1)
+
+
+def gates_exit(history: list[dict[str, Any]], *, now: datetime | None = None) -> dict[str, Any]:
+    """Every non-pending gate passed (none insufficient) in each of the last two ISO weeks.
+
+    The two weeks must be consecutive and the newer one the current or previous ISO week: a week
+    with no evaluation is not green, so a gap in the history breaks the run."""
     weeks = weekly_last(history)
     def green(row: dict[str, Any]) -> bool:
         st = row.get("statuses") or {}
         live = [v for v in st.values() if v != "pending"]
         return bool(live) and all(v == "pass" for v in live)
     last2 = weeks[-2:]
-    return {"met": len(last2) == 2 and all(green(r) for r in last2),
+    adjacent = (len(last2) == 2 and _monday(last2[1]["at"]) - _monday(last2[0]["at"]) == timedelta(weeks=1)
+                and _monday(last2[1]["at"]) >= _monday(now or datetime.now(UTC)) - timedelta(weeks=1))
+    return {"met": adjacent and all(green(r) for r in last2),
             "weeks": [{"week": _week(r["at"]), "green": green(r)} for r in weeks[-6:]]}
 
 
@@ -285,7 +295,7 @@ def evaluate(output_dir: str | Path | None = None, *, record: bool = True,
         "gates": [asdict(g) for g in gates],
         "summary": {s: sum(1 for g in gates if g.status == s) for s in ("pass", "fail", "insufficient", "pending")},
         "exit": {
-            "gates_two_weeks": gates_exit(history),
+            "gates_two_weeks": gates_exit(history, now=datetime.fromisoformat(at)),
             "metrics_four_weeks": metrics_exit(_read_jsonl(out / TRUST_HISTORY)),
         },
     }

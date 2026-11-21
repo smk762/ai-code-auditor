@@ -59,8 +59,9 @@ def _behind(repo_cfg: Any, built_sha: str | None, tip_sha: str | None) -> dict[s
     if built_sha == tip_sha:
         return {"behind": False, "commits": 0, "tip_sha": tip_sha}
     commits = None
-    path = Path(getattr(repo_cfg, "path", "") or "")
-    if path.is_dir():
+    raw = getattr(repo_cfg, "path", None)
+    path = Path(raw) if raw else None  # Path("") is the cwd, which would count the wrong repo
+    if path is not None and path.is_dir():
         try:
             r = subprocess.run(["git", "-C", str(path), "rev-list", "--count", f"{built_sha}..{tip_sha}"],
                                capture_output=True, text=True, timeout=5)

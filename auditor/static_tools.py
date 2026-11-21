@@ -82,12 +82,25 @@ def _run_semgrep(repo_name: str, target_args: list[str]) -> list[Finding]:
         return []
     cmd = ["semgrep", "--config=auto", "--json", *target_args]
     result = _run_tool(cmd)
-    if result is None or result.returncode not in (0, 1):
+    if result is None:
+        return []
+    # 0 clean, 1 findings; anything else (registry unreachable, rate-limited, a config or parse
+    # error) is a failed run, not a clean one, so it is never passed off silently as "nothing".
+    if result.returncode not in (0, 1):
+        logger.warning("semgrep failed (exit %d) for %s; its findings are missing from this scan: %s",
+                       result.returncode, repo_name, (result.stderr or "").strip()[-500:])
         return []
     try:
         payload = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        logger.warning("semgrep output for %s is not JSON (%s); its findings are missing from this scan",
+                       repo_name, exc)
         return []
+    errors = payload.get("errors") or []
+    if errors:
+        first = errors[0] if isinstance(errors[0], dict) else {"message": str(errors[0])}
+        logger.warning("semgrep reported %d error(s) for %s, so its findings may be incomplete; first: %s",
+                       len(errors), repo_name, str(first.get("message") or first.get("type") or first)[:300])
     return _unique_ids([
         Finding(
             id=f"semgrep:{issue.get('check_id') or 'unknown'}:{issue.get('path')}:{issue.get('start', {}).get('line')}",

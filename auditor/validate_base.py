@@ -156,7 +156,11 @@ def resolve_base(repo_path: Path, *, branch: str = "dev", output_dir: str | Path
     timeout = _float_env("AI_AUDIT_VALIDATE_FETCH_TIMEOUT_S", 20) or 20  # 0 would mean no bound
     remote_ref = f"refs/remotes/origin/{branch}"
 
-    with open(root / f".{key}.lock", "w") as lock:
+    try:
+        lock = open(root / f".{key}.lock", "w")  # noqa: SIM115 — closed by the with below
+    except OSError as exc:  # an existing but unwritable cache dir (read-only, wrong owner, full)
+        return _mirror_base(top, prefix, branch, f"cache dir {root} unusable: {exc}")
+    with lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # one fetch per repo; concurrent validations wait and reuse it
         try:
             if not (cache / "HEAD").exists():
@@ -253,19 +257,50 @@ def export_tree(base: BaseRef, repo_path: Path, dest: Path) -> None:
     import tarfile
 
     if base.git_dir is None:
-        # Do not preserve symlinks: a crafted patch must not write through a
-        # repo symlink into the host filesystem outside this temp tree.
-        shutil.copytree(str(repo_path), str(dest), symlinks=False)
+        # Links are copied as links, never followed (a link to ~/.ssh or / would copy host files into
+        # the tree, or recurse forever), then every link that leads out of the tree is removed, so a
+        # crafted patch can't write through one into the host filesystem either.
+        shutil.copytree(str(repo_path), str(dest), symlinks=True)
+        _drop_escaping_links(dest)
         return
     dest.mkdir(parents=True)
-    proc = subprocess.Popen(["git", "--git-dir", str(base.git_dir), "archive", "--format=tar", base.treeish],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, **_GIT_ENV})
-    assert proc.stdout is not None and proc.stderr is not None
-    with tarfile.open(fileobj=proc.stdout, mode="r|") as tar:
-        tar.extractall(dest, filter="data")  # "data" refuses absolute paths, .. and links out of dest
-    if proc.wait() != 0:
-        raise RuntimeError(f"git archive {base.ref} failed: {proc.stderr.read().decode(errors='replace')[:300]}")
+    import tempfile
+
+    # stderr to a file: a pipe read only after stdout's EOF could fill and block git
+    with tempfile.TemporaryFile() as err, subprocess.Popen(
+            ["git", "--git-dir", str(base.git_dir), "archive", "--format=tar", base.treeish],
+            stdout=subprocess.PIPE, stderr=err, env={**os.environ, **_GIT_ENV}) as proc:
+        assert proc.stdout is not None
+        try:
+            with tarfile.open(fileobj=proc.stdout, mode="r|") as tar:
+                tar.extractall(dest, filter="data")  # "data" refuses absolute paths, .. and links out of dest
+        except (tarfile.TarError, OSError):
+            proc.kill()
+            if proc.wait() != 0:  # git's own error explains an empty or cut-off stream
+                err.seek(0)
+                raise RuntimeError(f"git archive {base.ref} failed: "
+                                   f"{err.read().decode(errors='replace').strip()[:300]}") from None
+            raise
+        if proc.wait() != 0:
+            err.seek(0)
+            raise RuntimeError(f"git archive {base.ref} failed: {err.read().decode(errors='replace').strip()[:300]}")
     attach_head(base, dest)
+
+
+def _drop_escaping_links(dest: Path) -> None:
+    """Remove every symlink under *dest* whose target resolves outside it (or can't be resolved)."""
+    root = dest.resolve()
+    for dirpath, dirnames, filenames in os.walk(dest):  # doesn't descend into linked dirs
+        for name in [*dirnames, *filenames]:
+            p = Path(dirpath) / name
+            if not p.is_symlink():
+                continue
+            try:
+                inside = p.resolve().is_relative_to(root)
+            except (OSError, RuntimeError):  # a link loop
+                inside = False
+            if not inside:
+                p.unlink()
 
 
 _HEAD_COMMIT_ENV = {"GIT_AUTHOR_NAME": "validate_patch", "GIT_AUTHOR_EMAIL": "validate_patch@invalid",
@@ -277,14 +312,22 @@ def _copy_tags(base: BaseRef, dest: Path) -> None:
     """Give *dest* the tags of *base*'s repository that point into ``base.sha``'s history, so
     ``git describe`` there sees what a CI checkout would. Best effort: a tree without tags is
     still a usable tree."""
-    r = _git("for-each-ref", "--merged", base.sha, "--format=%(objectname) %(refname)", "refs/tags",
-             git_dir=base.git_dir)
+    try:
+        r = _git("for-each-ref", "--merged", base.sha, "--format=%(objectname) %(refname)", "refs/tags",
+                 git_dir=base.git_dir)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("validate_patch: tags not listed for %s: %s", dest, exc)
+        return
     lines = [ln for ln in r.stdout.splitlines() if ln.count(" ") == 1] if r.returncode == 0 else []
     if not lines:
         return
     stdin = "".join(f"create {ref} {sha}\n" for sha, ref in (ln.split(" ") for ln in lines))
-    w = subprocess.run(["git", "-C", str(dest), "update-ref", "--stdin"], input=stdin, capture_output=True,
-                       text=True, timeout=30, env={**os.environ, **_GIT_ENV}, check=False)
+    try:
+        w = subprocess.run(["git", "-C", str(dest), "update-ref", "--stdin"], input=stdin, capture_output=True,
+                           text=True, timeout=30, env={**os.environ, **_GIT_ENV}, check=False)
+    except (subprocess.TimeoutExpired, OSError) as exc:  # best effort: the tree keeps its HEAD
+        logger.warning("validate_patch: tags not copied into %s: %s", dest, exc)
+        return
     if w.returncode != 0:
         logger.warning("validate_patch: tags not copied into %s: %s", dest, w.stderr.strip()[:200])
 

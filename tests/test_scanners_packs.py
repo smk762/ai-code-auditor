@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -30,8 +29,7 @@ def test_stale_tool_versions_from_an_earlier_run_are_not_read(tmp_path: Path, mo
     out = tmp_path / "out"
     out.mkdir()
     (out / "tool-versions.txt").write_text("semgrep 0.0.1 (from another repo's run)\n", encoding="utf-8")
-    monkeypatch.setattr(sc.subprocess, "run",
-                        lambda *a, **kw: subprocess.CompletedProcess(a[0], 2, "", "crash"))
+    monkeypatch.setattr(sc, "_run_in_group", lambda *a, **kw: 2)
     res = sc.run_scanners(tmp_path, out)
     assert res.tool_versions == ""
     assert not (out / "tool-versions.txt").exists()

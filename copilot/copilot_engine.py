@@ -146,7 +146,7 @@ class CopilotEngine:
                 supporting_entities=[],
                 impacted_repos=[],
                 confidence=0.3,
-                citations=["reports/extraction_candidates.yaml"],
+                citations=[str(path)],
             )
         try:
             raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -161,7 +161,7 @@ class CopilotEngine:
                 supporting_entities=[],
                 impacted_repos=[],
                 confidence=0.5,
-                citations=["reports/extraction_candidates.yaml"],
+                citations=[str(path)],
             )
         involved = top.get("repos_involved")
         repos = [str(r) for r in involved if r is not None] if isinstance(involved, list) else []
@@ -172,5 +172,5 @@ class CopilotEngine:
             supporting_entities=[title],
             impacted_repos=repos,
             confidence=0.8,
-            citations=["reports/extraction_candidates.yaml", "reports/extraction_candidates.md"],
+            citations=[str(path), str(path.with_suffix(".md"))],
         )

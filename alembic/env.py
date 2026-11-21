@@ -17,7 +17,8 @@ target_metadata = Base.metadata
 
 db_url = os.getenv("DATABASE_URL")
 if db_url:
-    config.set_main_option("sqlalchemy.url", normalize_database_url(db_url))
+    # The ini config interpolates '%', so a percent-encoded password (p%40ss) must be escaped.
+    config.set_main_option("sqlalchemy.url", normalize_database_url(db_url).replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

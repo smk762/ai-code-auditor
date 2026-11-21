@@ -7,10 +7,37 @@ from pathlib import Path
 
 
 def atomic_write_text(path: str | Path, text: str, encoding: str = "utf-8") -> None:
+    """Replace *path* with *text*, durably: the data is fsynced before the rename and the
+    directory after it, so a crash leaves the old content or the new, never an empty file."""
     path = Path(path)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         tmp.write_text(text, encoding=encoding)
+        _fsync_path(tmp)
         os.replace(tmp, path)
+        _fsync_dir(path.parent)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _fsync_path(path: Path) -> None:
+    """Flush *path*'s data to disk (fsync works on a read-only descriptor)."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Flush the rename's directory entry; best-effort where directories can't be opened."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)

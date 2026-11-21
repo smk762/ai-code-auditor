@@ -119,6 +119,11 @@ class ReviewCache:
                 created_at REAL NOT NULL,
                 harvested INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS batch_results (
+                batch_id TEXT NOT NULL,
+                custom_id TEXT NOT NULL,
+                PRIMARY KEY (batch_id, custom_id)
+            );
             """
         )
         self._conn.commit()
@@ -161,10 +166,16 @@ class ReviewCache:
         for old in legacy:
             hit = self._fresh(old)
             if hit is not None:
+                # Each key has its own jittered TTL, so shift created_at by the difference:
+                # the copy then expires exactly when the legacy entry would have.
+                created = hit[2]
+                new_ttl, old_ttl = self.ttl_for(key), self.ttl_for(old)
+                if new_ttl is not None and old_ttl is not None:
+                    created += old_ttl - new_ttl
                 with self._lock:
                     self._conn.execute(
                         "INSERT OR IGNORE INTO reviews (key, model, response, created_at) "
-                        "VALUES (?, ?, ?, ?)", (key, hit[1], hit[0], hit[2]),
+                        "VALUES (?, ?, ?, ?)", (key, hit[1], hit[0], created),
                     )
                     self._conn.commit()
                 return hit[0]
@@ -196,6 +207,23 @@ class ReviewCache:
                 "SELECT batch_id FROM batches WHERE harvested = 0 ORDER BY created_at"
             ).fetchall()
         return [r[0] for r in rows]
+
+    def harvested_results(self, batch_id: str) -> set[str]:
+        """custom_ids of this batch whose result was already processed (usage recorded), so a
+        harvest that died partway through doesn't bill them twice when it is retried."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT custom_id FROM batch_results WHERE batch_id = ?", (batch_id,)
+            ).fetchall()
+        return {r[0] for r in rows}
+
+    def mark_result_harvested(self, batch_id: str, custom_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO batch_results (batch_id, custom_id) VALUES (?, ?)",
+                (batch_id, custom_id),
+            )
+            self._conn.commit()
 
     def mark_harvested(self, batch_id: str) -> None:
         with self._lock:

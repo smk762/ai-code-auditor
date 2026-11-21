@@ -125,6 +125,81 @@ def _env(npm_cache: Path | None = None) -> dict[str, str]:
     return env
 
 
+_DEFAULT_REGISTRY = "https://registry.npmjs.org"
+_DEP_FIELDS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+
+
+def _origin(url: str) -> str:
+    from urllib.parse import urlsplit
+
+    try:
+        u = urlsplit(url.strip())
+        return f"{u.scheme.lower()}://{u.netloc.lower()}" if u.scheme in ("http", "https") and u.netloc else ""
+    except ValueError:
+        return ""
+
+
+def allowed_registries() -> set[str]:
+    """Origins ``npm ci`` may download from: npmjs, the configured ``npm_config_registry``, and any
+    in ``AI_AUDIT_NPM_REGISTRIES`` (comma-separated)."""
+    urls = [_DEFAULT_REGISTRY, os.getenv("npm_config_registry") or "",
+            *(os.getenv("AI_AUDIT_NPM_REGISTRIES") or "").split(",")]
+    return {o for o in map(_origin, urls) if o}
+
+
+def _lock_entries(lock: dict) -> list[tuple[str, dict]]:
+    """``(name, entry)`` for every package a lockfile names: v2/v3 ``packages``, v1 nested ``dependencies``."""
+    out = [(k, v) for k, v in (lock.get("packages") or {}).items() if isinstance(v, dict)] \
+        if isinstance(lock.get("packages"), dict) else []
+    stack = [lock.get("dependencies")]
+    while stack:
+        deps = stack.pop()
+        if not isinstance(deps, dict):
+            continue
+        for k, v in deps.items():
+            if isinstance(v, dict):
+                out.append((k, v))
+                stack.append(v.get("dependencies"))
+    return out
+
+
+def install_refusal(pkg_bytes: bytes, lock_bytes: bytes) -> str:
+    """Why the audited repo's manifests must not reach ``npm ci``, or "" when they may.
+
+    ``--ignore-scripts`` stops lifecycle scripts, not what npm fetches: an untrusted lockfile could
+    send it to any host (``resolved`` URLs, git remotes) or link host paths into node_modules
+    (``file:``/``link:`` specs, workspaces). Only registry tarballs from :func:`allowed_registries` pass."""
+    try:
+        pkg, lock = json.loads(pkg_bytes or b"{}"), json.loads(lock_bytes or b"{}")
+    except ValueError:
+        return "package.json or the lockfile isn't valid JSON"
+    if not isinstance(pkg, dict) or not isinstance(lock, dict):
+        return "package.json or the lockfile isn't a JSON object"
+    if pkg.get("workspaces"):
+        return "npm workspaces aren't supported (they link local paths)"
+    for field_ in _DEP_FIELDS:
+        deps = pkg.get(field_)
+        for name, spec in (deps.items() if isinstance(deps, dict) else []):
+            spec = str(spec).strip()
+            if not spec.startswith("npm:") and (":" in spec or "/" in spec):  # url, path, git, user/repo
+                return f"{field_} {name!r} is not a registry version ({spec[:80]!r})"
+    packages = lock.get("packages") if isinstance(lock.get("packages"), dict) else {}
+    for name in packages:  # "" is the project; anything else outside node_modules is a local dir
+        if name and not (str(name).startswith("node_modules/") or "/node_modules/" in str(name)):
+            return f"lockfile package {str(name)[:80]!r} is a local path"
+    allowed = allowed_registries()
+    for name, meta in _lock_entries(lock):
+        if meta.get("link"):
+            return f"lockfile package {name[:80]!r} is a local link"
+        resolved = meta.get("resolved")
+        if resolved is not None and _origin(str(resolved)) not in allowed:
+            return f"lockfile package {name[:80]!r} resolves outside the allowed registries ({str(resolved)[:80]!r})"
+        version = str(meta.get("version") or "")
+        if ":" in version and not version.startswith("npm:"):
+            return f"lockfile package {name[:80]!r} is not a registry version ({version[:80]!r})"
+    return ""
+
+
 def ensure_node_modules(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
     """``node_modules`` holding *root*'s locked deps, installed once per lockfile hash.
 
@@ -143,10 +218,13 @@ def ensure_node_modules(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
             return None, f"no {f.name}"
     h = hashlib.sha256(_node_version().encode())
     try:
-        for f in (pkg, lock):
-            h.update(f.read_bytes())
+        manifests = [f.read_bytes() for f in (pkg, lock)]
     except OSError as exc:
         return None, str(exc)
+    if refusal := install_refusal(*manifests):
+        return None, f"not installed: {refusal}"
+    for data in manifests:
+        h.update(data)
     cache_dir = cache_dir.resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
     entry = cache_dir / f"{root.name or 'repo'}-{h.hexdigest()[:16]}"
@@ -156,9 +234,9 @@ def ensure_node_modules(root: Path, cache_dir: Path) -> tuple[Path | None, str]:
         if (entry / ".ready").exists():
             validate_cache.touch(entry)  # last use, for eviction
             return modules, ""
-        shutil.rmtree(entry, ignore_errors=True)
-        entry.mkdir(parents=True)
         try:
+            shutil.rmtree(entry, ignore_errors=True)  # a half-written entry from a killed install
+            entry.mkdir(parents=True, exist_ok=True)  # rmtree may have left some of it behind
             for f in (pkg, lock):
                 shutil.copyfile(f, entry / f.name, follow_symlinks=False)
             subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=entry,

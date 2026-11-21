@@ -68,7 +68,12 @@ def test_agent_hot_paths_cost_the_same_at_any_pack_count(tmp_path: Path, monkeyp
     assert max(large.values()) <= 3, large
 
 
-def test_topology_patterns_run_only_on_files_the_prefilter_admits(monkeypatch) -> None:
+def test_topology_patterns_run_only_on_files_the_prefilter_admits(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from auditor import repo_resolver
+    from wiki import sources
+
     seen: list[str] = []
 
     class Spy:
@@ -79,13 +84,19 @@ def test_topology_patterns_run_only_on_files_the_prefilter_admits(monkeypatch) -
             seen.append(text)
             return self.rx.search(text)
 
+    texts = {"plain.py": "x = 1\n", "net.py": "import requests\n", "llm.py": "client = Ollama()\n",
+             "vec.py": "PORT = ':6333'\n"}
+    for name, text in texts.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    # the real _scan, reading these files as one repo's sources
+    monkeypatch.setattr(repo_resolver, "resolve_scan_root", lambda repo: tmp_path)
+    monkeypatch.setattr(sources, "source_files", lambda repo: sorted(tmp_path / n for n in texts))
     monkeypatch.setattr(ui_topology, "_SERVICE_RE", {k: Spy(v) for k, v in ui_topology._SERVICE_RE.items()})
-    texts = ["x = 1\n", "import requests\n", "client = Ollama()\n", "PORT = ':6333'\n"]
-    for t in texts:  # the loop body of _scan, on its own
-        if ui_topology._ANY_SERVICE_RE.search(t):
-            for rx in ui_topology._SERVICE_RE.values():
-                rx.search(t)
+    _imports, uses, files = ui_topology._scan([SimpleNamespace(name="r")])
+    assert files == {"r": 4}
     assert set(seen) == {"client = Ollama()\n", "PORT = ':6333'\n"}
+    assert {sid: [e["path"] for e in ev] for sid, ev in uses["r"].items()} == {"ollama": ["llm.py"],
+                                                                               "qdrant": ["vec.py"]}
 
 
 @pytest.mark.parametrize("pattern", [v[3] for v in ui_topology.SERVICES.values()])

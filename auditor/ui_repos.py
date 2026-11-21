@@ -165,13 +165,14 @@ def _github_slugs() -> dict[str, str]:
 
     try:
         cfg = yaml.safe_load(Path("config/repo_mirrors.yaml").read_text(encoding="utf-8")) or {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, yaml.YAMLError):
         return {}
     out = {}
     for m in cfg.get("mirrors") or []:
-        url = str(m.get("url") or "")
-        if "github.com/" in url:
-            out[str(m.get("name"))] = url.split("github.com/", 1)[1].removesuffix(".git").strip("/")
+        # https://github.com/owner/name(.git) and scp-style git@github.com:owner/name.git
+        parts = re.split(r"github\.com[:/]", str(m.get("url") or ""), maxsplit=1)
+        if len(parts) == 2:
+            out[str(m.get("name"))] = parts[1].strip("/").removesuffix(".git")
     return out
 
 

@@ -148,9 +148,15 @@ class Runner:
         tmp.replace(path)
 
     def _record(self, custom_id: str, msg: Any, note: str, *, batch: bool) -> Result:
-        cost = get_ledger().record_usage(self.lane, getattr(msg, "model", ""), msg.usage, batch=batch, note=note)
+        # the response is paid for: store it before anything that can fail, so a rerun reuses it
         text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-        r = Result(custom_id, text=text, stop_reason=msg.stop_reason, cost=cost)
+        r = Result(custom_id, text=text, stop_reason=msg.stop_reason)
+        self._store(r)
+        try:
+            r.cost = get_ledger().record_usage(self.lane, getattr(msg, "model", ""), msg.usage, batch=batch, note=note)
+        except Exception:  # noqa: BLE001 — a ledger failure must not lose the stored reply or abort the stage
+            logger.exception("could not record spend for %s in the %s lane; its reply is kept", custom_id, self.lane)
+            return r
         self._store(r)
         return r
 
@@ -188,6 +194,10 @@ class Runner:
         self._save_state(state)
         return True
 
+    def in_flight(self) -> set[str]:
+        """custom_ids of requests in batches submitted but not yet harvested (never resubmitted)."""
+        return {cid for info in self._load_state()["batches"].values() for cid in (info.get("notes") or {})}
+
     def harvest_pending(self) -> int:
         """Harvest batches submitted by an earlier, interrupted run. Returns how many."""
         done = 0
@@ -214,15 +224,20 @@ class Runner:
             self.harvest_pending()
         results: dict[str, Result] = {}
         todo: list[Request] = []
+        # still in a batch that hasn't ended (or another run's): already paid for, so never resubmitted
+        pending = self.in_flight()
         for req in requests:
             prior = self._stored(req.custom_id)
             if prior is not None and prior.error is None:
                 results[req.custom_id] = prior
                 stats.reused += 1
+            elif req.custom_id in pending:
+                results[req.custom_id] = Result(req.custom_id, error="pending in an unfinished batch; a rerun harvests it")
             else:
                 todo.append(req)
         stats.est_usd = sum(r.est_usd for r in todo) * (1 if self.mode == "batch" else 2)
         if not todo:
+            stats.failed = sum(1 for r in results.values() if not r.ok)
             return results, stats
         left = get_ledger().remaining(self.lane)
         if stats.est_usd > left:
