@@ -75,7 +75,7 @@ from dataclasses import asdict
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -1573,11 +1573,26 @@ def _patch_paths(patch_file: Path, cwd: Path) -> list[str]:
     return out
 
 
+MAX_PACKS_PER_VALIDATION = 25
+
+
+def _request_pack_ids(request: "_ValidatePatchRequest") -> list[str]:
+    """``pack_id`` then ``pack_ids``, blanks and repeats dropped, order kept."""
+    seen: list[str] = []
+    for pid in [request.pack_id or "", *request.pack_ids]:
+        pid = str(pid or "").strip()
+        if pid and pid not in seen:
+            seen.append(pid)
+    return seen
+
+
 class _ValidatePatchRequest(BaseModel):
     repo: str
     patch: str
     timeout_s: int = 120
     pack_id: str | None = None  # when set and validation passes with evidence, the pack is marked resolved
+    # more packs one patch fixes: the suite runs once and each pack is judged on its own evidence
+    pack_ids: list[str] = Field(default_factory=list, max_length=MAX_PACKS_PER_VALIDATION)
     # classify changes as equivalent / behaviour change / "trust me" (None: AI_AUDIT_VALIDATE_SEMANTIC)
     semantic_check: bool | None = None
     # why this fix can't carry a failing-then-passing test (≥ 20 chars); recorded on the pack (#58)
@@ -1640,29 +1655,36 @@ def _resolve_pack_after_validation(
 def _judge_evidence(
     request: "_ValidatePatchRequest", *, tool: str, changed: list[str], tree: Path, fresh_base: Any,
     base_sha: str, venv_cache: Path, node_cache: Path, timeout_s: int,
+    pack_id: str | None = None, repro_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run the evidence bar (#58) for a passing patch and set the pack resolved or unverified."""
+    """Run the evidence bar (#58) for a passing patch and set the pack resolved or unverified.
+    *repro_cache* shares one repro run between the packs of a multi-pack request: the patch's
+    tests on the dev tree give the same answer whichever pack asks."""
     from auditor import evidence
 
-    pack, why = _load_pack_for_repo(request.pack_id or "", request.repo)
+    pid = request.pack_id or "" if pack_id is None else pack_id
+    pack, why = _load_pack_for_repo(pid, request.repo)
     if pack is None:
-        return {"pack": {"id": request.pack_id, "updated": False, "reason": why}}
+        return {"pack": {"id": pid, "updated": False, "reason": why}}
     ch = evidence.classify_changes(changed)
     repro = None
     if evidence.needs_repro(pack) and ch["code"] and ch["tests"] and not request.evidence_waiver:
-        repro = evidence.run_repro(tree, fresh_base, ch["tests"], venv_cache=venv_cache, node_cache=node_cache,
-                                   timeout_s=timeout_s)
+        cache = repro_cache if repro_cache is not None else {}
+        if "repro" not in cache:
+            cache["repro"] = evidence.run_repro(tree, fresh_base, ch["tests"], venv_cache=venv_cache,
+                                                node_cache=node_cache, timeout_s=timeout_s)
+        repro = cache["repro"]
     d = evidence.decide(pack, tool=tool, changed=changed, repro=repro, waiver=request.evidence_waiver or "",
                         base_sha=base_sha)
     if request.base_ref:
         d.evidence["base_ref"] = request.base_ref.strip()
     if request.revalidate:
-        return _upgrade_evidence(request, pack, d, tool=tool)
+        return _upgrade_evidence(request, pack, d, tool=tool, pack_id=pid)
     if d.status == "resolved":
         note = f"validate_patch passed (repo={request.repo}, tool={tool}, evidence={d.kind})"
     else:
         note = f"validate_patch passed, unverified (repo={request.repo}, tool={tool}): {d.reason}"
-    out = _resolve_pack_after_validation(request.pack_id or "", repo=request.repo, tool=tool, status=d.status,
+    out = _resolve_pack_after_validation(pid, repo=request.repo, tool=tool, status=d.status,
                                          note=note, evidence=d.evidence)
     out["evidence"] = d.kind
     out["reason"] = d.reason
@@ -1674,10 +1696,11 @@ REVALIDATE_FROM = frozenset({"resolved", "unverified"})
 REVALIDATE_TO = frozenset({"repro", "tests", "test_only", "non_code"})
 
 
-def _upgrade_evidence(request: "_ValidatePatchRequest", pack: dict[str, Any], d: Any, *, tool: str) -> dict[str, Any]:
+def _upgrade_evidence(request: "_ValidatePatchRequest", pack: dict[str, Any], d: Any, *, tool: str,
+                      pack_id: str | None = None) -> dict[str, Any]:
     """Record *d* on the pack only when it is stronger than what the pack has. Never demotes:
     a waived resolution whose re-check found nothing better stays resolved on its waiver."""
-    pid = request.pack_id or ""
+    pid = request.pack_id or "" if pack_id is None else pack_id
     status = str(pack.get("status") or "")
     had = str(((pack.get("verification") or {}).get("evidence") or {}).get("kind") or "")
     keep = {"id": pid, "updated": False, "status": status, "evidence": d.kind}
@@ -1735,6 +1758,9 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
                          test for bug/security packs, tests for other code changes. Otherwise the pack
                          becomes ``unverified`` and ``reason`` says what is missing.
         evidence:        the evidence record stored on the pack (kind, repro test ids, tool, base_sha).
+        packs:           with more than one pack (``pack_id`` plus ``pack_ids``, ≤ 25): one ``pack``
+                         entry per pack (plus its ``evidence_record``), each judged on its own evidence
+                         from the one suite run; ``pack`` / ``evidence`` describe the first.
     """
     import shutil
     import tempfile
@@ -1874,28 +1900,38 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
             semantic = equivalence.classify_patch(request.patch)
             response["semantic"] = semantic
             refuted = semantic.get("refuted") or []
-        if request.pack_id:
+        pack_ids = _request_pack_ids(request)
+        repro_cache: dict[str, Any] = {}
+        results: list[dict[str, Any]] = []
+        for pid in pack_ids:
+            res: dict[str, Any]
             if not passed:
-                response["pack"] = {"id": request.pack_id, "updated": False, "reason": "validation did not pass"}
+                res = {"pack": {"id": pid, "updated": False, "reason": "validation did not pass"}}
             elif refuted:
                 # tests pass, but a claimed-equivalent change has a counterexample: a human decides
-                response["pack"] = {"id": request.pack_id, "updated": False,
-                                    "reason": f"{len(refuted)} 'trust me' change(s) have a counterexample"}
+                res = {"pack": {"id": pid, "updated": False,
+                                "reason": f"{len(refuted)} 'trust me' change(s) have a counterexample"}}
             elif not evidence_bar_enabled() and request.revalidate:
-                response["pack"] = {"id": request.pack_id, "updated": False,
-                                    "reason": "revalidation needs the evidence bar (AI_AUDIT_EVIDENCE_BAR)"}
+                res = {"pack": {"id": pid, "updated": False,
+                                "reason": "revalidation needs the evidence bar (AI_AUDIT_EVIDENCE_BAR)"}}
             elif not evidence_bar_enabled():
-                response["pack"] = _resolve_pack_after_validation(
-                    request.pack_id, repo=request.repo, tool=val_result.tool,
+                res = {"pack": _resolve_pack_after_validation(
+                    pid, repo=request.repo, tool=val_result.tool,
                     note=(f"validate_patch passed (repo={request.repo}, tool={val_result.tool}, "
                           f"base={request.base_ref.strip()} {base.sha[:12]})" if request.base_ref else ""),
-                )
+                )}
             else:
-                response.update(_judge_evidence(
+                res = _judge_evidence(
                     request, tool=val_result.tool, changed=changed, tree=repo_copy, fresh_base=_fresh_base,
                     base_sha=str(base_info.get("base_sha") or ""), venv_cache=venv_cache, node_cache=node_cache,
-                    timeout_s=timeout_s,
-                ))
+                    timeout_s=timeout_s, pack_id=pid, repro_cache=repro_cache,
+                )
+            results.append(res)
+        if results:
+            response.update(results[0])  # ``pack`` / ``evidence`` for the first pack, as before
+        if len(results) > 1:
+            response["packs"] = [{**r["pack"], **({"evidence_record": r["evidence"]} if "evidence" in r else {})}
+                                 for r in results]
         return JSONResponse(response)
     except HTTPException:
         raise

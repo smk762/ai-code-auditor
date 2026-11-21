@@ -35,6 +35,8 @@ Optional: `q=<keyword>` boosts matches, `status=open,claimed,in_progress` (defau
    evidence (see "Done means" in the brief): for bug and security packs, a test in the patch that **fails on `dev` and
    passes with the fix**. Otherwise the pack becomes `unverified` and `pack.reason` says what's missing;
    `"evidence_waiver": "<why no test can exercise it>"` resolves it anyway, recorded on the pack.
+   One patch that fixes several packs: add `"pack_ids": ["<id>", ...]` (up to 25). The suite runs once, each pack
+   is judged on its own evidence, and `packs` in the response lists every result.
    If the fix has already merged (the patch no longer applies to `dev`), send `"base_ref": "<sha>"`, the
    `dev` commit your diff was built on. The patch and the "fails on `dev`" run then both use that commit.
    It must be an ancestor of the `dev` tip (else 400), and the pack records it.
