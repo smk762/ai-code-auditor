@@ -150,8 +150,13 @@ def approved_rules(path: str | Path | None = None) -> list[dict[str, Any]]:
 
 
 def load_architecture_rules(path: str | Path = "config/architecture_rules.yaml", *,
-                            approved: str | Path | None = None) -> dict[str, Any]:
-    """The rules file plus the approved rules (``approved_rules_path``) it doesn't already name."""
+                            approved: str | Path | None = None,
+                            repos: set[str] | None = None) -> dict[str, Any]:
+    """The rules file plus the approved rules (``approved_rules_path``) it doesn't already name.
+
+    Validated on load (``ecosystem.arch_contracts.validate``): a role or repo that doesn't resolve,
+    or a rule that could match nothing, raises ValueError. *repos* is the set of known repo names,
+    by default every repo in ``config/ecosystem.yaml`` and ``config/repo_mirrors.yaml``."""
     raw = _read_yaml(path)
     rules = raw.get("rules", [])
     if not isinstance(rules, list):
@@ -165,12 +170,16 @@ def load_architecture_rules(path: str | Path = "config/architecture_rules.yaml",
         raise ValueError("architecture_rules.yaml domain_ownership must be a list")
     service_roles = raw.get("service_roles", [])
     call_graph_rules = raw.get("call_graph_rules", {})
-    return {
+    data = {
         "rules": rules,
         "domain_ownership": domain_ownership,
         "service_roles": service_roles,
         "call_graph_rules": call_graph_rules,
     }
+    from ecosystem import arch_contracts
+
+    arch_contracts.validate(data, repos if repos is not None else arch_contracts.known_repos())
+    return data
 
 
 def load_prompts(path: str | Path = "config/prompts.yaml") -> dict[str, str]:

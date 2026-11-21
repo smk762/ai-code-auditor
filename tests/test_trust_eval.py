@@ -40,11 +40,12 @@ def seeded(fix=(True,) * 5, control=(False,) * 5, age_days=1) -> dict:
 # ── gates ────────────────────────────────────────────────────────────────────
 
 def test_all_built_gates_pass_on_good_numbers() -> None:
-    g = by_id(build_gates(trust(), seeded(), None, {"n": 12, "held": 12, "rate": 1.0}, {"n": 6, "ok": 6, "rate": 1.0}))
+    g = by_id(build_gates(trust(), seeded(), None, {"n": 12, "held": 12, "rate": 1.0}, {"n": 6, "ok": 6, "rate": 1.0},
+                          {"n": 2, "fired": 2, "rate": 1.0, "rules": []}))
     live = {k: v.status for k, v in g.items() if v.status != "pending" and not k.startswith("classes.")}
     assert set(live.values()) == {"pass"}, live
     assert g["evidence.lint_only"].value == pytest.approx(1 / 24)
-    assert {k for k, v in g.items() if v.status == "pending"} == {"arch.contracts"}
+    assert not [k for k, v in g.items() if v.status == "pending"]  # every gate is built
     assert g["classes.precision"].status == "insufficient"  # no gold set in tests
 
 
@@ -118,8 +119,9 @@ def test_evaluate_writes_report_and_history(tmp_path: Path) -> None:
     (tmp_path / trust_eval.SEEDED_NAME).write_text(json.dumps(seeded()))
     r1 = trust_eval.evaluate(tmp_path)
     trust_eval.evaluate(tmp_path)
-    assert r1["summary"]["fail"] == 0 and r1["summary"]["pending"] == 1
-    assert r1["exit"]["met"] is False  # pending components and no four-week history
+    assert r1["summary"]["fail"] == 0 and r1["summary"]["pending"] == 0
+    assert {g["id"]: g["status"] for g in r1["gates"]}["arch.contracts"] == "pass"  # the checked-in rules
+    assert r1["exit"]["met"] is False  # insufficient gates and no four-week history
     assert len((tmp_path / trust_eval.HISTORY_NAME).read_text().splitlines()) == 2
     assert json.loads((tmp_path / trust_eval.REPORT_NAME).read_text())["at"]
     trust_eval.evaluate(tmp_path, record=False)
@@ -263,3 +265,24 @@ def test_kill_restores_the_module_byte_for_byte(tmp_path: Path, monkeypatch) -> 
                             random.Random(0))
     assert hit is not None and hit[2] == ["t::a"] and seen[1] != raw
     assert mod.read_bytes() == raw
+
+
+def test_arch_contracts_gate_is_measured_and_cannot_pass_on_no_rules() -> None:
+    one_dead = {"n": 2, "fired": 1, "rate": 0.5, "rules": [{"rule": "a", "fired": True},
+                                                           {"rule": "use_x", "fired": False}]}
+    g = by_id(build_gates(trust(), seeded(), arch_contracts=one_dead))["arch.contracts"]
+    assert g.status == "fail" and "use_x" in g.note
+    assert by_id(build_gates(trust(), seeded(), arch_contracts={"n": 0, "fired": 0, "rate": None, "rules": []})
+                 )["arch.contracts"].status == "insufficient"
+    assert by_id(build_gates(trust(), seeded()))["arch.contracts"].status == "insufficient"
+
+
+def test_arch_contracts_eval_reads_the_real_rules_and_reports_a_broken_file(tmp_path: Path) -> None:
+    rep = trust_eval.arch_contracts_eval()  # config/architecture_rules.yaml
+    assert rep["n"] >= 2 and rep["rate"] == 1.0, rep
+    bad = tmp_path / "rules.yaml"
+    bad.write_text("rules:\n  - name: r\n    forbid:\n      - from_roles: [gateway]\n        to_roles: [database]\n")
+    rep = trust_eval.arch_contracts_eval(bad)
+    assert rep["n"] == 0 and rep["rate"] is None and "gateway" in rep["error"]
+    gate = by_id(build_gates(trust(), seeded(), arch_contracts=rep))["arch.contracts"]
+    assert gate.status == "insufficient" and "gateway" in gate.note

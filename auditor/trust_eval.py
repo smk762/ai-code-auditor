@@ -2,7 +2,7 @@
 
 Each gate names a component, a measured value, a threshold, and a minimum sample. Below the
 minimum the gate is ``insufficient``, not passed. A gate whose component hasn't been built yet
-is ``pending``. ``evaluate()`` writes ``reports/trust_eval.json`` and appends a line to
+is ``pending`` (none today). ``evaluate()`` writes ``reports/trust_eval.json`` and appends a line to
 ``trust_eval_history.jsonl``. The exit criteria for epic #64 are computed from that history:
 
 - every gate that isn't pending passed in each of two consecutive ISO weeks (the week's last
@@ -72,7 +72,8 @@ def _since_bar(report: dict[str, Any]) -> tuple[int, int, int, str]:
 
 def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
                 classes: dict[str, Any] | None = None, class_lifecycle: dict[str, Any] | None = None,
-                rules_fixtures: dict[str, Any] | None = None) -> list[Gate]:
+                rules_fixtures: dict[str, Any] | None = None,
+                arch_contracts: dict[str, Any] | None = None) -> list[Gate]:
     t = trust or {}
     gates: list[Gate] = []
 
@@ -142,11 +143,15 @@ def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
                  .judge(rf.get("rate"), int(rf.get("n") or 0),
                         "" if rules_fixtures else "no suite-rules catalogue (argus-ci suite-rules/ on dev)"))
 
-    # ── not built yet: visible, never counted as passing ──
-    for gid, comp, issue, desc in (
-        ("arch.contracts", "architecture contracts", 57, "Every architecture contract fires on a seeded violation"),
-    ):
-        gates.append(Gate(gid, comp, issue, desc, ">=", 1.0, 1, note="not built yet"))
+    # ── #57 architecture contracts ──
+    ac = arch_contracts or {}
+    failing = [r["rule"] for r in ac.get("rules") or [] if not r.get("fired")]
+    note = ac.get("error") or ("no architecture rules" if not ac.get("n") else
+                               f"not firing: {', '.join(failing)}" if failing else "")
+    gates.append(Gate("arch.contracts", "architecture contracts", 57,
+                      "Every architecture rule fires once on its seeded violation and never on a clean graph",
+                      ">=", 1.0, 1)
+                 .judge(ac.get("rate"), int(ac.get("n") or 0), note))
     return gates
 
 
@@ -253,6 +258,19 @@ def class_lifecycle_eval(out: Path) -> dict[str, Any] | None:
         return None
 
 
+def arch_contracts_eval(rules_path: str | Path = "config/architecture_rules.yaml") -> dict[str, Any]:
+    """Every architecture rule against its seeded fixture (cheap: no scan). A rules file that fails
+    to load is reported as an error with no rules, so the gate is insufficient, never passing."""
+    from auditor.config import load_architecture_rules
+    from ecosystem import arch_contracts
+
+    try:
+        return arch_contracts.fixtures(load_architecture_rules(rules_path))
+    except (OSError, ValueError) as exc:
+        logger.warning("architecture rules unreadable: %s", exc)
+        return {"n": 0, "fired": 0, "rate": None, "rules": [], "error": str(exc)[:500]}
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         return json.loads(path.read_text())
@@ -286,7 +304,7 @@ def evaluate(output_dir: str | Path | None = None, *, record: bool = True,
     from auditor.suite_rules import fixtures as rules_fixtures
 
     gates = build_gates(_read_json(out / TRUST_REPORT), _read_json(out / SEEDED_NAME), classes_eval(out),
-                        class_lifecycle_eval(out), rules_fixtures(out))
+                        class_lifecycle_eval(out), rules_fixtures(out), arch_contracts_eval())
     at = (now or datetime.now(UTC)).isoformat()
     statuses = {g.id: g.status for g in gates}
     history = [*_read_jsonl(out / HISTORY_NAME), {"at": at, "statuses": statuses}]

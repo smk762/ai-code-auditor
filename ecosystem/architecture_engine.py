@@ -4,6 +4,7 @@ import logging
 import re
 
 from auditor.contracts import RuleViolation
+from ecosystem.arch_contracts import Dependencies, evaluate_rule
 from ecosystem.graph_builder import GraphBuilder
 
 logger = logging.getLogger(__name__)
@@ -39,12 +40,20 @@ def _names(entity: str) -> set[str]:
 
 
 class ArchitectureEngine:
-    def __init__(self, graph: GraphBuilder, rules: dict):
+    """Evaluates the rules. Role rules (``forbid``) run over *dependencies*, the repo-to-repo
+    imports of this run (``arch_contracts.repo_dependencies``); ``forbidden_edges`` / ``allowed``
+    over the graph's edges, which the loader refuses in the rules file (no run builds DEPENDS_ON)."""
+
+    def __init__(self, graph: GraphBuilder, rules: dict, dependencies: Dependencies | None = None):
         self.graph = graph
         self.rules = rules.get("rules", [])
+        self.service_roles = rules.get("service_roles", [])
+        self.dependencies = dependencies or {}
 
     def evaluate(self) -> list[RuleViolation]:
         violations: list[RuleViolation] = []
+        for rule in self.rules:
+            violations.extend(evaluate_rule(rule, self.service_roles, self.dependencies))
         edges = self.graph.all_edges()
         for rule in self.rules:
             name = rule.get("name", "unnamed_rule")

@@ -37,6 +37,7 @@ from auditor.runtime import RunMetadata, require_auth, setup_logging, write_run_
 from auditor.retry import with_retries
 from auditor.settings import get_settings
 from auditor.service_topology import write_service_topology
+from ecosystem.arch_contracts import repo_dependencies
 from ecosystem.architecture_engine import ArchitectureEngine
 from ecosystem.graph_builder import GraphBuilder
 from ecosystem.call_graph_analyzer import analyze_call_graph, violations_from_edges
@@ -305,7 +306,8 @@ def run() -> None:
             logger.info("Architecture / governance and report generation …")
 
             t3 = time.monotonic()
-            engine = ArchitectureEngine(graph=graph, rules=rules)
+            dependencies = repo_dependencies(repo_files, repo_roots, [r.name for r in cfg.repos])
+            engine = ArchitectureEngine(graph=graph, rules=rules, dependencies=dependencies)
             violations = engine.evaluate()
             boundary_violations = detect_boundary_violations(
                 duplicate_clusters=duplicate_clusters,
