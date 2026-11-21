@@ -97,6 +97,8 @@ def chat_url() -> str:
 
     ingest = os.getenv("AI_AUDIT_RAG_INGEST_URL") or os.getenv("RAG_INGEST_URL") or ""
     host = urlsplit(ingest).hostname if ingest else None
+    if host and ":" in host:  # .hostname drops an IPv6 literal's brackets; a URL needs them
+        host = f"[{host}]"
     return f"http://{host or '127.0.0.1'}:9150"
 
 
@@ -216,10 +218,10 @@ def _read_ledger(path: Path) -> dict[str, Any]:
     ``<name>.corrupt-<ts>`` before starting over, so its ids can still be recovered by hand."""
     if not path.is_file():
         return {}
-    text = path.read_text(encoding="utf-8")
+    raw = path.read_bytes()  # an I/O error still raises; undecodable bytes are corruption
     try:
-        data = json.loads(text)
-    except ValueError:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError:  # includes UnicodeDecodeError
         data = None
     if isinstance(data, dict):
         return data
