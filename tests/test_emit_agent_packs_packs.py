@@ -83,3 +83,26 @@ def test_sample_printing_survives_none_valued_index_fields(env, monkeypatch) -> 
     monkeypatch.setattr("auditor.pack_savings.refresh_quietly", lambda out: refreshed.append(out) or {})
     mod.main()
     assert refreshed  # the trailing pack-savings refresh still ran
+
+
+def test_rag_ingest_sees_the_class_packs_this_run_emitted(env, monkeypatch) -> None:
+    mod, _, _ = env
+    order: list[str] = []
+    monkeypatch.setattr(mod, "ArchitectureEngine", lambda **kw: SimpleNamespace(evaluate=lambda: []))
+    monkeypatch.setattr(mod, "pack_rag_ingest_enabled", lambda explicit=None: True)
+    monkeypatch.setattr("auditor.class_packs.emit", lambda out, **kw: order.append("class_packs") or {})
+    monkeypatch.setattr(mod, "_load_packs", lambda out: order.append("load_for_rag") or [])
+    monkeypatch.setattr(mod, "ingest_packs_to_rag", lambda *a, **kw: order.append("rag") or {})
+    monkeypatch.setattr(sys, "argv", ["emit_agent_packs.py", "--quick"])
+    mod.main()
+    assert order == ["class_packs", "load_for_rag", "rag"]
+
+
+@pytest.mark.parametrize("raw", [b"- a\n- b\n", b"just a string\n", b"42\n", b"\xff\xfe bad utf-8",
+                                 b"work_item_id: [a, b]\nkind: architecture\n"])
+def test_remove_owned_packs_skips_non_mapping_files(env, raw: bytes) -> None:
+    mod, packs, _ = env
+    (packs / "pack-foreign.yaml").write_bytes(raw)
+    assert mod.remove_owned_packs(packs.parent, keep={"pack-w"}) == 1  # only pack-stale
+    assert (packs / "pack-foreign.yaml").exists()
+    assert not (packs / "pack-stale.yaml").exists()

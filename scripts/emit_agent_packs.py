@@ -54,9 +54,14 @@ def remove_owned_packs(out: Path, keep: frozenset[str] | set[str] = frozenset())
     for path in (out / "agent_packs").glob("pack-*.yaml"):
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except (OSError, yaml.YAMLError):
+        except (OSError, ValueError, yaml.YAMLError):  # ValueError: bad UTF-8
             continue
-        if data.get("kind") in OWNED_KINDS and data.get("work_item_id", path.stem) not in keep:
+        if not isinstance(data, dict):  # a foreign or hand-edited file: not ours to judge
+            continue
+        wid = data.get("work_item_id", path.stem)
+        if not isinstance(wid, str):
+            continue
+        if data.get("kind") in OWNED_KINDS and wid not in keep:
             path.unlink(missing_ok=True)
             path.with_suffix(".md").unlink(missing_ok=True)
             removed += 1
@@ -199,15 +204,16 @@ def main() -> None:
     if restored:
         print(f"  restored lifecycle status on {restored} packs")
 
-    if ingest_rag:
-        # One ingest after status restore so RAG metadata matches the YAML.
-        result = ingest_packs_to_rag(_load_packs(out), output_dir=out, full=True)
-        print(f"  RAG ingest: {result}")
-
     from auditor.class_packs import emit as emit_class_packs
 
     print(f"Class packs: {emit_class_packs(out, public_base_url=base)}")
     idx = rebuild_index(out, public_base_url=base)
+
+    if ingest_rag:
+        # One ingest of the final pack set (status restored, class packs emitted), so RAG
+        # metadata matches the YAML.
+        result = ingest_packs_to_rag(_load_packs(out), output_dir=out, full=True)
+        print(f"  RAG ingest: {result}")
     print(
         f"\nDone. total={idx['count']} "
         f"world_model={len(idx.get('layers', {}).get('world_model', []))} "
