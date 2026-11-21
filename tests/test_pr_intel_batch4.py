@@ -6,7 +6,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from auditor.pr_intel import Blocker, PrIntel, _node_to_intel, classify, parse_dependencies, resolution_plan
+from auditor.pr_intel import (
+    Blocker,
+    PrIntel,
+    _node_to_intel,
+    classify,
+    parse_dependencies,
+    resolution_plan,
+)
 
 NOW = datetime(2026, 11, 14, tzinfo=timezone.utc)
 

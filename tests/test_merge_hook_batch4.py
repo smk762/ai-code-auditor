@@ -13,7 +13,12 @@ from unittest.mock import patch
 import pytest
 
 from auditor import merge_hook
-from auditor.merge_hook import MergeEvent, MergeHookScheduler, parse_github_push_event, run_merge_refresh
+from auditor.merge_hook import (
+    MergeEvent,
+    MergeHookScheduler,
+    parse_github_push_event,
+    run_merge_refresh,
+)
 
 
 def _push(**extra: Any) -> dict[str, Any]:
