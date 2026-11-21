@@ -75,7 +75,10 @@ def parse_ecosystem_doc(text: str) -> tuple[dict[str, dict[str, str]], list[tupl
     for m in re.finditer(r"^\|\s*([^|]+?)\s*\|\s*\[([\w.-]+)\]\(([^)]+)\)\s*\|\s*([^|]+?)\s*\|\s*$", text, re.M):
         repos[m.group(2)] = {"area": m.group(1), "url": m.group(3), "role": m.group(4)}
     flow: list[tuple[str, str]] = []
-    block = re.search(r"## Ecosystem flow\s*```\n(.*?)```", text, re.S)
+    # the first fence in the section, tolerating a language tag, CRLF and prose before it
+    text = text.replace("\r\n", "\n")
+    section = re.search(r"^## Ecosystem flow\b[^\n]*\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+    block = re.search(r"^[ \t]*```[^\n]*\n(.*?)^[ \t]*```", section.group(1), re.S | re.M) if section else None
     if not block:
         return repos, flow
     grid = block.group(1).splitlines()
@@ -258,10 +261,27 @@ def _build_isolated(out: Path, repos: list[Any], side: Path) -> dict[str, Any]:
     CPU; in the API process it holds the GIL and stalls every other request."""
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures import TimeoutError as FutureTimeout
 
-    with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as ex:
+    ex = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
+    try:
         # Inputs go in as arguments: the child imports this module afresh and sees only defaults.
-        return ex.submit(_build, out, repos, side, ECOSYSTEM_DOC).result(timeout=BUILD_TIMEOUT_S)
+        result = ex.submit(_build, out, repos, side, ECOSYSTEM_DOC).result(timeout=BUILD_TIMEOUT_S)
+    except FutureTimeout:
+        # A running future can't be cancelled and shutdown(wait=True) would wait for it, so the
+        # timeout only bounds anything if the hung child is killed.
+        procs = list((getattr(ex, "_processes", None) or {}).values())
+        for proc in procs:
+            proc.terminate()
+        ex.shutdown(wait=False, cancel_futures=True)
+        for proc in procs:
+            proc.join(5)
+        raise
+    except BaseException:
+        ex.shutdown(wait=False, cancel_futures=True)
+        raise
+    ex.shutdown(wait=True)
+    return result
 
 
 def topology_data(output_dir: str | Path, *, isolate: bool = False) -> dict[str, Any]:
@@ -289,6 +309,13 @@ def topology_data(output_dir: str | Path, *, isolate: bool = False) -> dict[str,
     return data
 
 
+def _count(value: Any) -> int:
+    try:
+        return max(int(value or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _build(out: Path, repos: list[Any], side: Path, doc_path: Path | None = None) -> dict[str, Any]:
     from auditor.merge_poll import load_state, merge_poll_state_path
 
@@ -302,7 +329,12 @@ def _build(out: Path, repos: list[Any], side: Path, doc_path: Path | None = None
         topo = {}
     if not isinstance(topo, dict):
         topo = {}
-    node_info = {n.get("name"): n for n in topo.get("nodes") or []}
+    topo_nodes, topo_edges = topo.get("nodes"), topo.get("edges")
+    # inner entries of the wrong shape are dropped, like a malformed sidecar
+    node_info = {n["name"]: n for n in (topo_nodes if isinstance(topo_nodes, list) else [])
+                 if isinstance(n, dict) and isinstance(n.get("name"), str)}
+    topo_edges = [e for e in (topo_edges if isinstance(topo_edges, list) else [])
+                  if isinstance(e, dict) and isinstance(e.get("from"), str) and isinstance(e.get("to"), str)]
     try:
         poll = load_state(merge_poll_state_path(out)).get("repos") or {}
     except Exception:  # noqa: BLE001
@@ -319,7 +351,7 @@ def _build(out: Path, repos: list[Any], side: Path, doc_path: Path | None = None
             "group": stage_of(r.name) or "external", "mark": has_mark(r.name),
             "area": m.get("area", ""), "role": m.get("role", ""),
             "service_role": (node_info.get(r.name) or {}).get("role"),
-            "violations": int((node_info.get(r.name) or {}).get("violation_count") or 0),
+            "violations": _count((node_info.get(r.name) or {}).get("violation_count")),
             "files": files.get(r.name, 0),
             "facets": (fc := _facets(r.path)), "badges": _badges(fc),
             "wiki": (out / "wiki" / r.name / "INDEX.json").is_file(),
@@ -360,7 +392,7 @@ def _build(out: Path, repos: list[Any], side: Path, doc_path: Path | None = None
 
     from auditor.agent_pack import architecture_pack_id
 
-    for e in topo.get("edges") or []:
+    for e in topo_edges:
         if "violation" in str(e.get("kind")) and e.get("from") in names and e.get("to") in names:
             # The pack the ecosystem run filed for it (call-graph violations are "from → to").
             pack = architecture_pack_id(e["from"], "call_graph_violation", f"{e['from']} → {e['to']}")
