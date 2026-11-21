@@ -64,7 +64,12 @@ def _status(run_id: str) -> str:
 
 
 def test_claim_never_overwrites_a_cancel_that_lands_mid_claim(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A cancel committed while the claim is in flight must win; the run must not come back as running."""
+    """A cancel committed while the claim is in flight must win; the run must not come back as running.
+
+    The interleaving is driven, not hoped for: the claim's session is open (the claim has read
+    nothing and taken no lock yet) when the cancel runs to completion on its own connection, and
+    only then does the claim's statement execute. A claim that doesn't re-check ``pending``
+    atomically would overwrite the committed cancel here."""
     import threading
     from contextlib import contextmanager
 
@@ -80,22 +85,24 @@ def test_claim_never_overwrites_a_cancel_that_lands_mid_claim(monkeypatch: pytes
             real_execute = s.execute
 
             def execute(*a, **kw):
-                out = real_execute(*a, **kw)
-                if not fired:  # an operator cancels right after the claim's first statement
+                if not fired:  # an operator cancels while the claim is in flight
                     t = threading.Thread(target=audit_api._db_finish_run_cancelled, args=(run_id,))
                     fired.append(t)
                     t.start()
-                    t.join(0.5)
-                return out
+                    t.join(10)
+                    assert not t.is_alive(), "the cancel did not commit inside the claim's window"
+                    assert _status(run_id) == "cancelled"  # committed before the claim's statement
+                return real_execute(*a, **kw)
 
             s.execute = execute  # type: ignore[method-assign]
             yield s
 
     monkeypatch.setattr(audit_api, "db_session", racing_session)
     claimed = audit_api._db_claim_pending_run(run_id)
-    fired[0].join(10)
+    assert fired, "the claim ran no statement, so no cancel was raced against it"
     monkeypatch.undo()
-    assert _status(run_id) == "cancelled", f"claim returned {claimed} and overwrote the cancel"
+    assert claimed is False
+    assert _status(run_id) == "cancelled", "the claim overwrote the cancel"
 
 
 def test_claim_is_single_winner() -> None:
@@ -239,15 +246,38 @@ def test_stream_ends_after_its_maximum_duration(monkeypatch: pytest.MonkeyPatch)
     {"remote": "--receive-pack=touch /tmp/pwned"},
     {"remote": "../other"},
 ])
-def test_push_refuses_refspecs_options_and_urls(body: dict) -> None:
-    r = TestClient(audit_api.app).post("/audit/git/push", json={"repo": "no-such-repo", **body})
+def test_push_refuses_refspecs_options_and_urls(monkeypatch: pytest.MonkeyPatch, tmp_path, body: dict) -> None:
+    # A configured repo, so only the branch/remote check can refuse; the push itself is a spy.
+    pushes = _push_spy(monkeypatch, tmp_path)
+    r = TestClient(audit_api.app).post("/audit/git/push", json={"repo": "r1", **body})
     assert r.status_code == 400
+    (value,) = body.values()
+    assert repr(value) in r.json()["detail"]  # refused for this value, not for something else
+    assert pushes == []
 
 
-def test_push_accepts_plain_branch_and_remote() -> None:
+def test_push_accepts_plain_branch_and_remote(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    pushes = _push_spy(monkeypatch, tmp_path)
     r = TestClient(audit_api.app).post("/audit/git/push",
-                                       json={"repo": "no-such-repo", "branch": "repair/fix-1", "remote": "origin"})
-    assert r.status_code == 404  # got past validation to the repo lookup
+                                       json={"repo": "r1", "branch": "repair/fix-1", "remote": "origin"})
+    assert r.status_code == 200, r.text
+    assert pushes == [{"branch": "repair/fix-1", "remote": "origin"}]
+
+
+def _push_spy(monkeypatch: pytest.MonkeyPatch, repo_path) -> list[dict]:
+    from types import SimpleNamespace
+
+    from auditor import git_ops
+
+    pushes: list[dict] = []
+
+    def push(path, branch=None, remote="origin"):
+        pushes.append({"branch": branch, "remote": remote})
+        return SimpleNamespace(pushed=True, branch=branch, remote=remote, remote_url="", skipped_reason="")
+
+    _one_repo_config(monkeypatch, repo_path)
+    monkeypatch.setattr(git_ops, "push_repair_branch", push)
+    return pushes
 
 
 def _one_repo_config(monkeypatch: pytest.MonkeyPatch, repo_path) -> None:

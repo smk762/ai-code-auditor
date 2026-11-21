@@ -76,6 +76,24 @@ def _bool_env(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+_TRUE = {"1", "true", "yes", "on"}
+_FALSE = {"0", "false", "no", "off"}
+
+
+def _yaml_bool(value: Any, key: str, default: bool) -> bool:
+    """A YAML flag. ``bool("false")`` is True, so a quoted ``"false"`` must be parsed, not coerced;
+    anything that isn't a recognisable boolean is a config error rather than a guess."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str) and value.strip().lower() in _TRUE | _FALSE:
+        return value.strip().lower() in _TRUE
+    raise ValueError(f"config: {key} must be a boolean, got {value!r}")
+
+
 def load_ecosystem_config(path: str | Path = "config/ecosystem.yaml") -> EcosystemConfig:
     raw = _read_yaml(path)
     repos = [
@@ -83,13 +101,13 @@ def load_ecosystem_config(path: str | Path = "config/ecosystem.yaml") -> Ecosyst
             name=item["name"],
             path=item["path"],
             branch=item.get("branch", ""),
-            enabled=item.get("enabled", True),
+            enabled=_yaml_bool(item.get("enabled"), f"repos[{item.get('name')}].enabled", True),
             access_token_env=item.get("access_token_env", ""),
             provider=item.get("provider", "local"),
             local_cache_path=item.get("local_cache_path", ""),
             subpath=str(item.get("subpath", "") or ""),
         )
-        for item in raw.get("repos", [])
+        for item in raw.get("repos") or []  # a bare `repos:` is None
     ]
     enabled = [r for r in repos if r.enabled]
     if not enabled:
@@ -103,7 +121,9 @@ def load_ecosystem_config(path: str | Path = "config/ecosystem.yaml") -> Ecosyst
             "AI_AUDIT_ARCH_MEMORY_PATH",
             raw.get("architecture_memory_path", "memory/architecture_memory.md"),
         ),
-        auth_mode=_bool_env("AI_AUDIT_AUTH_MODE", bool(raw.get("auth_mode", False))),
+        # Off unless configured, by design: the API's mutating endpoints are gated by
+        # AI_AUDIT_API_TOKEN (``_require_mutating_auth``) and the CLI/timers run locally on the host.
+        auth_mode=_bool_env("AI_AUDIT_AUTH_MODE", _yaml_bool(raw.get("auth_mode"), "auth_mode", False)),
         auth_code_env=os.getenv("AI_AUDIT_AUTH_CODE_ENV", raw.get("auth_code_env", "AI_AUDIT_AUTH_CODE")),
         log_level=str(os.getenv("AI_AUDIT_LOG_LEVEL", raw.get("log_level", "INFO"))).upper(),
         log_file_path=str(os.getenv("AI_AUDIT_LOG_FILE_PATH", raw.get("log_file_path", ""))),
