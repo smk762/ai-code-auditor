@@ -279,15 +279,17 @@ def attach_code_times(scans: list[Scan], mirror_paths: dict[str, Path]) -> None:
 
 def _reflog_commit_time(path: Path, at: datetime) -> datetime | None:
     stamp = at.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S +0000")
+    # The warning below is translated: force the C locale so the check matches in any LANG.
+    env = {**os.environ, "LC_ALL": "C", "LANGUAGE": "C"}
     try:
         # Not -q: it also hides "log for 'HEAD' only goes back to ...", where git answers with
         # the oldest entry, which postdates the scan and so proves nothing.
         r = subprocess.run(["git", "rev-parse", "--verify", f"HEAD@{{{stamp}}}"], cwd=path,
-                           capture_output=True, text=True, timeout=30, check=False)
+                           capture_output=True, text=True, timeout=30, check=False, env=env)
         if r.returncode != 0 or "only goes back" in r.stderr:
             return None
         t = subprocess.run(["git", "show", "-s", "--format=%cI", r.stdout.strip()], cwd=path,
-                           capture_output=True, text=True, timeout=30, check=False)
+                           capture_output=True, text=True, timeout=30, check=False, env=env)
     except (OSError, subprocess.SubprocessError):
         return None
     return _parse_ts(t.stdout.strip()) if t.returncode == 0 else None
@@ -322,7 +324,8 @@ def resolution_events(packs: Iterable[PackView]) -> list[dict[str, Any]]:
                     events.append({"pack_id": p.id, "repo": p.repo, "kind": p.kind, "at": h.get("at"), **how})
                 elif m and ev:
                     events[-1].update(how)
-            prev = st
+            if st is not None:  # a note-only entry is not a status change
+                prev = st
     return events
 
 
@@ -509,7 +512,13 @@ def recurrence_metric(packs: list[PackView], scans: list[Scan],
     resolved: list[tuple[PackView, datetime]] = []
     pending = 0
     unlanded: list[tuple[PackView, datetime]] = []
-    cands: list[tuple[float, int, tuple, str]] = []
+    # A later pack and the scan finding it was emitted from are one piece of evidence: a pack
+    # candidate carries its source finding's scan key too, so using either uses both.
+    cands: list[tuple[float, int, tuple[tuple, ...], str]] = []
+
+    def pack_keys(q: PackView) -> tuple[tuple, ...]:
+        return ("pack", q.id), ("scan", q.repo, q.path, q.title)
+
     for p in packs:
         if not p.is_finding or p.status != "resolved" or not p.path:
             continue
@@ -526,22 +535,23 @@ def recurrence_metric(packs: list[PackView], scans: list[Scan],
         resolved.append((p, t))
         for q in linked.get(p.id, []):
             if (seen := pack_seen(q)) and seen > t:
-                cands.append((2.0, i, ("pack", q.id), f"pack {q.id} (recurrence_of)"))
+                cands.append((2.0, i, pack_keys(q), f"pack {q.id} (recurrence_of)"))
         for q in by_file.get((p.repo, p.path), []):
             if (q.id != p.id and (seen := pack_seen(q)) and seen > t and q.run_id != p.run_id
                     and (sc := _match_score(p.title, p.line, q.title, q.line)) > 0):
-                cands.append((sc, i, ("pack", q.id), f"pack {q.id}: {q.title[:80]}"))
+                cands.append((sc, i, pack_keys(q), f"pack {q.id}: {q.title[:80]}"))
         for s, f in found_in.get((p.repo, p.path), []):
             if s.code_time > t and (sc := _match_score(p.title, p.line, f["title"], f["line"])) > 0:
                 # the same finding in several later scans is one piece of evidence
-                cands.append((sc, i, ("scan", p.repo, f["path"], f["title"]), f"scan {s.run_id}: {f['title'][:80]}"))
+                cands.append((sc, i, (("scan", p.repo, f["path"], f["title"]),),
+                              f"scan {s.run_id}: {f['title'][:80]}"))
     assigned: dict[int, str] = {}
     used: set[tuple] = set()
-    for _sc, i, key, text in sorted(cands, key=lambda c: -c[0]):
-        if i in assigned or key in used:
+    for _sc, i, keys, text in sorted(cands, key=lambda c: -c[0]):
+        if i in assigned or used.intersection(keys):
             continue
         assigned[i] = text
-        used.add(key)
+        used.update(keys)
 
     observed = regressed = disputed = 0
     examples: list[dict[str, Any]] = []
@@ -709,6 +719,18 @@ def mirror_git_log(mirror_paths: dict[str, Path]) -> GitLog:
     return log
 
 
+_REVERT_PREFIX_RE = re.compile(r'revert\w*\s*"?', re.IGNORECASE)
+
+
+def _revert_depth(subject: str) -> int:
+    """How many ``Revert "`` prefixes lead the subject: odd undoes a change, even re-lands it."""
+    n = 0
+    while m := _REVERT_PREFIX_RE.match(subject):
+        n += 1
+        subject = subject[m.end():]
+    return n
+
+
 def classify_followups(pr: dict[str, Any], commits: list[tuple[str, str, str]], *,
                        window_days: int = REVERT_WINDOW_DAYS) -> dict[str, list[str]]:
     """Reverts and fix-forwards of *pr* among *commits*, within the window after its merge."""
@@ -731,7 +753,7 @@ def classify_followups(pr: dict[str, Any], commits: list[tuple[str, str, str]], 
         reverted_shas = set(re.findall(r"This reverts commit ([0-9a-f]{7,40})", msg))
         if (any(any(p.startswith(r) for p in pr_shas) for r in reverted_shas)
                 or (title and first == f'Revert "{title}"')
-                or (named and first.lower().startswith("revert"))):
+                or (named and _revert_depth(first) % 2 == 1)):  # 'Revert "Revert ..."' re-lands it
             reverts.append(sha)
         elif named and re.match(r"(fix|hotfix|bugfix)\b", first, re.IGNORECASE):
             fixes.append(sha)
@@ -783,8 +805,12 @@ class MirrorCommits:
                 break
 
     def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["git", *args], cwd=self.path, capture_output=True, encoding="utf-8", errors="replace",
-                              timeout=60, check=False)
+        try:
+            return subprocess.run(["git", *args], cwd=self.path, capture_output=True, encoding="utf-8",
+                                  errors="replace", timeout=60, check=False)
+        except subprocess.TimeoutExpired:  # a slow mirror degrades like a missing ref, not a crash
+            logger.warning("git %s timed out in %s", args[0] if args else "", self.path)
+            return subprocess.CompletedProcess(["git", *args], 124, "", "timeout")
 
     def commits(self, since: str) -> list[dict[str, Any]]:
         if not self.ref:
@@ -802,13 +828,14 @@ class MirrorCommits:
         changed against its first parent: when each change reached dev."""
         if not self.ref:
             return []
+        # -z: names come NUL-separated and unquoted (no C-quoting of non-ASCII, quotes or newlines)
         r = self._git("log", self.ref, "--first-parent", "--diff-merges=first-parent", f"--since={since}",
-                      "--name-only", "--format=%x1e%cI")
+                      "-z", "--name-only", "--format=%x1e%cI")
         out: Changes = []
         for rec in r.stdout.split("\x1e") if r.returncode == 0 else []:
-            lines = [x for x in rec.strip("\n").splitlines() if x.strip()]
-            if lines and (when := _parse_ts(lines[0])):
-                out.append((when, set(lines[1:])))
+            stamp, _, names = rec.partition("\0")
+            if when := _parse_ts(stamp.strip()):
+                out.append((when, {n for n in names.lstrip("\n").split("\0") if n}))
         return out[::-1]  # git lists the first-parent line newest first
 
     def merged_by(self, merge: dict[str, Any]) -> list[str]:
@@ -941,6 +968,7 @@ def compute(packs: list[PackView], scans: list[Scan], prs: list[dict[str, Any]] 
         "inputs": {
             "packs": len(packs), "finding_packs": sum(p.is_finding for p in packs),
             "status_counts": dict(Counter(p.status for p in packs)),
+            "open_finding_packs": sum(1 for p in packs if p.is_finding and p.status == "open" and not p.duplicate_of),
             "scans": len(scans), "runs": len({s.run_id for s in scans}),
             "first_scan": scans[0].at.isoformat() if scans else None,
             "prs_cached": prs is not None,
@@ -971,7 +999,7 @@ def headline(report: dict[str, Any]) -> dict[str, Any]:
         "agent_prs": prs.get("merged"),
         "pack_revert_rate": (report.get("pack_commits") or {}).get("rate"),
         "trailer_packs": (report.get("pack_commits") or {}).get("packs"),
-        "open_finding_packs": sum(1 for _ in ()),  # filled below
+        "open_finding_packs": report["inputs"].get("open_finding_packs"),
     }
 
 
@@ -1044,10 +1072,7 @@ def build(output_dir: str | Path, *, session=None, refresh_github: bool = False,
     except Exception as exc:  # noqa: BLE001 — without history, recurrence dates fixes by resolution
         logger.warning("fix landing lookup failed: %s", exc)
         landed = None
-    report = compute(packs, scans, prs, git_log, now=now, pack_commits=pc, landed=landed)
-    report["headline"]["open_finding_packs"] = sum(1 for p in packs if p.is_finding and p.status == "open"
-                                                   and not p.duplicate_of)
-    return report
+    return compute(packs, scans, prs, git_log, now=now, pack_commits=pc, landed=landed)
 
 
 def refresh(output_dir: str | Path | None = None, **kw: Any) -> dict[str, Any]:
