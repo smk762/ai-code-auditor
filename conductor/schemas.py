@@ -321,7 +321,11 @@ def validate_status_dict(data: dict[str, Any]) -> list[str]:
     top = findings.get("top") if isinstance(findings, dict) else None
     if isinstance(top, list) and len(top) > 3:
         errors.append("findings.top must have at most 3 items")
-    for pr in data.get("draft_prs") or []:
+    prs = data.get("draft_prs")
+    if prs is not None and not isinstance(prs, list):
+        errors.append("draft_prs must be a list")
+        prs = None
+    for pr in prs or []:
         if not isinstance(pr, dict):
             errors.append("draft_prs entries must be objects")
             continue
