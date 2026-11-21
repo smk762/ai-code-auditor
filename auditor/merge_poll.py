@@ -215,6 +215,9 @@ def poll_dev_tips(
 ) -> PollResult:
     """Poll each mirror's remote branch tip; enqueue merge refresh on SHA change.
 
+    With ``enqueue=False`` (and not ``baseline_only``) the poll only reports: a change keeps
+    its previous SHA in state, so a later enqueuing poll still queues it.
+
     First sighting of a repo only baselines the SHA (no refresh) unless
     ``baseline_only`` is already implied — avoids a stampede on first install.
 
@@ -266,7 +269,10 @@ def poll_dev_tips(
         else:
             result.changed.append(name)
             result.changes.append({"repo": name, "before": prev_sha, "after": tip})
-            if not baseline_only and enqueue:
+            if not baseline_only and not enqueue:
+                # Report-only: a later poll that does enqueue must still see this change.
+                recorded_sha = prev_sha
+            elif not baseline_only:
                 if dispatch is None and not merge_hook_enabled():
                     result.errors.append(
                         {"repo": name, "error": "merge hook disabled; not queued"}
@@ -289,8 +295,13 @@ def poll_dev_tips(
                         result.errors.append({"repo": name, "error": str(exc)[:400]})
                         recorded_sha = prev_sha
                     else:
+                        # A custom dispatch may return None or a bool: anything but an accepting
+                        # dict is "not accepted", never an AttributeError that skips save_state.
+                        accepted = isinstance(queued, dict) and bool(queued.get("accepted"))
+                        if not isinstance(queued, dict):
+                            queued = {"accepted": accepted, "repo": name}
                         result.queued.append(queued)
-                        if not queued.get("accepted"):
+                        if not accepted:
                             recorded_sha = prev_sha
 
         repos_state[name] = {
