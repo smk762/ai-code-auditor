@@ -23,7 +23,9 @@ def test_rule_append_to_empty_rules_key(tmp_path: Path) -> None:
     # idempotent, and a non-dict entry in the list does not crash the name check
     rules.write_text(text + "  - just-a-string\n")
     append_architecture_rule_for_extraction(CANDIDATE, str(rules))
-    assert next(r for r in yaml.safe_load(rules.read_text())["rules"] if isinstance(r, dict))["name"] == "use_retry_core"
+    after = yaml.safe_load(rules.read_text())["rules"]
+    assert [r["name"] for r in after if isinstance(r, dict)] == ["use_retry_core"]  # no duplicate rule
+    assert "just-a-string" in after
 
 
 def test_rule_append_crash_mid_write_leaves_the_rules_file_intact(tmp_path: Path, monkeypatch) -> None:

@@ -65,8 +65,11 @@ def _trim_notes(path: Path) -> None:
     if path.stat().st_size <= _NOTES_MAX_BYTES:
         return
     tail = _read_tail(path, _NOTES_MAX_BYTES // 2)
-    start = tail.find("## ")
-    tail = tail[start:] if start >= 0 else ""
+    # Start at the first entry header at a line start (not a '### ' or an inline '## '). With no
+    # header in the tail (one oversized entry), keep the line-aligned tail rather than emptying it.
+    header = re.search(r"^## ", tail, re.MULTILINE)
+    if header:
+        tail = tail[header.start():]
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(tail, encoding="utf-8")
     tmp.replace(path)
