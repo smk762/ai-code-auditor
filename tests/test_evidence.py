@@ -484,3 +484,67 @@ def test_loose_tests_repro_per_directory_so_one_collection_error_spares_the_rest
     res = evidence.python_repro(patched, _fresh(base, tmp_path), tests, cache_dir=tmp_path / "c")
     assert res.repro == ["rules/test_check.py::test_ok"]
     assert any(n.startswith("scripts: the patch's tests produced no results") for n in res.notes)
+
+
+def _second_bug_pack(mono) -> str:
+    from auditor.agent_pack import emit_packs_from_findings
+    from auditor.contracts import Finding
+
+    repo = Path(mono["out"]).parent / "mono"
+    f = Finding(id="llm:calc:2", type="bug", severity="MEDIUM", repo="mono", file_path=str(repo / "svc/app/calc.py"),
+                line=2, title="sum of positives comes out negative", description="d", evidence="e",
+                recommendation="r", source="llm")
+    [pack] = emit_packs_from_findings([f], output_dir=mono["out"], kind="nightly", run_id="run-2")
+    assert pack.work_item_id != mono["pack"]
+    return pack.work_item_id
+
+
+def test_one_validation_resolves_every_listed_pack_with_one_repro_run(mono, monkeypatch) -> None:
+    from auditor import evidence
+    from auditor.agent_pack import load_pack
+
+    other = _second_bug_pack(mono)
+    calls = []
+    real = evidence.run_repro
+    monkeypatch.setattr(evidence, "run_repro", lambda *a, **k: calls.append(1) or real(*a, **k))
+    body = _post(patch=FIX + NEW_TEST, pack_id=mono["pack"], pack_ids=[other, mono["pack"], "pack-missing"])
+    assert body["passed"] and body["pack"]["id"] == mono["pack"] and body["pack"]["status"] == "resolved"
+    by_id = {p["id"]: p for p in body["packs"]}
+    assert list(by_id) == [mono["pack"], other, "pack-missing"]  # pack_id first, repeats dropped
+    for pid in (mono["pack"], other):
+        assert by_id[pid]["status"] == "resolved" and by_id[pid]["evidence"] == "repro", by_id[pid]
+        assert by_id[pid]["evidence_record"]["repro"]["repro"] == ["svc/tests/test_calc.py::test_add"]
+        assert load_pack(mono["out"], pid)["status"] == "resolved"
+    assert by_id["pack-missing"] == {"id": "pack-missing", "updated": False, "reason": "pack not found"}
+    assert len(calls) == 1  # the repro ran once for both packs
+
+
+def test_each_listed_pack_is_judged_on_its_own_evidence(mono) -> None:
+    from auditor.agent_pack import load_pack
+
+    other = _second_bug_pack(mono)
+    body = _post(patch=FIX, pack_ids=[mono["pack"], other])  # no test: neither has proof
+    assert [p["status"] for p in body["packs"]] == ["unverified", "unverified"]
+    assert load_pack(mono["out"], other)["status"] == "unverified"
+
+
+def test_a_failed_validation_touches_none_of_the_listed_packs(mono) -> None:
+    from auditor.agent_pack import load_pack
+
+    other = _second_bug_pack(mono)
+    broken = ("--- a/svc/app/calc.py\n+++ b/svc/app/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n"
+              "-    return a - b  # bug\n+    return a +\n")
+    body = _post(patch=broken + NEW_TEST, pack_ids=[mono["pack"], other])
+    assert not body["passed"]
+    assert all(p["updated"] is False and p["reason"] == "validation did not pass" for p in body["packs"])
+    assert {load_pack(mono["out"], p)["status"] for p in (mono["pack"], other)} == {"open"}
+
+
+def test_pack_ids_are_capped(monkeypatch) -> None:
+    from auditor.audit_api import MAX_PACKS_PER_VALIDATION
+
+    monkeypatch.delenv("AI_AUDIT_API_TOKEN", raising=False)
+
+    resp = TestClient(app).post("/audit/validate_patch", json={
+        "repo": "mono", "patch": "", "pack_ids": [f"p{i}" for i in range(MAX_PACKS_PER_VALIDATION + 1)]})
+    assert resp.status_code == 422
