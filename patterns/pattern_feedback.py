@@ -41,9 +41,11 @@ def write_pattern_report(proposals: list[PatternProposal], output_dir: str = "re
 
 
 def _rule_for_extraction(candidate: dict) -> dict:
-    lib = candidate.get("proposed_library", {}).get("name", "shared-lib")
-    applies = candidate.get("repos_involved", [])
-    symbol = candidate.get("source_units", [{}])[0].get("symbols", ["custom_impl"])[0]
+    # ``or`` defaults, not .get defaults: a key present as null or [] must fall back too
+    lib = (candidate.get("proposed_library") or {}).get("name") or "shared-lib"
+    applies = candidate.get("repos_involved") or []
+    units = candidate.get("source_units") or [{}]
+    symbol = ((units[0] or {}).get("symbols") or ["custom_impl"])[0]
     return {
         "name": f"use_{lib.replace('-', '_')}",
         "description": f"All related logic should use {lib}.",
@@ -63,16 +65,22 @@ def _insert_rule_text(text: str, rule: dict) -> str | None:
     if start is None:
         return None
     end = len(lines)
+    indent = None  # of the list's existing items; a column-0 list must get a column-0 item
     for i in range(start + 1, len(lines)):
         ln = lines[i]
-        if ln.strip() and not ln[0].isspace() and not ln.startswith(("-", "#")):
+        # a column-0 '- ' item stays in the list; '---' / '...' (document markers) end it
+        if ln.strip() and not ln[0].isspace() and not (ln.startswith(("- ", "#")) or ln.rstrip() == "-"):
             end = i
             break
+        item = ln.lstrip()
+        if indent is None and (item.startswith("- ") or item.rstrip() == "-"):
+            indent = len(ln) - len(item)
     # comments and blank lines just above the next top-level key belong to that key
     while end > start + 1 and (not lines[end - 1].strip() or lines[end - 1].startswith("#")):
         end -= 1
     block = yaml.safe_dump([rule], sort_keys=False, default_flow_style=False)
-    block = "".join(f"  {ln}" if ln.strip() else ln for ln in block.splitlines(keepends=True))
+    pad = " " * (2 if indent is None else indent)
+    block = "".join(f"{pad}{ln}" if ln.strip() else ln for ln in block.splitlines(keepends=True))
     before = "".join(lines[:end])
     if before and not before.endswith("\n"):
         before += "\n"
