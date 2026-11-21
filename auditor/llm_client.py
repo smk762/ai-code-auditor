@@ -13,6 +13,7 @@ from auditor.config import (
     get_secret_from_env,
     load_model_provider_config,
 )
+from auditor.chunker import source_line
 from auditor.contracts import CodeUnit, Finding
 from auditor.ecosystem_briefing import build_ecosystem_overview, build_file_briefing
 from auditor.llm_cache import ReviewCache, legacy_review_key, review_key
@@ -461,12 +462,13 @@ def _heuristic_findings(unit: CodeUnit) -> list[Finding]:
         m = pattern.search(text)
         if not m:
             continue
-        line = unit.start_line + text.count("\n", 0, m.start())
+        offset = text.count("\n", 0, m.start())
+        line = source_line(unit, offset)  # a module unit's text isn't contiguous in the file
         shown = text
         if kind == "hardcoded_secret":
             # Findings are stored and served: never copy the secret literal itself.
             shown = text[: m.end(1)] + "***" + text[m.end() - 1 :]
-        evidence = shown.split("\n")[line - unit.start_line].strip()[:200] if text else unit.symbol
+        evidence = shown.split("\n")[offset].strip()[:200] if text else unit.symbol
         findings.append(
             Finding(
                 id=f"heuristic:{unit.id}:{idx}",
