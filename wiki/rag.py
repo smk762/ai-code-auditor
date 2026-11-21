@@ -127,9 +127,15 @@ def ingest(output_dir: str | Path, repos: dict[str, set[str] | None] | None = No
 
                 scope = f"wiki:{repo}"
                 d = retire(output_dir, scope, {i for i in recorded_ids(output_dir, scope) if considered(i)})
-                result["repos"][repo] = {"ingested": True, "count": 0, "retired": d.get("count", 0),
-                                         **({} if d.get("deleted") else {"retire_error": d.get("error")})}
+                ok = bool(d.get("deleted"))
+                result["repos"][repo] = {"ingested": ok, "count": 0, "retired": d.get("count", 0),
+                                         **({} if ok else {"retire_error": d.get("error")})}
                 result["retired"] = result.get("retired", 0) + d.get("count", 0)
+                if not ok:  # the stale sections are still in the index: a retry is needed
+                    result["ingested"] = False
+                    if not os.getenv("INGEST_SHARED_SECRET", ""):  # as a skipped send: no point going on
+                        result["error"] = d.get("error")
+                        break
             continue
         r = sync_documents(output_dir, f"wiki:{repo}", docs, tags=["kind:wiki", f"repo:{repo}"],
                            considered=considered)
