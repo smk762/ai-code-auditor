@@ -276,6 +276,7 @@ def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport
     base = Path(repo.path) if "://" not in (repo.path or "") else root
     sha, branch = _git(base, "rev-parse", "HEAD"), _git(base, "rev-parse", "--abbrev-ref", "HEAD")
     entries: dict[str, dict[str, Any]] = {}
+    written: list[str] = []  # this call's pages: ``res`` is shared by every call for this repo
 
     for page, (title, _brief) in pages_mod.PAGES.items():
         if page not in c.get("requested", set(pages_mod.PAGES)):
@@ -298,6 +299,7 @@ def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport
         md, dropped = citations.drop_failed_claims(r.text or "", root)
         rep = citations.check(md, root)
         (d / f"{page}.md").write_text(md, encoding="utf-8")
+        written.append(page)
         res.pages_written.append(page)
         res.dropped_claims += len(dropped)
         entries[page] = {"slug": page, "title": title, "file": f"{page}.md", "generated_at": _now(),
@@ -321,4 +323,4 @@ def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport
         "pages": [entries[s] for s in order if s in entries],
     }
     atomic_write_text(d / "INDEX.json", json.dumps(index, indent=2))
-    return list(res.pages_written)
+    return written

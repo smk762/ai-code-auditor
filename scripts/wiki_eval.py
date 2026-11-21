@@ -681,7 +681,8 @@ def stage_pages(repo_names: list[str], arm_names: list[str], run: Path, concurre
             for fut in as_completed(futs):
                 log(_job_result(fut, repo=futs[fut][0].name, arm=futs[fut][1], page=futs[fut][2]))
 
-    pages_path.write_text("\n".join(json.dumps(r) for r in results))
+    # no final rewrite: the per-record appends already hold every result, newline-terminated, and
+    # rewriting would risk truncating paid-for records (and drop the trailing newline later appends need)
     return results
 
 
@@ -713,9 +714,15 @@ def stage_judge(run: Path, concurrency: int, seed: int = 7, judge_arms: list[str
     rng = random.Random(seed)
     jobs = []
     for repo_dir in sorted((run / "pages").iterdir()):
-        repo = repos[repo_dir.name]
+        if not repo_dir.is_dir():
+            continue
+        repo = repos.get(repo_dir.name)
+        if repo is None:  # renamed or removed from the registry since generation: skip, don't abort
+            print(f"  skip judging {repo_dir.name}: not a known repo", flush=True)
+            continue
         src = full_source(repo)
-        arms = sorted(p.name for p in repo_dir.iterdir() if not judge_arms or p.name in judge_arms)
+        arms = sorted(p.name for p in repo_dir.iterdir()
+                      if p.is_dir() and (not judge_arms or p.name in judge_arms))
         for page in PAGES:
             present = [a for a in arms if (repo_dir / a / f"{page}.md").exists()]
             if len(present) < 2:  # nothing to compare: a verdict would be paid for and meaningless
@@ -760,7 +767,7 @@ def stage_judge(run: Path, concurrency: int, seed: int = 7, judge_arms: list[str
                     fh.write(json.dumps(rec) + "\n")
                 print(f"  judged {rec['repo']:14} {rec['page']:12} ${rec.get('cost', 0.0):.3f} "
                       f"{rec.get('error', '')}", flush=True)
-    judgements.write_text("\n".join(json.dumps(r) for r in results))
+    # no final rewrite: every verdict was appended (newline-terminated) as it arrived
     return results
 
 

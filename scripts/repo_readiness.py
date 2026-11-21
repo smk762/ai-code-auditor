@@ -18,8 +18,8 @@ missing. --model / --effort swap the reviewer; add new models' prices to auditor
 The 2026-11-13 run over 22 repos cost $10.47 (~3M input tokens).
 Spend is recorded on ledger lane "wiki" with note prefix "baseline:".
 
-Draft issues quote opsec hits with their values; strip the values before posting to a public
-repo (the 2026-11-13 filing kept only file:line and type).
+Draft issues for public repos list opsec hits by file:line and type only (the value would be
+republished in a world-readable issue); private repos' drafts quote the value to make the fix easy.
 """
 from __future__ import annotations
 
@@ -224,7 +224,7 @@ def prechecks(root: Path) -> dict:
                 cmds.setdefault(m.group(1), f"{rel}:L{text.count(chr(10), 0, m.start()) + 1}")
             try:
                 tree = ast.parse(text)
-            except SyntaxError:
+            except (SyntaxError, ValueError, RecursionError):  # 3.11 raises ValueError on NUL bytes
                 continue
             py_files += 1
             mod_doc += bool(ast.get_docstring(tree))
@@ -301,6 +301,17 @@ def llm_review(cl: anthropic.Anthropic, root: Path, pre: dict) -> dict:
     return {**review, "cost": usd, "input_tokens": msg.usage.input_tokens, "latency_s": round(time.time() - t0, 1)}
 
 
+_OPSEC_HIT = re.compile(r"^(?P<where>\S+:L\d+ [^:]+): (?P<value>.*)$", re.S)
+
+
+def _opsec_item(hit: str, public: bool) -> str:
+    """An opsec hit for the issue body: on a public repo, file:line and type only, never the value."""
+    if not public:
+        return hit
+    m = _OPSEC_HIT.match(hit)
+    return m.group("where") if m else "(location withheld)"
+
+
 def issue_body(name: str, snap_sha: str, gi: dict, pre: dict, rev: dict | None, public: bool) -> str:
     L = [f"Audited at `dev` @ `{snap_sha[:10]}` by ai-code-auditor's scan-readiness check "
          f"(smk762/ai-code-auditor#8). The suite DeepWiki"
@@ -317,13 +328,14 @@ def issue_body(name: str, snap_sha: str, gi: dict, pre: dict, rev: dict | None, 
     if rev and rev.get("findings"):
         L += ["## README / docs vs code", ""]
         order = {"high": 0, "medium": 1, "low": 2}
-        for f in sorted(rev["findings"], key=lambda f: order[f["severity"]]):
+        for f in sorted(rev["findings"], key=lambda f: order.get(str(f.get("severity", "")).lower(), 3)):
             L.append(f"- [ ] **{f['severity']} · {f['kind']}**: {f['fix']}  \n"
                      f"  Docs: {f['readme_says']}  \n  Code: {f['code_shows']} (`{f['evidence']}`)")
         L.append("")
     if pre["opsec"]:
         L += ["## Opsec (published docs must pass, see argus-studio#169 Approach 6)", ""]
-        L += [f"- [ ] `{x}` → replace with a placeholder (`<GPU_HOST>`, `<LAN_HOST>`, `<AGENT_HOST>`)" for x in pre["opsec"]]
+        L += [f"- [ ] `{_opsec_item(x, public)}` → replace with a placeholder (`<GPU_HOST>`, `<LAN_HOST>`, `<AGENT_HOST>`)"
+              for x in pre["opsec"]]
         L.append("")
     undoc = [("env vars", pre["undocumented_env"]), ("HTTP routes", pre["undocumented_routes"]),
              ("CLI subcommands", pre["undocumented_subcommands"])]
@@ -397,7 +409,7 @@ def main() -> int:
             (run / f"{name}.json").write_text(json.dumps({"sha": sha, "git": gi, "prechecks": pre, "review": rev}, indent=1))
             (run / "issues" / f"{name}.md").write_text(issue_body(name, sha, gi, pre, rev, public))
             nf = len(rev.get("findings", [])) if rev else 0
-            hi = sum(f["severity"] == "high" for f in rev.get("findings", [])) if rev else 0
+            hi = sum(str(f.get("severity", "")).lower() == "high" for f in rev.get("findings", [])) if rev else 0
             rows.append((name, sha, gi, pre, rev, nf, hi))
             print(f"  {name:20} files={pre['source_files']:4} opsec={len(pre['opsec'])} "
                   f"readme={gi.get('readme') or '-'} findings={nf} (high {hi}) "

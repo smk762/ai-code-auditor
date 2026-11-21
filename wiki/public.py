@@ -153,18 +153,23 @@ class Scrubber:
         return _IPV4.sub(lambda m: "<host>" if _bad_ip(m.group(1)) else m.group(0), text)
 
 
+# the ops sections end the public doc: at the start of the text too, whatever the case or spacing
+_OPS_HEADING = re.compile(r"(?im)^[ \t]*##[ \t]+(?:deployment[ \t]+notes|night[ \t]+conductor)\b")
+_ROW_OR_ITEM = re.compile(r"^\s*(?:\||[-*+][ \t]|\d+[.)][ \t])")
+
+
 def public_ecosystem_doc(text: str, private_names: list[str]) -> str:
-    """The ecosystem doc for public pages: no deployment or ops sections, no private rows."""
-    for marker in ("\n## Deployment notes", "\n## Night conductor"):
-        if marker in text:
-            text = text.split(marker, 1)[0]
+    """The ecosystem doc for public pages: no deployment or ops sections, no rows or list items
+    describing a private repo (prose mentions are left to the scrubber, and the gate checks the output)."""
+    if m := _OPS_HEADING.search(text):
+        text = text[:m.start()]
+    names = [re.compile(rf"(?i)(?<![A-Za-z0-9]){re.escape(n)}(?![A-Za-z0-9])") for n in private_names if n]
     keep = []
     for line in text.splitlines():
-        low = line.lower()
-        if "not scanned (integration only)" in low:
+        if "not scanned (integration only)" in line.lower():
             continue
-        if line.lstrip().startswith("|") and any(re.search(rf"(?<![A-Za-z0-9]){re.escape(n)}(?![A-Za-z0-9])", low) for n in private_names):
-            continue  # a table row describing a private repo
+        if _ROW_OR_ITEM.match(line) and any(n.search(line) for n in names):
+            continue  # a table row or list item describing a private repo
         keep.append(line)
     return "\n".join(keep).rstrip() + "\n"
 
@@ -178,7 +183,7 @@ def scrubber_for(denylist: list[str], private_names: list[str], ecosystem_text: 
 
 def public_inputs(denylist_path: str | Path | None = None,
                   visibility: Callable[[str], str | None] | None = None) -> tuple[Scrubber, str, dict[str, str | None]]:
-    """(scrubber, public ecosystem doc, visibility per enabled repo) for a public build."""
+    """(scrubber, public ecosystem doc, visibility per configured repo) for a public build."""
     from auditor.config import load_ecosystem_config
     from auditor.merge_poll import github_token
     from wiki.pages import ECOSYSTEM_DOC
@@ -186,7 +191,8 @@ def public_inputs(denylist_path: str | Path | None = None,
     denylist = load_denylist(denylist_path)
     token = github_token()
     lookup = visibility or (lambda r: github_visibility(r, token))
-    vis = {r.name: lookup(r.name) for r in load_ecosystem_config().repos if r.enabled}
+    # every configured repo, enabled or not: a disabled private repo is still private
+    vis = {r.name: lookup(r.name) for r in load_ecosystem_config().repos}
     private_names = private_repo_names(vis)
     raw = ECOSYSTEM_DOC.read_text(encoding="utf-8") if ECOSYSTEM_DOC.is_file() else ""
     scrub = scrubber_for(denylist, private_names, raw)
@@ -288,8 +294,10 @@ def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_pa
 
     token = github_token()
     lookup = visibility or (lambda r: github_visibility(r, token))
-    repos = {r.name: r for r in load_ecosystem_config().repos if r.enabled}
-    vis = {name: lookup(name) for name in sorted(repos)}
+    configured = load_ecosystem_config().repos
+    repos = {r.name: r for r in configured if r.enabled}
+    # the gate knows every configured repo, enabled or not: a disabled private repo is still private
+    vis = {name: lookup(name) for name in sorted({r.name for r in configured})}
     private_names = private_repo_names(vis)
 
     report = ExportReport(out_dir=str(dest))
@@ -308,11 +316,15 @@ def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_pa
         except (OSError, ValueError):
             report.skipped[name] = "no wiki built"
             continue
-        pages, refused = [], False
+        pages, refused, missing = [], False, False
         for entry in idx.get("pages", []):
             if entry.get("slug") not in PUBLIC_PAGES or entry.get("stale"):
                 continue
-            md = (base / entry["file"]).read_text(encoding="utf-8")
+            try:
+                md = (base / entry["file"]).read_text(encoding="utf-8")
+            except (OSError, KeyError, TypeError, UnicodeDecodeError):
+                missing = True  # a listed page that can't be read: the repo is left out, never half-shipped
+                break
             md = _MERMAID.sub("", md)  # diagrams are omitted until they are rendered to SVG at build time
             hit = gate(md, denylist, private_names)
             if hit:
@@ -323,6 +335,9 @@ def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_pa
             html = render_markdown(link_citations(md, f"{OWNER}/{name}", sha, getattr(repos[name], "subpath", "") or ""))
             pages.append({"slug": entry["slug"], "title": entry["title"], "md": md, "html": html,
                           "source_sha": sha, "generated_at": entry.get("generated_at")})
+        if missing:
+            report.skipped[name] = "a listed page could not be read (repo left out whole)"
+            continue
         if refused:
             report.skipped[name] = "a page was refused by the opsec gate (repo left out whole)"
             continue

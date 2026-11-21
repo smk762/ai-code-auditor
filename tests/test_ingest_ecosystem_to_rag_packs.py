@@ -28,11 +28,25 @@ def test_a_collection_the_client_cannot_write_is_refused(ingest) -> None:
 
 
 def test_the_client_collection_is_sent(ingest, monkeypatch) -> None:
-    mod, sent = ingest
+    import json
+
+    mod, _ = ingest
+    monkeypatch.undo()  # the real client this time, with only its HTTP post faked (nothing is sent)
+    monkeypatch.delenv("AI_AUDIT_RAG_COLLECTION", raising=False)
+    monkeypatch.setenv("INGEST_SHARED_SECRET", "s")
+    posted: list[dict] = []
+
+    class _Ok:
+        status_code, text = 200, "{}"
+
+    monkeypatch.setattr("requests.post", lambda url, data, headers, timeout: posted.append(json.loads(data)) or _Ok())
     assert mod._ingest_document("http://x", "s", "audit_docs", "d1", "text", {}, False) is True
     monkeypatch.setenv("AI_AUDIT_RAG_COLLECTION", "staging_docs")
     assert mod._ingest_document("http://x", "s", "staging_docs", "d2", "text", {}, False) is True
-    assert [d[0]["id"] for d in sent] == ["d1", "d2"]
+    # the client's collection, not the explicit argument, is what decides: a mismatch is refused
+    monkeypatch.setenv("AI_AUDIT_RAG_COLLECTION", "other_docs")
+    assert mod._ingest_document("http://x", "s", "staging_docs", "d3", "text", {}, False) is False
+    assert [(b["docs"][0]["id"], b["collection"]) for b in posted] == [("d1", "audit_docs"), ("d2", "staging_docs")]
 
 
 def test_endpoint_list_keeps_the_repo_document_within_its_cap(ingest) -> None:

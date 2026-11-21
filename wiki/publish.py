@@ -39,6 +39,16 @@ def _remote_url(repo: str) -> str:
     return repo if ("://" in repo or repo.startswith("/") or repo.startswith("git@")) else f"git@github.com:{repo}.git"
 
 
+def _same_remote(actual: str, wanted: str) -> bool:
+    """Whether a checkout's origin URL names the wanted remote (local paths compared resolved)."""
+    def norm(u: str) -> str:
+        u = u.strip()
+        if u.startswith("file://"):
+            u = u[len("file://"):]
+        return os.path.realpath(u) if u.startswith("/") else u.rstrip("/")
+    return bool(actual) and norm(actual) == norm(wanted)
+
+
 def verify_bundle(bundle: Path, *, denylist_path: str | Path | None = None,
                   private_names: list[str] | None = None) -> dict[str, Any]:
     """The bundle's manifest, after checking its hash and gating every file. Raises on failure."""
@@ -68,7 +78,8 @@ def _private_names(visibility: Callable[[str], str | None] | None) -> list[str]:
 
     token = github_token()
     lookup = visibility or (lambda r: github_visibility(r, token))
-    return private_repo_names({r.name: lookup(r.name) for r in load_ecosystem_config().repos if r.enabled})
+    # every configured repo, enabled or not: a disabled private repo is still private
+    return private_repo_names({r.name: lookup(r.name) for r in load_ecosystem_config().repos})
 
 
 def publish(bundle_dir: str | Path, *, repo: str = DEFAULT_REPO, checkout: str | Path | None = None,
@@ -85,6 +96,11 @@ def publish(bundle_dir: str | Path, *, repo: str = DEFAULT_REPO, checkout: str |
         if r.returncode != 0:
             raise RuntimeError(f"clone of {repo} failed: {r.stderr.strip()[:400]}")
     else:
+        # the default checkout serves any repo: never fetch, reset or push it against another repo's origin
+        origin = _git(co, "remote", "get-url", "origin", check=False)
+        if not _same_remote(origin, _remote_url(repo)):
+            raise RuntimeError(f"checkout {co} tracks {origin or 'no origin'}, not {_remote_url(repo)}: "
+                               "refusing to publish to the wrong repo (pass another checkout or remove this one)")
         _git(co, "fetch", "-q", "origin")
     has_remote_branch = bool(_git(co, "ls-remote", "--heads", "origin", BRANCH, check=False))
     _git(co, "checkout", "-q", "-B", BRANCH, *([f"origin/{BRANCH}"] if has_remote_branch else []))
