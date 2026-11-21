@@ -71,14 +71,35 @@ def test_stale_or_missing_seeded_eval_is_insufficient() -> None:
 def test_gates_exit_needs_two_green_weeks() -> None:
     green = {"a": "pass", "b": "pass", "c": "pending"}
     red = {"a": "pass", "b": "fail"}
-    wk = lambda d: (NOW - timedelta(days=d)).isoformat()
-    assert gates_exit([{"at": wk(8), "statuses": green}, {"at": wk(0), "statuses": green}])["met"]
+    wk = lambda d: (NOW - timedelta(days=d)).isoformat()  # 7 days back is always the previous ISO week
+    assert gates_exit([{"at": wk(7), "statuses": green}, {"at": wk(0), "statuses": green}])["met"]
     assert not gates_exit([{"at": wk(0), "statuses": green}])["met"]
-    # the week's *last* evaluation counts: green early in the week, red at the end
-    assert not gates_exit([{"at": wk(8), "statuses": green}, {"at": wk(0), "statuses": red}])["met"]
+    assert not gates_exit([{"at": wk(7), "statuses": green}, {"at": wk(0), "statuses": red}])["met"]
     insufficient = {"a": "pass", "b": "insufficient"}
-    assert not gates_exit([{"at": wk(8), "statuses": insufficient}, {"at": wk(0), "statuses": green}])["met"]
-    assert not gates_exit([{"at": wk(8), "statuses": {"x": "pending"}}, {"at": wk(0), "statuses": {"x": "pending"}}])["met"]
+    assert not gates_exit([{"at": wk(7), "statuses": insufficient}, {"at": wk(0), "statuses": green}])["met"]
+    assert not gates_exit([{"at": wk(7), "statuses": {"x": "pending"}}, {"at": wk(0), "statuses": {"x": "pending"}}])["met"]
+
+
+def test_the_last_evaluation_of_a_week_wins() -> None:
+    green = {"a": "pass", "b": "pass"}
+    red = {"a": "pass", "b": "fail"}
+    monday = datetime.combine(NOW.date() - timedelta(days=NOW.isocalendar()[2] - 1), datetime.min.time(), UTC)
+    prior = {"at": (monday - timedelta(days=6)).isoformat(), "statuses": green}
+    early, late = (monday + timedelta(hours=1)).isoformat(), (monday + timedelta(hours=2)).isoformat()
+    # both evaluations fall in the current ISO week; only the later one counts
+    assert not gates_exit([prior, {"at": early, "statuses": green}, {"at": late, "statuses": red}])["met"]
+    assert gates_exit([prior, {"at": early, "statuses": red}, {"at": late, "statuses": green}])["met"]
+
+
+def test_gates_exit_needs_consecutive_recent_weeks() -> None:
+    green = {"a": "pass"}
+    wk = lambda d: (NOW - timedelta(days=d)).isoformat()
+    # green, then ten weeks with no evaluation, then green: the missing weeks are not green
+    assert not gates_exit([{"at": wk(77), "statuses": green}, {"at": wk(0), "statuses": green}])["met"]
+    # two adjacent green weeks long ago and nothing since: stale evidence
+    assert not gates_exit([{"at": wk(70), "statuses": green}, {"at": wk(63), "statuses": green}])["met"]
+    # last week and the week before still count before this week's first run
+    assert gates_exit([{"at": wk(14), "statuses": green}, {"at": wk(7), "statuses": green}])["met"]
 
 
 def test_metrics_exit_over_four_weeks() -> None:
