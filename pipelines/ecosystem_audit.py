@@ -130,12 +130,15 @@ def _scan_and_extract(
 
     A repo's results are added only once the whole repo has succeeded: one that fails part
     way is recorded as failed and contributes nothing, so later stages never mix its partial
-    units into the graph, embeddings and reports."""
+    units into the graph, embeddings and reports.
+
+    A repo already in *completed* (a resumed run) is scanned again rather than skipped: the
+    graph, the embedding index (rebuilt from *all_units*) and the reports are built only from
+    what this call collects, so a skipped repo would vanish from all of them. Scanning and
+    extraction are local and cheap; nothing expensive was checkpointed to restore instead."""
     for i, repo in enumerate(repos, start=1):
         if repo.name in completed:
-            upsert_repo_run(meta.run_id, repo.name, "skipped", attempts=0, error_message="resumed-skip")
-            record_run_progress(meta)
-            continue
+            logger.info("Repo %s finished before the resume; reloading its units", repo.name)
         logger.info("Scanning repo %s (%d / %d) …", repo.name, i, len(repos))
         try:
             files = with_retries(lambda repo=repo: scan_repo(repo), retries=3, base_delay_s=1.0)
@@ -405,11 +408,26 @@ def run() -> None:
         meta.finish("failed")
         raise
     finally:
-        scheduler.release_capacity()
-        record_run_finish(meta, "ecosystem-audit")
-        run_json_path = write_run_metadata(meta, output_dir=cfg.output_dir)
+        # Each cleanup step on its own: one failing (the DB being down is a likely cause of the
+        # original failure too) must neither skip the rest nor replace the exception in flight.
+        run_json_path: Path | None = None
         if graph is not None:
-            graph.close()
+            try:
+                graph.close()
+            except Exception:
+                logger.exception("closing the graph DB failed")
+        try:
+            scheduler.release_capacity()
+        except Exception:
+            logger.exception("releasing GPU capacity failed")
+        try:
+            record_run_finish(meta, "ecosystem-audit")
+        except Exception:
+            logger.exception("recording the run finish for %s failed", meta.run_id)
+        try:
+            run_json_path = write_run_metadata(meta, output_dir=cfg.output_dir)
+        except Exception:
+            logger.exception("writing run metadata for %s failed", meta.run_id)
         report_dir = Path(cfg.output_dir).resolve()
         if meta.status in ("success", "partial_success"):
             logger.info(
