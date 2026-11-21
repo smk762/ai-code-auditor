@@ -78,3 +78,56 @@ def test_headline_projection_matches_the_chart_end() -> None:
     d = usage_data("month")
     assert d["month"]["burn_per_day"] > 0
     assert d["month"]["projected"] == pytest.approx(d["cumulative"][-1]["projected"], abs=1e-3)
+
+
+def _status_input(spent, cap, projected, days_left=9, lanes=()):
+    return {"month": {"spent": spent, "cap": cap, "projected": projected, "days_left": days_left},
+            "lanes": [{"lane": n, "month_spent": s, "cap": c} for n, s, c in lanes]}
+
+
+def test_usage_json_carries_a_status_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_AUDIT_BUDGET_TOTAL_USD", "100")
+    get_ledger().record("audit", "claude-haiku-5-5", 7_000_000, 0, note="argus-mask")  # $0.70
+    d = usage_data("7d")
+    assert d["summary"].startswith("Claude API spend this month: $0.70 of $100 cap (1%), projected $")
+    assert len(d["summary"]) <= 200
+    assert d["spoken"].startswith("Claude API spend this month is under a dollar of a 100 dollar cap")
+    assert d["severity"] == "info"
+    assert "month" in d and "lanes" in d  # additive: existing fields untouched
+
+
+@pytest.mark.parametrize("args, severity", [
+    ((10, 100, 50), "info"),
+    ((10, 100, 85), "notice"),
+    ((10, 100, 50, 9, [("audit", 13, 15)]), "notice"),
+    ((10, 100, 120), "warning"),
+    ((10, 100, 50, 9, [("audit", 15, 15)]), "warning"),
+    ((100, 100, 140), "critical"),
+    ((500, None, 900), "info"),
+])
+def test_status_severity_follows_the_dashboard_thresholds(args, severity) -> None:
+    from auditor.usage_dashboard import usage_status
+
+    assert usage_status(_status_input(*args))["severity"] == severity
+
+
+def test_status_text_is_short_and_speakable() -> None:
+    from auditor.usage_dashboard import usage_status
+
+    lanes = [(f"lane_number_{i}", 20, 15) for i in range(30)]
+    s = usage_status(_status_input(101.5, 190, 260.25, 1, lanes))
+    assert len(s["summary"]) <= 200 and s["summary"].endswith("...")
+    assert s["summary"].startswith("Claude API spend this month: $101.50 of $190 cap (53%), projected $260.25; "
+                                   "resets in 1 day; at lane cap: lane_number_0")
+    assert not set("$%_;:/") & set(s["spoken"])
+    assert "goes over the cap" in s["spoken"] and s["spoken"].endswith("The budget resets in 1 day.")
+
+    one = usage_status(_status_input(5, 190, 20, 3, [("audit_batch", 40, 40)]))
+    assert "The audit batch lane has hit its cap." in one["spoken"]
+    assert one["summary"].endswith("; at lane cap: audit_batch")
+    assert "reached" not in one["spoken"]
+
+    full = usage_status(_status_input(190, 190, 190))
+    assert "cap is reached" in full["spoken"]
+    assert usage_status(_status_input(3, None, 9))["summary"] == (
+        "Claude API spend this month: $3.00 (no cap), projected $9.00; resets in 9 days")
