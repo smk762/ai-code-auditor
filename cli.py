@@ -5,6 +5,7 @@ import json
 from dataclasses import asdict
 import os
 from pathlib import Path
+import sys
 import yaml
 
 from auditor.auth import enforce_role
@@ -664,17 +665,22 @@ def _run_eval_trust(args) -> None:
     out = _output_dir_default()
     if args.seeded:
         r = eval_seeded.run(out, repos=[x for x in args.repos.split(",") if x] or None)
+        # With --json, stdout must stay one JSON document: the summary goes to stderr and the
+        # seeded result rides in the payload.
         print(f"seeded eval: {r['fix']['detected']}/{r['fix']['n']} bugs proven, "
               f"{r['control']['wrongly_accepted']}/{r['control']['n']} non-fixes wrongly accepted, "
-              f"repos {', '.join(r['repos_with_scenarios']) or 'none'} ({r['seconds']}s)")
+              f"repos {', '.join(r['repos_with_scenarios']) or 'none'} ({r['seconds']}s)",
+              file=sys.stderr if args.json else sys.stdout)
     rep = trust_eval.evaluate(out, record=not args.no_record)
     if args.json:
-        print(json.dumps(rep, indent=2))
+        if args.seeded:
+            rep = {**rep, "seeded": r}
+        print(json.dumps(rep, indent=2, default=str))
         return
     mark = {"pass": "PASS", "fail": "FAIL", "insufficient": "  ..", "pending": "  --"}
     for g in rep["gates"]:
         val = "" if g["value"] is None else f"{g['value']:.0%}" if g["threshold"] <= 1 else f"{g['value']}"
-        need = f"{g['op']} {g['threshold']:.0%}"
+        need = f"{g['op']} {g['threshold']:.0%}" if g["threshold"] <= 1 else f"{g['op']} {g['threshold']}"
         extra = f"n={g['n']}" + (f" (needs {g['min_n']})" if g["status"] == "insufficient" else "")
         print(f"{mark[g['status']]}  {g['id']:<28} {val:>6} {need:<7} {extra:<18} #{g['issue']} {g['note']}")
     s, ex = rep["summary"], rep["exit"]
@@ -880,6 +886,20 @@ def _run_pr_intel(*, as_json: bool, cached: bool, label_p0: bool = False, dry_ru
         print(f"  ! {e['repo']}: {e['error']}")
 
 
+
+def _enforce_cli_role(cfg, token: str, role: str, action: str) -> None:
+    """Role-check ``action`` against the ai-audit JWT.
+
+    With auth_mode off (the host default: timers and agents run the CLI locally) the JWT is an
+    optional narrowing check, so a missing one passes. With auth_mode on, a missing JWT must not
+    pass where a low-privilege one is refused.
+    """
+    if token:
+        enforce_role(token, role, action)
+    elif cfg.auth_mode:
+        raise PermissionError(f"{action} needs an {role} JWT (--auth-token or "
+                              "AI_AUDIT_AUTH_TOKEN) when auth_mode is on")
+
 def _run_ask(
     query: str,
     as_json: bool = False,
@@ -1005,12 +1025,7 @@ def _run_repair(
     # for read-only review/suggest; write paths require ``admin``.
     write_ops = bool(apply or commit or push)
     token = auth_token or os.getenv("AI_AUDIT_AUTH_TOKEN", "")
-    if write_ops and cfg.auth_mode and not token:
-        # With auth on, a missing JWT must not pass where a low-privilege one is refused.
-        raise PermissionError("--apply / --commit / --push need an admin JWT (--auth-token or "
-                              "AI_AUDIT_AUTH_TOKEN) when auth_mode is on")
-    if token:
-        enforce_role(token, "admin" if write_ops else "analyst", "cli:repair")
+    _enforce_cli_role(cfg, token, "admin" if write_ops else "analyst", "cli:repair")
 
     from auditor.rag_client import chat_url
 
@@ -1275,8 +1290,8 @@ def main() -> None:
     provided_auth = getattr(args, "auth_code", "") or os.getenv("AI_AUDIT_AUTH_CODE_INPUT", "")
     require_auth(cfg.auth_mode, cfg.auth_code_env, provided_code=provided_auth)
     token = getattr(args, "auth_token", "") or os.getenv("AI_AUDIT_AUTH_TOKEN", "")
-    if token and args.command in {"repo-run", "ecosystem-run", "rest-run"}:
-        enforce_role(token, "admin", f"cli:{args.command}")
+    if args.command in {"repo-run", "ecosystem-run", "rest-run"}:
+        _enforce_cli_role(cfg, token, "admin", f"cli:{args.command}")
     if args.command == "budget":
         _budget(args)
         return
@@ -1493,8 +1508,7 @@ def main() -> None:
     elif args.command == "search":
         _run_search(args)
     elif args.command == "qa-benchmark":
-        if token:
-            enforce_role(token, "analyst", "cli:qa-benchmark")
+        _enforce_cli_role(cfg, token, "analyst", "cli:qa-benchmark")
         result = run_benchmark(args.dataset)
         if args.json:
             print(json.dumps(asdict(result), indent=2))
@@ -1653,8 +1667,7 @@ def main() -> None:
             auth_token=args.auth_token,
         )
     elif args.command == "approve-extraction":
-        if token:
-            enforce_role(token, "admin", "cli:approve-extraction")
+        _enforce_cli_role(cfg, token, "admin", "cli:approve-extraction")
         report_path = Path(args.report)
         if not report_path.exists():
             raise FileNotFoundError(f"Extraction report not found: {report_path}")
