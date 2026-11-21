@@ -1,6 +1,7 @@
 """Regression tests for auditor/diff_auditor.py path matching and containment."""
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 
 from auditor import diff_auditor as da
@@ -21,10 +22,11 @@ def _fd(path: str, new_start: int, new_count: int) -> FileDiff:
 
 
 def test_match_path_prefers_the_most_specific_candidate():
-    candidates = {"utils.py", "pkg/utils.py"}
-    for _ in range(20):  # order of a set must not matter
-        assert da._match_path("/repo/pkg/utils.py", set(candidates)) == "pkg/utils.py"
-    assert da._match_path("/repo/utils.py", candidates) == "utils.py"
+    candidates = ["utils.py", "pkg/utils.py", "other/utils.py"]
+    # every iteration order explicitly: rebuilding a set reuses one process-wide hash order
+    for order in itertools.permutations(candidates):
+        assert da._match_path("/repo/pkg/utils.py", order) == "pkg/utils.py"
+        assert da._match_path("/repo/utils.py", order) == "utils.py"
 
 
 def test_filter_uses_repo_relative_exact_match(tmp_path):
