@@ -115,7 +115,9 @@ class Mirror:
                     break
 
     def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["git", *args], cwd=self.path, capture_output=True, text=True, timeout=60, check=False)
+        # Decode leniently: a Latin-1 or binary blob must not raise out of ``lines()``.
+        return subprocess.run(["git", *args], cwd=self.path, capture_output=True, encoding="utf-8",
+                              errors="replace", timeout=60, check=False)
 
     @property
     def ok(self) -> bool:
@@ -125,8 +127,9 @@ class Mirror:
         if not self.ok:  # never run git in the process CWD or against the index
             return set()
         if self._files is None:
-            r = self._git("ls-tree", "-r", "--name-only", self.ref)
-            self._files = set(r.stdout.splitlines()) if r.returncode == 0 else set()
+            # -z: without it, paths with non-ASCII bytes, quotes or newlines come back C-quoted
+            r = self._git("ls-tree", "-r", "-z", "--name-only", self.ref)
+            self._files = set(filter(None, r.stdout.split("\0"))) if r.returncode == 0 else set()
         return self._files
 
     def lines(self, path: str) -> list[str] | None:
@@ -231,11 +234,14 @@ def plan(packs: list[PackView], scans: list[Scan], mirrors: dict[str, Mirror], *
         per_repo: dict[tuple[str, str], int] = defaultdict(int)
         for c in closures:
             per_repo[(c.repo, c.from_status)] += 1
-        for (r, st), n in per_repo.items():
-            if n > HOLD_MIN and n > HOLD_SHARE * considered[(r, st)]:
-                held[r] = (f"would close {n} of {considered[(r, st)]} {st} packs (> {HOLD_SHARE:.0%}); "
-                           "rerun with force")
-        closures = [c for c in closures if c.repo not in held]
+        tripped = {(r, st) for (r, st), n in per_repo.items()
+                   if n > HOLD_MIN and n > HOLD_SHARE * considered[(r, st)]}
+        # Each status is held on its own count, and every tripped reason is reported.
+        for r, st in sorted(tripped):
+            msg = f"would close {per_repo[(r, st)]} of {considered[(r, st)]} {st} packs (> {HOLD_SHARE:.0%})"
+            held[r] = f"{held[r]}; {msg}" if r in held else msg
+        held = {r: f"{msg}; rerun with force" for r, msg in held.items()}
+        closures = [c for c in closures if (c.repo, c.from_status) not in tripped]
     return {"closures": closures, "held": held, "skipped": skipped,
             "open_considered": sum(n for (_, st), n in considered.items() if st == "open"),
             "wontfix_considered": sum(n for (_, st), n in considered.items() if st == "wontfix")}
