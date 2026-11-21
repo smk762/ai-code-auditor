@@ -81,11 +81,13 @@ def _problems(missions: list[dict[str, Any]], rec: dict[str, Any] | None) -> lis
     """Things a human should look at, grouped so 12 identical failures read as one line."""
     reasons: dict[str, list[str]] = {}
     for m in missions:
+        # stripped first, so a whitespace-only reason falls through instead of leaving no first line
+        summary = str(m.get("summary") or "").strip()
         if m["status"] in ("FAILED", "ESCALATED"):
-            reason = (m["escalate_reason"] or m["summary"] or "no reason recorded").strip().splitlines()[0][:300]
-            reasons.setdefault(f"{m['status'].lower()}: {reason}", []).append(m["id"])
-        elif re.search(r"\bnot (available|found)\b", m["summary"], re.IGNORECASE):
-            reasons.setdefault(f"incomplete: {m['summary'].strip().splitlines()[0][:300]}", []).append(m["id"])
+            reason = str(m.get("escalate_reason") or "").strip() or summary or "no reason recorded"
+            reasons.setdefault(f"{m['status'].lower()}: {reason.splitlines()[0][:300]}", []).append(m["id"])
+        elif re.search(r"\bnot (available|found)\b", summary, re.IGNORECASE):
+            reasons.setdefault(f"incomplete: {summary.splitlines()[0][:300]}", []).append(m["id"])
     out = [{"kind": "mission", "text": text, "missions": ids} for text, ids in reasons.items()]
     for d in (rec or {}).get("decisions_needed") or []:
         out.append({"kind": "decision", "text": str(d.get("summary") or "").strip()[:400],

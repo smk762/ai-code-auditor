@@ -125,10 +125,12 @@ def build_ecosystem_overview(max_chars: int = 2000) -> str:
     return _fit_lines(head, body, tail, max_chars, lambda n: f"- … and {n} more repos")
 
 
-# Directories never searched for endpoints: VCS, envs, caches and build output.
+# Directories never searched for endpoints: VCS, envs, caches, build output and tests.
 _ENDPOINT_SKIP_DIRS = frozenset({
     ".git", "node_modules", ".venv", "venv", "env", ".tox", "__pycache__",
     "build", "dist", "site-packages", ".mypy_cache", ".pytest_cache",
+    # test suites: their routes are fixtures ("GET /a"), not the repo's API surface
+    "tests", "test", "fixtures",
 })
 
 

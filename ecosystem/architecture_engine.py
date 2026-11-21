@@ -98,7 +98,7 @@ class ArchitectureEngine:
         allowed = {_norm(item).lower() for item in allowed_edges}
         violations: list[RuleViolation] = []
         for src, tgt, edge_type in edges:
-            if edge_type != "DEPENDS_ON":
+            if str(edge_type).upper() != "DEPENDS_ON":  # case-insensitive, as in _match_forbidden
                 continue
             src_name = src.split("::")[-1].lower()
             tgt_name = tgt.split("::")[-1].lower()

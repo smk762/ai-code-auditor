@@ -73,17 +73,23 @@ _ALLOWED_ATTRS = frozenset({
     "aria-label", "aria-hidden", "focusable", "vector-effect", "shape-rendering",
 })
 # url(...) is only allowed as a same-document reference such as url(#grad).
-_BAD_VALUE = re.compile(r"javascript:|data:|url\(\s*['\"]?\s*[^#'\s]", re.IGNORECASE)
+_BAD_VALUE = re.compile(r"javascript:|data:|url\((?!\s*['\"]?\s*#)", re.IGNORECASE)
+# The parser drops processing instructions (<?xml-stylesheet?> can pull in CSS or XSLT), so the
+# allowlist walk never sees them; only a leading XML declaration may carry "<?".
+_XML_DECL = re.compile(rb"\A(?:\xef\xbb\xbf)?\s*<\?xml\s[^?]*\?>")
 
 
 def _safe(svg: bytes) -> bool:
     """A plain SVG mark: parsed (never pattern-matched) and checked against an allowlist.
 
-    DTDs and entities are refused outright, so nothing can expand into markup after the check."""
+    DTDs, entities and processing instructions are refused outright, so nothing can expand into
+    markup or pull in a stylesheet after the check."""
     if len(svg) > MAX_SVG_BYTES:
         return False
     lowered = svg.lower()
     if b"<!doctype" in lowered or b"<!entity" in lowered:
+        return False
+    if b"<?" in _XML_DECL.sub(b"", svg, count=1):
         return False
     try:
         root = ET.fromstring(svg)
