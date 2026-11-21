@@ -251,7 +251,7 @@ def _normalized_ast_repr(unit: CodeUnit) -> str:
 def _embedding_similarity(left: CodeUnit, right: CodeUnit) -> float:
     left_vec = _hash_embedding_vec(left.raw_text, 64)
     right_vec = _hash_embedding_vec(right.raw_text, 64)
-    dot = sum(a * b for a, b in zip(left_vec, right_vec))
+    dot = sum(a * b for a, b in zip(left_vec, right_vec, strict=True))  # both 64-dim
     left_norm = sum(a * a for a in left_vec) ** 0.5 or 1.0
     right_norm = sum(b * b for b in right_vec) ** 0.5 or 1.0
     return max(0.0, min(1.0, dot / (left_norm * right_norm)))

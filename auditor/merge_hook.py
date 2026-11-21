@@ -216,14 +216,19 @@ def run_merge_refresh(
     before = _require_sha("before", event.before)
     after = _require_sha("after", event.after)
 
+    pre_sync_error = ""
     if sync_mirror:
         # Capture tip before fetch when webhook did not supply SHAs.
         try:
             path_pre = resolve_repo_path(repo_cfg)
             if path_pre.exists() and not before:
                 before = _git_rev(path_pre, "HEAD")
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 — recorded below; the range falls back to after~1
+            # Without the pre-sync tip the range falls back to after~1, which misses all but the
+            # last commit of a multi-commit merge: say so rather than audit a narrower range quietly.
+            pre_sync_error = str(exc)[:300] or exc.__class__.__name__
+            logger.warning("pre-sync tip capture failed for %s; merge range falls back to after~1: %s",
+                           repo_cfg.name, exc)
         sync_result = sync_one_mirror(repo_cfg.name, branch=merge_branch())
         sync_info = {
             "ok": sync_result.ok,
@@ -232,6 +237,8 @@ def run_merge_refresh(
             "path": sync_result.path,
             "error": sync_result.error,
         }
+        if pre_sync_error:
+            sync_info["pre_sync_tip_error"] = pre_sync_error
         if not sync_result.ok:
             raise RuntimeError(f"mirror sync failed: {sync_result.error}")
 

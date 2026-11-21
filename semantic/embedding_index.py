@@ -139,7 +139,7 @@ class EmbeddingIndex:
                                   "query: index stale, rebuild required")
         scored = []
         for i, vec in enumerate(vectors):
-            score = sum(a * b for a, b in zip(q_vec, vec))
+            score = sum(a * b for a, b in zip(q_vec, vec, strict=True))  # widths checked above
             scored.append((score, i))
         scored.sort(reverse=True)
         return [records[i] for _, i in scored[:top_k]]
