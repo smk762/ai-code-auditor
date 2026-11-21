@@ -33,12 +33,26 @@ def test_gc_never_overwrites_a_claim_that_lands_mid_apply(tmp_path: Path, monkey
 
     monkeypatch.setattr(agent_pack, "load_pack", slow_load)
     closure = pack_gc.Closure("pack-a", "argus-cortex", "x.py", "t", "nightly", "not_rescanned", "gone")
-    gc = threading.Thread(target=pack_gc.apply, args=(tmp_path, [closure]), name="gc")
+    outcome: dict[str, object] = {}
+
+    def run_gc() -> None:  # a crash in the thread must fail the test, not vanish
+        try:
+            outcome["closed"] = pack_gc.apply(tmp_path, [closure])
+        except BaseException as exc:  # noqa: BLE001 — re-raised below
+            outcome["error"] = exc
+
+    gc = threading.Thread(target=run_gc, name="gc")
     gc.start()
     assert loaded.wait(5)
     update_pack_status(tmp_path, "pack-a", "claimed", "agent A")  # waits for GC's lock, then lands
     gc.join(5)
-    assert real_load(tmp_path, "pack-a")["status"] == "claimed"  # without the lock: obsolete
+    assert not gc.is_alive(), "GC hung"
+    if "error" in outcome:
+        raise outcome["error"]  # type: ignore[misc]
+    assert outcome["closed"] == 1  # GC really wrote its closure (a no-op apply can't pass)...
+    final = real_load(tmp_path, "pack-a")
+    assert final["status"] == "claimed"  # ...and the claim landed after it; without the lock: obsolete
+    assert [h["status"] for h in final["status_history"]][-2:] == ["obsolete", "claimed"]
 
 
 def test_a_second_claim_gets_409_unless_forced(tmp_path: Path, monkeypatch) -> None:
@@ -89,15 +103,22 @@ def test_writers_patch_the_index_instead_of_rebuilding(tmp_path: Path, monkeypat
     elif path == "emit":
         f = Finding(id="f1", repo="argus-cortex", file_path="a.py", line=1, severity="HIGH", type="bug", title="t",
                     description="d", evidence="e", recommendation="r", source="llm")
-        assert agent_pack.emit_packs_from_findings([f], output_dir=tmp_path)
+        [emitted] = agent_pack.emit_packs_from_findings([f], output_dir=tmp_path)
     else:
         pk = _mk_pack("pack-class-x")
         pk.kind = class_packs.KIND
         write_pack(pk, tmp_path)
         class_packs.record_guard(tmp_path, "pack-class-x", repo="r", commit="abcdef1000000000000000000000000000000000", proof_test="tests/t.py",
                                  fixtures=[])
-    entries = {e["id"] for e in agent_pack.list_packs(tmp_path, limit=100)}
-    assert "pack-a" in entries
+    entries = {e["id"]: e for e in agent_pack.list_packs(tmp_path, limit=100)}
+    assert "pack-a" in entries  # untouched entries survive the patch
+    # ...and the write reached the index (a writer that skipped the index update fails here)
+    if path == "gc":
+        assert entries["pack-a"]["status"] == "obsolete"
+    elif path == "emit":
+        assert entries[emitted.work_item_id]["file_path"] == "a.py"
+    else:
+        assert entries["pack-class-x"]["status"] == "in_progress"  # guard recorded on an open class pack
 
 
 def test_rag_send_names_each_doc_once(tmp_path: Path, monkeypatch) -> None:
