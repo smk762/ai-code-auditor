@@ -137,8 +137,13 @@ def _git(
     timeout: int = _GIT_TIMEOUT,
     check: bool = True,
     extra_env: dict[str, str] | None = None,
+    errors: str = "replace",
 ) -> subprocess.CompletedProcess:
-    """Run git with *args* in *cwd*.  Raises GitError when check=True and rc != 0."""
+    """Run git with *args* in *cwd*.  Raises GitError when check=True and rc != 0.
+
+    ``errors="surrogateescape"`` keeps non-UTF-8 path bytes round-trippable, for output that is
+    passed back to git as paths rather than shown to a person.
+    """
     run_env = {**os.environ, **(extra_env or {})}
     try:
         result = subprocess.run(
@@ -147,7 +152,7 @@ def _git(
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace",  # non-UTF-8 paths/messages must not escape as UnicodeDecodeError
+            errors=errors,  # non-UTF-8 paths/messages must not escape as UnicodeDecodeError
             timeout=timeout,
             env=run_env,
         )
@@ -391,12 +396,41 @@ def _extract_filenames_from_patch(patch_text: str) -> list[str]:
     Hunk bodies are skipped using the ``@@`` line counts, so an added line whose
     content starts with ``++ `` is not taken for a header. Plain-diff timestamps
     (``+++ path<TAB>2024-01-01 …``) are dropped and git's C-quoted paths decoded.
+
+    In a git diff a rename or copy names both sides, so the old path of a rename is staged too
+    (its deletion belongs in the commit). Blocks with no ``---``/``+++`` pair (a pure rename or
+    copy, a binary patch, a mode change) take their paths from ``rename from``/``rename to``/
+    ``copy to`` lines or, failing those, from the ``diff --git`` header.
     """
     files: list[str] = []
     lines = patch_text.splitlines()
+    in_git_block = block_is_copy = False
+    block_header = ""      # the current "diff --git" line, until the block names a path
     i = 0
+
+    def flush_header() -> None:
+        nonlocal block_header
+        if block_header:
+            files.extend(p for p in _git_header_paths(block_header) if p != "/dev/null")
+            block_header = ""
+
     while i < len(lines):
         line = lines[i]
+        if line.startswith("diff --git "):
+            flush_header()
+            in_git_block, block_is_copy, block_header = True, False, line
+            i += 1
+            continue
+        if in_git_block and line.startswith(("rename from ", "rename to ", "copy to ")):
+            raw = line.split(" ", 2)[2]
+            files.append(_header_path(raw, ""))
+            block_header = ""
+            i += 1
+            continue
+        if in_git_block and line.startswith("copy from "):
+            block_header, block_is_copy = "", True  # the source is unchanged; only "copy to" is staged
+            i += 1
+            continue
         m = _HUNK_RE.match(line)
         if m:
             old_left = int(m.group(1)) if m.group(1) is not None else 1
@@ -419,14 +453,51 @@ def _extract_filenames_from_patch(patch_text: str) -> list[str]:
         if line.startswith("--- ") and i + 1 < len(lines) and lines[i + 1].startswith("+++ "):
             a_path = _header_path(line[4:], "a/")
             b_path = _header_path(lines[i + 1][4:], "b/")
-            if b_path and b_path != "/dev/null":
+            has_new = bool(b_path) and b_path != "/dev/null"
+            if has_new:
                 files.append(b_path)
-            elif a_path and a_path != "/dev/null":
+            # A git rename with edits ("--- a/old" / "+++ b/new") stages the old path's deletion
+            # too. In a plain diff "--- " may name a backup copy, so only a deletion
+            # ("+++ /dev/null") takes the old side there.
+            if a_path and a_path != "/dev/null" and not block_is_copy and (in_git_block or not has_new):
                 files.append(a_path)
+            block_header = ""
             i += 2
             continue
         i += 1
-    return files
+    flush_header()
+    return list(dict.fromkeys(files))
+
+
+def _git_header_paths(line: str) -> list[str]:
+    """Both paths of a ``diff --git a/<old> b/<new>`` line.
+
+    Quoted paths are unambiguous. Unquoted ones may hold spaces, so the line is split where the
+    two halves agree (a non-rename) or at the only `` b/`` (a rename, whose names git then also
+    gives in ``rename from``/``rename to`` lines handled by the caller).
+    """
+    rest = line[len("diff --git "):]
+    if rest.startswith('"'):
+        end = 1
+        while end < len(rest) and rest[end] != '"':
+            end += 2 if rest[end] == "\\" else 1
+        old, new = rest[:end + 1], rest[end + 1:].strip()
+        return [_header_path(old, "a/"), _header_path(new, "b/")]
+    if rest.endswith('"') and ' "b/' in rest:
+        old, new = rest.rsplit(' "b/', 1)
+        return [_header_path(old, "a/"), _header_path('"b/' + new, "b/")]
+    if rest.startswith("a/"):
+        n = len(rest)
+        # Same path both sides: "a/<p> b/<p>" has odd length 2*len(p) + 5.
+        if n % 2 == 1:
+            half = (n - 1) // 2
+            old, new = rest[:half], rest[half + 1:]
+            if old[2:] == new[2:] and new.startswith("b/"):
+                return [old[2:]]
+        if rest.count(" b/") == 1:
+            old, new = rest.split(" b/")
+            return [old[2:], new]
+    return []
 
 
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
@@ -434,7 +505,11 @@ _C_ESCAPES = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, "\\": 
 
 
 def _c_unquote(s: str) -> str:
-    """Decode git's C-quoted path (``"dir/na\\303\\257ve file.py"``) to the real name."""
+    """Decode git's C-quoted path (``"dir/na\\303\\257ve file.py"``) to the real name.
+
+    Bytes that are not UTF-8 (a Latin-1 name from an old repo) decode as surrogate escapes, the
+    way ``os.fsdecode`` does, so the path still names the file on disk and in the index.
+    """
     body, out, i = s[1:-1], bytearray(), 0
     while i < len(body):
         ch = body[i]
@@ -448,9 +523,9 @@ def _c_unquote(s: str) -> str:
                 out.append(_C_ESCAPES[nxt])
                 i += 2
                 continue
-        out += ch.encode("utf-8")
+        out += ch.encode("utf-8", errors="surrogateescape")
         i += 1
-    return out.decode("utf-8", errors="replace")
+    return out.decode("utf-8", errors="surrogateescape")
 
 
 def _header_path(raw: str, prefix: str) -> str:
@@ -511,7 +586,7 @@ def commit_repair(
         source = "patch"
     else:
         # Fallback: modified + deleted tracked files, through the same secret filter.
-        listed = _git(lit + ["diff", "--name-only", "-z"], repo_path).stdout
+        listed = _git(lit + ["diff", "--name-only", "-z"], repo_path, errors="surrogateescape").stdout
         candidates = [f for f in listed.split("\0") if f]
         source = "tracked changes"
 
@@ -526,12 +601,54 @@ def commit_repair(
             (repo_path / f).resolve().relative_to(root)
         except ValueError as exc:
             raise GitError(f"refusing to stage path outside repo: {f!r}") from exc
+    # The index as the user left it, restored whole if the commit fails: resetting our paths to
+    # HEAD would also drop staging the user already had on them (e.g. partial hunks).
+    index_backup = _backup_index(repo_path)
+    try:
+        return _stage_and_commit(repo_path, message, stageable, lit, nothing, branch, short_msg,
+                                 author_name, author_email, index_backup)
+    finally:
+        if index_backup is not None:
+            index_backup[1].unlink(missing_ok=True)
+
+
+def _backup_index(repo_path: Path) -> tuple[Path, Path] | None:
+    """(index path, copy of it), or None when there is no index file to copy."""
+    r = _git(["rev-parse", "--git-path", "index"], repo_path, check=False)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    index = Path(r.stdout.strip())
+    if not index.is_absolute():
+        index = repo_path / index
+    if not index.is_file():
+        return None
+    fd, tmp = tempfile.mkstemp(prefix="index-backup-", dir=index.parent)
+    os.close(fd)
+    shutil.copy2(index, tmp)
+    return index, Path(tmp)
+
+
+def _stage_and_commit(
+    repo_path: Path,
+    message: str,
+    stageable: list[str],
+    lit: list[str],
+    nothing: CommitResult,
+    branch: str,
+    short_msg: str,
+    author_name: str,
+    author_email: str,
+    index_backup: tuple[Path, Path] | None,
+) -> CommitResult:
     for f in stageable:
         # "add -A -- <path>" stages a modification, an addition or a deletion of exactly that path.
         _git(lit + ["add", "-A", "--", f], repo_path, check=False)
 
     # Count only our files: anything else already in the index stays staged and is not committed.
-    staged_raw = _git(lit + ["diff", "--cached", "--name-only", "-z", "--", *stageable], repo_path).stdout
+    # --no-renames: with rename detection a move lists only its new path, and the old path's
+    # deletion would stay staged and out of the commit.
+    staged_raw = _git(lit + ["diff", "--cached", "--no-renames", "--name-only", "-z", "--", *stageable],
+                      repo_path, errors="surrogateescape").stdout
     staged_files = [f for f in staged_raw.split("\0") if f.strip()]
 
     if not staged_files:
@@ -548,8 +665,11 @@ def commit_repair(
         # "commit -- <paths>" commits only these paths, never a pre-existing staged change.
         _git(lit + ["commit", "-m", message, "--", *staged_files], repo_path, extra_env=author_env)
     except GitError as exc:
-        # Unstage only what we staged, so the user's own staging survives.
-        _git(lit + ["reset", "-q", "--", *staged_files], repo_path, check=False)
+        # Put the index back as it was, so the user's own staging survives, on these paths too.
+        if index_backup is not None:
+            os.replace(index_backup[1], index_backup[0])
+        else:
+            _git(lit + ["reset", "-q", "--", *staged_files], repo_path, check=False)
         raise GitError(f"commit failed: {exc}") from exc
 
     sha = _git(["rev-parse", "HEAD"], repo_path).stdout.strip()
@@ -583,9 +703,26 @@ def _is_local_path_remote(url: str) -> bool:
     return True
 
 
-def _valid_push_name(name: str) -> bool:
-    """A remote or branch name that git cannot read as an option or split into several args."""
-    return bool(name) and not name.startswith("-") and not any(c.isspace() for c in name)
+_PUSH_BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+_PUSH_REMOTE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _valid_push_name(name: str, *, remote: bool = False) -> bool:
+    """A remote or branch name git can read only as that name.
+
+    Beyond option injection (a leading ``-``) and argument splitting (whitespace), a branch is a
+    refspec to ``git push`` (``+main`` forces, ``:main`` deletes, ``HEAD:refs/heads/x`` retargets)
+    and a remote may be a URL or a path. Only plain names pass: no ``+ : ^ ~ ? * [ \\ @{``, no
+    ``..``, and a remote has no ``/`` either.
+    """
+    if not name or name.startswith("-") or ".." in name:
+        return False
+    return bool((_PUSH_REMOTE_RE if remote else _PUSH_BRANCH_RE).match(name))
+
+
+def _configured_remotes(repo_path: Path) -> set[str]:
+    r = _git(["remote"], repo_path, check=False)
+    return set(r.stdout.split()) if r.returncode == 0 else set()
 
 
 def push_repair_branch(
@@ -610,7 +747,7 @@ def push_repair_branch(
             skipped_reason="could not determine current branch",
         )
     # A value starting with "-" would reach git push as an option (--force, --mirror, --delete, ...).
-    if not _valid_push_name(remote):
+    if not _valid_push_name(remote, remote=True):
         return PushResult(pushed=False, remote=remote, branch=target_branch, remote_url="",
                           skipped_reason=f"invalid remote name {remote!r}")
     if not _valid_push_name(target_branch) or _git(
@@ -618,7 +755,8 @@ def push_repair_branch(
         return PushResult(pushed=False, remote=remote, branch=target_branch, remote_url="",
                           skipped_reason=f"invalid branch name {target_branch!r}")
 
-    raw_url = get_remote_url(repo_path, remote)
+    # Only a configured remote: never a URL or path named in its place.
+    raw_url = get_remote_url(repo_path, remote) if remote in _configured_remotes(repo_path) else None
     # Remote URLs often embed tokens (https://x-access-token:...@host): never log or return them.
     remote_url = redact_secrets(raw_url) if raw_url is not None else None
     if remote_url is None:
