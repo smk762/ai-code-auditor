@@ -54,7 +54,7 @@ query($owner: String!, $name: String!) {
     defaultBranchRef { name }
     pullRequests(states: OPEN, first: 50, orderBy: {field: UPDATED_AT, direction: DESC}) {
       nodes {
-        number title url isDraft createdAt updatedAt baseRefName headRefName body
+        number title url isDraft createdAt updatedAt baseRefName headRefName isCrossRepository body
         mergeable mergeStateStatus reviewDecision
         author { login }
         labels(first: 10) { nodes { name } }
@@ -100,9 +100,10 @@ _REF = (
     r"|(?P<r_repo>[A-Za-z][\w.-]*)#(?P<r_n>\d+)"
     r"|#(?P<h_n>\d+))"
 )
+# A bare "after" is not a dependency ("regression introduced after #120"): only "merge/land after".
 _DEP_RE = re.compile(
-    r"(?P<verb>stacked on(?: top of)?|depends on|blocked (?:by|on)|requires|waiting (?:for|on)"
-    r"|(?:merge|land)s? after|after)\s+(?:PR\s+|pull request\s+|issue\s+)?[\[`(]*" + _REF,
+    r"(?<![\w-])(?P<verb>stacked on(?: top of)?|depends on|blocked (?:by|on)|requires|waiting (?:for|on)"
+    r"|(?:merge|land)s? after)\s+(?:PR\s+|pull request\s+|issue\s+)?[\[`(]*" + _REF,
     re.I,
 )
 
@@ -195,6 +196,7 @@ class PrIntel:
     score: float = 0.0
     p0: bool = False
     linchpin: list[str] = field(default_factory=list)  # why it is P0: cross_repo, cycle
+    cross_repo: bool = False  # head branch lives in a fork, so it can never be another PR's base
 
     @property
     def ref(self) -> str:
@@ -309,6 +311,7 @@ def _node_to_intel(repo: str, slug: str, default_branch: str, n: dict[str, Any])
             {"slug": str((c.get("repository") or {}).get("nameWithOwner") or slug), "number": int(c.get("number") or 0)}
             for c in ((n.get("closingIssuesReferences") or {}).get("nodes") or [])
         ],
+        cross_repo=bool(n.get("isCrossRepository")),
     )
 
 
@@ -361,7 +364,8 @@ def classify(
     """
     now = now or datetime.now(timezone.utc)
     by_ref = {(p.slug.lower(), p.number): p for p in prs}
-    by_head = {(p.slug.lower(), p.head): p for p in prs}
+    # Only same-repo heads can be another PR's base: a fork's "main" or "patch-1" is not.
+    by_head = {(p.slug.lower(), p.head): p for p in prs if not p.cross_repo}
 
     for p in prs:
         p.release = p.release or _is_release(p.title, p.head, p.base)
@@ -515,13 +519,23 @@ def resolution_plan(prs: list[PrIntel]) -> list[dict[str, Any]]:
     remaining = sorted(live, key=lambda p: (-p.score, p.ref))
     while remaining:
         ready = [p for p in remaining if prereq[p.ref] <= done]
-        if not ready:  # dependency cycle: break it at the highest score
+        cycle_break = not ready
+        if cycle_break:  # dependency cycle: break it at the highest score
             ready = remaining[:1]
         p = ready[0]
         remaining.remove(p)
         done.add(p.ref)
         action = p.next_action
-        if prereq[p.ref] and action.startswith("Wait for"):
+        # "Wait for X; then merge" becomes "Merge" only when every wait is an earlier step:
+        # not on a cycle break, not with an external wait, not with a wait that names no ref.
+        waits_covered = (
+            not cycle_break
+            and not ext_waits[p.ref]
+            and not any(b.kind in WAITING and not b.ref for b in p.blockers)
+        )
+        if cycle_break:
+            action = f"Break cycle: {action}"
+        elif prereq[p.ref] and action.startswith("Wait for") and waits_covered:
             action = "Merge" if not ({b.kind for b in p.blockers} & ACTIONABLE) else action
         steps.append(
             {
