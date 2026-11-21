@@ -2,6 +2,13 @@
 
 Everything is computed from the spend ledger in local time, so "hungry periods" line up with
 the timers (00:30 conductor, 01:30 batch review, hourly merge poll).
+
+The JSON also carries a status line for pollers (``usage_status``), in the same vocabulary as
+mithrandir's ``LATEST.json`` envelope: ``summary`` (one line, at most 200 chars), ``spoken``
+(TTS-safe, like ``prs.json``'s) and ``severity`` (info | notice | warning | critical). Severity
+uses the dashboard's thresholds: ``notice`` at 85% of a cap (projected total, or a lane spent),
+``warning`` when the total is projected over its cap or a lane has hit its cap (that lane's calls
+are refused), ``critical`` when the total cap is reached (every capped call is refused).
 """
 from __future__ import annotations
 
@@ -16,6 +23,8 @@ from auditor.spend_ledger import budget_month_start, get_ledger
 HTML_PATH = Path(__file__).parent / "static" / "usage_dashboard.html"
 TOP_PROCESSES = 12
 ONE_OFF_PREFIX = "baseline:"
+NEAR_CAP = 0.85  # same threshold as the dashboard's "Close to cap"
+SUMMARY_MAX = 200
 
 
 def _next_reset(start: date) -> date:
@@ -127,7 +136,7 @@ def usage_data(range_key: str = "month") -> dict[str, Any]:
         cum.append({"date": dd.isoformat(), "actual": round(running, 4),
                     "projected": round(running, 4) if dd == today else None})
 
-    return {
+    out = {
         "generated_at": now.isoformat(timespec="seconds"),
         "range": range_key,
         "range_start": r_start.isoformat(),
@@ -158,3 +167,68 @@ def usage_data(range_key: str = "month") -> dict[str, Any]:
         "top_hours": [{**h, "cost": round(h["cost"], 4)} for h in top_hours],
         "cumulative": cum,
     }
+    out.update(usage_status(out))
+    return out
+
+
+def _dollars(usd: float) -> str:
+    """Spoken money: whole dollars, no symbols."""
+    if 0 < usd < 1:
+        return "under a dollar"
+    n = round(usd)
+    return f"{n} dollar{'' if n == 1 else 's'}"
+
+
+def _days(n: int) -> str:
+    return f"{n} day{'' if n == 1 else 's'}"
+
+
+def usage_status(data: dict[str, Any]) -> dict[str, str]:
+    """``summary``, ``spoken`` and ``severity`` for the budget month in ``usage_data``'s output."""
+    m = data["month"]
+    spent, cap, projected, days_left = m["spent"], m["cap"], m["projected"], m["days_left"]
+    capped_lanes = [ln for ln in data.get("lanes") or [] if ln.get("cap")]
+    at_cap = [ln["lane"] for ln in capped_lanes if ln["month_spent"] >= ln["cap"]]
+    near = [ln["lane"] for ln in capped_lanes
+            if NEAR_CAP * ln["cap"] <= ln["month_spent"] < ln["cap"]]
+
+    if cap and spent >= cap:
+        severity = "critical"
+    elif (cap and projected >= cap) or at_cap:
+        severity = "warning"
+    elif (cap and projected >= NEAR_CAP * cap) or near:
+        severity = "notice"
+    else:
+        severity = "info"
+
+    if cap:
+        head = f"Claude API spend this month: ${spent:.2f} of ${cap:g} cap ({spent / cap:.0%})"
+    else:
+        head = f"Claude API spend this month: ${spent:.2f} (no cap)"
+    lanes = ""
+    if at_cap:
+        lanes = f"; at lane cap: {', '.join(at_cap)}"
+    elif near:
+        lanes = f"; near lane cap: {', '.join(near)}"
+    summary = f"{head}, projected ${projected:.2f}; resets in {_days(days_left)}{lanes}"
+    if len(summary) > SUMMARY_MAX:
+        summary = summary[:SUMMARY_MAX - 3].rstrip() + "..."
+
+    if cap:
+        pct = round(100 * spent / cap)
+        parts = [f"Claude API spend this month is {_dollars(spent)} of a {round(cap)} dollar cap, {pct} percent."]
+    else:
+        parts = [f"Claude API spend this month is {_dollars(spent)}, with no cap."]
+    if cap and spent >= cap:
+        parts.append("The monthly cap is reached, so capped calls are refused.")
+    elif cap and projected >= cap:
+        parts.append(f"At this rate it goes over the cap, reaching {_dollars(projected)}.")
+    else:
+        parts.append(f"At this rate it reaches {_dollars(projected)}.")
+    spoken_lanes = [ln.replace("_", " ") for ln in at_cap]
+    if len(spoken_lanes) == 1:
+        parts.append(f"The {spoken_lanes[0]} lane has hit its cap.")
+    elif spoken_lanes:
+        parts.append(f"The {', '.join(spoken_lanes[:-1])} and {spoken_lanes[-1]} lanes have hit their caps.")
+    parts.append(f"The budget resets in {_days(days_left)}.")
+    return {"summary": summary, "spoken": " ".join(parts), "severity": severity}
