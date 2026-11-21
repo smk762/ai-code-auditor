@@ -37,6 +37,7 @@ here and in code. Don't add a rule to remember.
 | Serve a brand SVG with scripts or event handlers | `test_ui_topology::test_mark_rejects_active_content` |
 | An agent-facing request whose cost grows with the number of packs, or seconds of CPU-bound work inside the API process | `test_hot_paths::test_agent_hot_paths_cost_the_same_at_any_pack_count`, `::test_topology_rebuilds_outside_the_api_process`. At runtime, requests over `AI_AUDIT_SLOW_REQUEST_MS` (1000) are counted in `/audit/health` `slow_requests`, which should stay empty |
 | A non-GET endpoint without `_require_mutating_auth`, or a request value spliced into git as an option | `test_api_auth_sweep::test_every_non_get_route_requires_the_token` (exemptions listed with a reason in `OWN_AUTH`), `::test_refs_that_could_become_git_options_are_refused` |
+| A status webhook sent without the bearer token its target names, or one failing target stopping the others or the wrap-up | `test_status_webhooks::test_a_target_whose_token_is_unset_is_skipped_not_sent_bare`, `::test_a_failing_target_never_stops_the_others`, `::test_bad_config_is_reported_and_never_fatal` |
 | Work pushed to `main`, a PR into `main` other than the release, or `main` ahead of `dev` except the release merge commit | **UNENFORCED** (see Branches) |
 | Deploy hooks in dragonhound-site, or docs committed into it | **UNENFORCED** here (another repo). Docs go live only by a `docs.lock.json` pin bump on its `dev` |
 

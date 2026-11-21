@@ -1330,6 +1330,7 @@ def main() -> None:
             "requires_ack": (result.get("status") or {}).get("requires_ack"),
             "latest_url": (result.get("status") or {}).get("latest_url"),
             "webhook": result.get("webhook"),
+            "webhooks": result.get("webhooks"),
             "agent_packs": result.get("agent_packs"),
         }, indent=2))
     elif args.command == "packs":
