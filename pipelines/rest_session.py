@@ -37,9 +37,10 @@ def run(
         ingest_rag=not no_rag,
     )
     logger.info(
-        "Rest session published %s (webhook=%s)",
+        "Rest session published %s (webhook=%s, webhooks=%s)",
         result.get("json_path"),
         result.get("webhook"),
+        result.get("webhooks"),
     )
     return result
 
@@ -64,4 +65,4 @@ if __name__ == "__main__":
         no_draft_prs=args.no_draft_prs,
         no_pr_review=args.no_pr_review,
     )
-    print(json.dumps({"run_id": out.get("status", {}).get("run_id"), "paths": {"json": out.get("json_path"), "md": out.get("md_path")}, "webhook": out.get("webhook")}, indent=2))
+    print(json.dumps({"run_id": out.get("status", {}).get("run_id"), "paths": {"json": out.get("json_path"), "md": out.get("md_path")}, "webhook": out.get("webhook"), "webhooks": out.get("webhooks")}, indent=2))

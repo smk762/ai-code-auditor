@@ -269,6 +269,11 @@ docker compose run --rm --no-deps auditor
 
 `audit-api` listens on port **8765**. Mithrandir: `GET /reports/mithrandir/LATEST.json`.
 
+At wrap-up the rest session POSTs the status envelope to mithrandir (`AI_AUDIT_MITHRANDIR_WEBHOOK_URL`) and to any
+extra targets in `AI_AUDIT_STATUS_WEBHOOKS`, a JSON list of `{"name", "url", "token_env"}` (an argus-scout webhook
+source, say). `token_env` names the variable holding that target's bearer token; a target whose variable is empty is
+skipped rather than sent without it. See `.env.example`.
+
 ### Ecosystem repo paths in Docker
 
 `config/ecosystem.yaml` uses **absolute host paths** under `/home/smk` and `/home/smk/mirrors`. Bind-mount those prefixes in compose so the container sees the same trees.
