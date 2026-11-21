@@ -48,7 +48,10 @@ def test_secret_rule_flags_literals_with_their_line(text, line):
     findings = [f for f in _heuristic_findings(_unit(text)) if f.title == "Potential hardcoded secret"]
     assert len(findings) == 1
     assert findings[0].line == line and findings[0].severity == "HIGH"
-    assert findings[0].evidence.strip() in text
+    # Evidence is the cited line with the secret literal masked, never the secret itself.
+    cited = text.split("\n")[line - 10].strip()
+    head, _, tail = findings[0].evidence.partition("***")
+    assert _ and cited.startswith(head) and cited.endswith(tail)
 
 
 @pytest.mark.parametrize("text", [

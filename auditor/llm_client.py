@@ -106,7 +106,9 @@ def _safe_line(value: Any, default: int) -> int:
 def prompt_blocks(segments: list[tuple[str, bool]], *, ttl: str | None = None) -> list[dict[str, Any]]:
     """Text blocks from ``(text, cache)`` segments; ``cache`` puts a cache breakpoint at the end
     of that segment. The API rejects whitespace-only blocks, so one is folded into the block
-    before it (or, first in line, the block after); the joined text never changes.
+    before it, keeping its breakpoint (or, first in line, the block after, where a breakpoint
+    would cache only whitespace and is dropped); the joined text never changes. All-whitespace
+    input has no block the API would accept, so it gives [].
     """
     control: dict[str, Any] = {"type": "ephemeral", **({"ttl": ttl} if ttl else {})}
     blocks: list[dict[str, Any]] = []
@@ -115,6 +117,8 @@ def prompt_blocks(segments: list[tuple[str, bool]], *, ttl: str | None = None) -
         if not text.strip():
             if blocks:
                 blocks[-1]["text"] += text
+                if cache:
+                    blocks[-1]["cache_control"] = dict(control)
             else:
                 carry += text
             continue
@@ -123,8 +127,6 @@ def prompt_blocks(segments: list[tuple[str, bool]], *, ttl: str | None = None) -
         if cache:
             block["cache_control"] = dict(control)
         blocks.append(block)
-    if carry:
-        blocks.append({"type": "text", "text": carry})
     return blocks
 
 
@@ -268,7 +270,8 @@ class LLMClient:
             choices = body.get("choices", [])
             if choices and isinstance(choices[0], dict):
                 message = choices[0].get("message", {})
-                return str(message.get("content", ""))
+                # A null content (reasoning-only or empty completion) is no answer, not "None".
+                return str(message.get("content") or "")
         return str(body.get("response", body.get("text", "")))
 
     def health_check(self) -> tuple[bool, str]:
@@ -392,16 +395,21 @@ def _extract_json_array(raw: str) -> Any:
     """Parse a JSON array from model output, tolerating <think> blocks and ``` fences."""
     text = _THINK_RE.sub("", raw).strip()
     try:
-        return json.loads(text)
+        whole = json.loads(text)
     except json.JSONDecodeError:
-        pass
+        whole = None
+    if isinstance(whole, list):
+        return whole
+    # Not an array as a whole (prose, fences, or a wrapper such as {"findings": [...]}):
+    # take the outermost [...] span.
     start, end = text.find("["), text.rfind("]")
     if start == -1 or end <= start:
         return None
     try:
-        return json.loads(text[start : end + 1])
+        found = json.loads(text[start : end + 1])
     except json.JSONDecodeError:
         return None
+    return found if isinstance(found, list) else None
 
 
 def _parse_findings_json(raw: str, unit: CodeUnit) -> list[Finding] | None:
@@ -454,7 +462,11 @@ def _heuristic_findings(unit: CodeUnit) -> list[Finding]:
         if not m:
             continue
         line = unit.start_line + text.count("\n", 0, m.start())
-        evidence = text.split("\n")[line - unit.start_line].strip()[:200] if text else unit.symbol
+        shown = text
+        if kind == "hardcoded_secret":
+            # Findings are stored and served: never copy the secret literal itself.
+            shown = text[: m.end(1)] + "***" + text[m.end() - 1 :]
+        evidence = shown.split("\n")[line - unit.start_line].strip()[:200] if text else unit.symbol
         findings.append(
             Finding(
                 id=f"heuristic:{unit.id}:{idx}",
