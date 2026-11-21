@@ -105,48 +105,70 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z`*\[(])")
 _BLOCK_PREFIX = re.compile(r"^\s*(?:>\s*)*")
 
 
+def _whole_unit(line: str) -> bool:
+    """A list item, table row or heading: dropped whole when one of its citations fails."""
+    stripped = line.lstrip()
+    return stripped.startswith(("- ", "* ", "+ ", "|", "#")) or bool(re.match(r"\d+[.)] ", stripped))
+
+
+def _starts_block(line: str) -> bool:
+    """A line that can never continue the block above it (hard-wrapped text continues it)."""
+    return _whole_unit(line) or bool(_FENCE.match(line))
+
+
 def drop_failed_claims(md: str, root: Path) -> tuple[str, list[dict[str, str]]]:
     """Remove every claim whose citation fails. Returns (page, dropped claims).
 
-    List items, table rows and headings with a failing citation are removed whole; in a
-    paragraph only the sentence holding it goes. Code fences are left alone.
+    Lines are grouped into logical blocks first, so hard-wrapped text is judged whole: a
+    paragraph is a run of non-blank lines, a list item takes its continuation lines, and table
+    rows and headings are one line each. List items, table rows and headings with a failing
+    citation are removed whole; in a paragraph only the sentence holding it goes (the paragraph is
+    then re-joined onto one line). Code fences are left alone.
     """
     files = _Files(root)
     out: list[str] = []
     dropped: list[dict[str, str]] = []
-    in_fence = False
-    for line in md.splitlines():
-        if _FENCE.match(line):
-            in_fence = not in_fence
+    lines = md.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if _FENCE.match(line):  # a whole fence, verbatim (blank lines inside it included)
             out.append(line)
-            continue
-        if in_fence:
-            out.append(line)
+            i += 1
+            while i < len(lines):
+                out.append(lines[i])
+                i += 1
+                if _FENCE.match(lines[i - 1]):
+                    break
             continue
         if not line.strip():
-            if out and not out[-1].strip():
-                continue  # collapse blank runs (e.g. left by a dropped claim), never inside a fence
-            out.append(line)
+            if not (out and not out[-1].strip()):  # collapse blank runs (e.g. left by a dropped claim)
+                out.append(line)
+            i += 1
             continue
-        if not CITE.search(line):
-            out.append(line)
-            continue
-        bad = [(m, v) for m in CITE.finditer(line) if (v := _verdict(line, m, files)[0]) != "ok"]
+        block = [line]
+        i += 1
+        if not line.lstrip().startswith(("|", "#")):  # rows and headings are single lines
+            while i < len(lines) and lines[i].strip() and not _starts_block(lines[i]):
+                block.append(lines[i])
+                i += 1
+        text = block[0] if len(block) == 1 else \
+            " ".join([block[0].rstrip()] + [_BLOCK_PREFIX.sub("", ln).strip() for ln in block[1:]])
+        bad = [(m, v) for m in CITE.finditer(text) if (v := _verdict(text, m, files)[0]) != "ok"]
         if not bad:
-            out.append(line)
+            out.extend(block)
             continue
-        stripped = line.lstrip()
-        if stripped.startswith(("- ", "* ", "+ ", "|", "#")) or re.match(r"\d+[.)] ", stripped):
-            dropped.append({"claim": line.strip(), "reason": bad[0][1], "citation": bad[0][0].group(0)})
+        if _whole_unit(block[0]):
+            dropped.append({"claim": " ".join(text.split()), "reason": bad[0][1], "citation": bad[0][0].group(0)})
             continue
         # sentence spans, so a failing citation removes only the sentence it sits in (by position:
         # two sentences can cite the same range and only one of them name the wrong symbol)
-        # The line's indentation / blockquote markers stay whatever sentences are dropped.
-        prefix = _BLOCK_PREFIX.match(line).group(0)
-        bounds = [len(prefix)] + [s.end() for s in _SENTENCE_END.finditer(line, len(prefix))] + [len(line)]
+        # The first line's indentation / blockquote markers stay whatever sentences are dropped.
+        prefix = _BLOCK_PREFIX.match(text).group(0)
+        bounds = [len(prefix)] + [s.end() for s in _SENTENCE_END.finditer(text, len(prefix))] + [len(text)]
         kept = []
         for start, end in zip(bounds, bounds[1:]):
-            sentence = line[start:end]
+            sentence = text[start:end]
             hits = [(m, v) for m, v in bad if start <= m.start() < end]
             if hits:
                 dropped.append({"claim": sentence.strip(), "reason": hits[0][1], "citation": hits[0][0].group(0)})
