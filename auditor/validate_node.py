@@ -114,8 +114,10 @@ def _node_version() -> str:
 def _env(npm_cache: Path | None = None) -> dict[str, str]:
     """Child env. npm's cache must be writable: in the container the API runs as a uid with no
     passwd entry, so HOME is ``/`` and npm's default ``/.npm`` fails every install with EACCES."""
-    env = {**os.environ, "CI": "1", "NO_COLOR": "1", "FORCE_COLOR": "0", "NEXT_TELEMETRY_DISABLED": "1",
-           "VITE_CONFIG_NATIVE_IGNORE_WARNING": "true", "npm_config_update_notifier": "false"}
+    from auditor.proc import child_env
+
+    env = child_env(CI="1", NO_COLOR="1", FORCE_COLOR="0", NEXT_TELEMETRY_DISABLED="1",
+                    VITE_CONFIG_NATIVE_IGNORE_WARNING="true", npm_config_update_notifier="false")
     if npm_cache is not None:
         env["npm_config_cache"] = str(npm_cache)
     elif not env.get("npm_config_cache"):

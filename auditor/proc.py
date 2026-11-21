@@ -38,3 +38,27 @@ def kill_group(proc: subprocess.Popen) -> None:
         os.killpg(proc.pid, signal.SIGKILL)
     except (OSError, ProcessLookupError):
         pass
+
+
+# What a child running code under audit may see of the host env. Everything else (API keys, the
+# API token, DATABASE_URL, the RAG ingest URL and its signing secret, GITHUB_TOKEN, AI_AUDIT_*
+# service config) stays out: a patch's tests are untrusted code, and a test that finds a live
+# service URL in its env calls the real service (a RAG send that blocks for minutes while the GPU
+# is busy, or worse, writes into the real collection).
+_CHILD_ENV_KEEP = frozenset({
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LANGUAGE", "TZ",
+    "TMPDIR", "TMP", "TEMP",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "PIP_CERT", "NODE_EXTRA_CA_CERTS",
+    "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_TRUSTED_HOST", "PIP_CACHE_DIR",
+    "npm_config_cache", "npm_config_registry",
+    "GOPATH", "GOCACHE", "GOMODCACHE", "GOFLAGS", "GOPROXY", "CARGO_HOME", "RUSTUP_HOME",
+})
+
+
+def child_env(**extra: str) -> dict[str, str]:
+    """A minimal env for a child that runs audited code (tests, installs, checks): the allowlist
+    above from the host env, the locale's ``LC_*``, then *extra*."""
+    env = {k: v for k, v in os.environ.items() if k in _CHILD_ENV_KEEP or k.startswith("LC_")}
+    env.update(extra)
+    return env

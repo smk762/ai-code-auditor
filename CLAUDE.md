@@ -32,6 +32,7 @@ here and in code. Don't add a rule to remember.
 | Keep calling a local LLM backend after it failed 5 times in a row (each unit paying its timeout), or retry a 4xx | `test_llm_client::test_dead_backend_trips_the_breaker_for_every_client`, `::test_only_transient_errors_are_retried`. `AI_AUDIT_LLM_BREAKER_FAILURES` / `_COOLDOWN_S` (5, 600s) |
 | Spend past a lane budget | `test_spend_ledger::test_lane_and_total_caps`, `::test_batch_prefetch_trims_to_budget` |
 | Suite-rule findings that disagree with argus-ci's CI (a different catalogue or checker) | `test_suite_rules::test_catalogue_is_read_from_dev_not_the_checkout`; the scanner runs argus-ci's own `check.py` |
+| A patch's tests, installs or checks seeing the host env (API keys, tokens, `DATABASE_URL`, live service URLs such as the RAG ingest URL) | `auditor/proc.py` `child_env` allowlist at every child that runs audited code; `test_validate_child_env` |
 | A container without an init process (git's detached gc leaves zombies that exhaust its pids) | `test_compose_init::test_every_service_runs_under_init` |
 | Serve a brand SVG with scripts or event handlers | `test_ui_topology::test_mark_rejects_active_content` |
 | An agent-facing request whose cost grows with the number of packs, or seconds of CPU-bound work inside the API process | `test_hot_paths::test_agent_hot_paths_cost_the_same_at_any_pack_count`, `::test_topology_rebuilds_outside_the_api_process`. At runtime, requests over `AI_AUDIT_SLOW_REQUEST_MS` (1000) are counted in `/audit/health` `slow_requests`, which should stay empty |
