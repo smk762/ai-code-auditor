@@ -15,7 +15,7 @@ def _section(start: str, end: str, body: str) -> str:
     return f"{start}\n{body}\n{end}\n"
 
 
-@pytest.mark.parametrize("splice,start,end", CASES)
+@pytest.mark.parametrize("splice,start,end", CASES, ids=["section", "pr"])
 def test_orphaned_start_marker_never_eats_user_text(splice, start, end) -> None:
     doc = f"intro\n{start}\nuser kept writing here\nmore user text\n"  # end marker was deleted
     once = splice(doc, _section(start, end, "v1"))
@@ -27,7 +27,7 @@ def test_orphaned_start_marker_never_eats_user_text(splice, start, end) -> None:
     assert "v2" in twice and "v1" not in twice
 
 
-@pytest.mark.parametrize("splice,start,end", CASES)
+@pytest.mark.parametrize("splice,start,end", CASES, ids=["section", "pr"])
 def test_stale_start_above_a_block_does_not_widen_the_replacement(splice, start, end) -> None:
     # What an earlier run left behind: an orphan start, user text, then a managed block
     doc = f"intro\n{start}\nuser text\n\n{_section(start, end, 'old')}"
@@ -36,7 +36,7 @@ def test_stale_start_above_a_block_does_not_widen_the_replacement(splice, start,
     assert "new" in out and "old" not in out
 
 
-@pytest.mark.parametrize("splice,start,end", CASES)
+@pytest.mark.parametrize("splice,start,end", CASES, ids=["section", "pr"])
 def test_a_well_formed_block_is_replaced_in_place(splice, start, end) -> None:
     doc = f"intro\n\n{_section(start, end, 'old')}\noutro\n"
     out = splice(doc, _section(start, end, "new"))
