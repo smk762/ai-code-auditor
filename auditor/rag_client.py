@@ -197,7 +197,7 @@ def delete_documents(doc_ids: list[str], *, source: str = SOURCE, session: Any =
         result["count"] += len(batch)
         try:
             result["points"] += int(resp.json().get("deleted") or 0)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 — the delete succeeded (2xx); only its point count is unknown
             pass
     return result
 

@@ -97,7 +97,7 @@ def parse_ecosystem_doc(text: str) -> tuple[dict[str, dict[str, str]], list[tupl
             continue  # skip "Shared AI / RAG:" style legend lines
         parts = [groups_in(p) for p in line.split("──►")]
         parts = [p for p in parts if p]  # "(train)" drops out, chaining forge → proof
-        for left, right in zip(parts, parts[1:]):
+        for left, right in zip(parts, parts[1:], strict=False):  # adjacent pairs
             flow += [(a, b) for a in left[-1] for b in right[0]]
 
     def word_at(row: int, col: int) -> str | None:
@@ -151,7 +151,7 @@ def _scan(repos: list[Any]) -> tuple[dict[str, dict[str, list]], dict[str, dict[
         try:
             root = resolve_scan_root(repo)
             paths = source_files(repo)
-        except Exception:  # noqa: BLE001 — a missing mirror just has no edges
+        except Exception:  # noqa: BLE001, S112 — a missing mirror just has no edges
             continue
         for f in paths:
             rel = f.relative_to(root).as_posix()
