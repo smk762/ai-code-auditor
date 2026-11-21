@@ -1,14 +1,25 @@
+# Role contracts over repo-to-repo Python imports (#57; ecosystem/arch_contracts.py). Every role
+# named here must be held by a repo in service_roles, and every rule must be able to match
+# something, or loading fails. One violation per (importer, imported) repo pair.
 rules:
   - name: service_boundary
-    description: Services cannot access another service database directly.
-    forbidden_edges:
-      - "repo::gateway->repo::database:DEPENDS_ON"
+    description: >-
+      A UI repo talks to its worker over HTTP (call_graph_rules), so its runtime code must not
+      import a worker's package. Tests and dev scripts (fixture recording, demo bundling) may.
+    severity: MEDIUM
+    forbid:
+      - from_roles: [ui]
+        to_roles: [worker]
+    exclude_paths: ["tests/*", "*/tests/*", "test_*.py", "*/test_*.py", "scripts/*", "*/scripts/*"]
 
   - name: dependency_direction
-    description: Constrain dependency direction to expected flow.
-    allowed:
-      - "gateway->services"
-      - "services->libraries"
+    description: >-
+      argus-cortex is the shared library every service builds on; it must import no service or
+      tooling repo, tests included, or the suite gets a dependency cycle.
+    severity: HIGH
+    forbid:
+      - from_roles: [library]
+        to_roles: [worker, ui, tooling]
 
 # Service roles for the Argus suite + shared dependencies.
 service_roles:
