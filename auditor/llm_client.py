@@ -8,12 +8,12 @@ from typing import Any
 
 import requests
 
+from auditor.chunker import source_line
 from auditor.config import (
     ModelProviderConfig,
     get_secret_from_env,
     load_model_provider_config,
 )
-from auditor.chunker import source_line
 from auditor.contracts import CodeUnit, Finding
 from auditor.ecosystem_briefing import build_ecosystem_overview, build_file_briefing
 from auditor.llm_cache import ReviewCache, legacy_review_key, review_key

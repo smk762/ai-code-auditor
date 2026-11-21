@@ -21,7 +21,7 @@ def test_verdicts_survive_braces_outside_the_payload(text: str) -> None:
 
 @pytest.mark.parametrize("value", ["3", "true", '"agree"', '{"i": 0}', "null"])
 def test_non_list_verdicts_degrade_to_none(value: str) -> None:
-    assert council.parse_verdicts('{"verdicts": %s}' % value, 2, V) == [None, None]
+    assert council.parse_verdicts(f'{{"verdicts": {value}}}', 2, V) == [None, None]
 
 
 @pytest.mark.parametrize("text", [
@@ -34,4 +34,4 @@ def test_labels_survive_braces_outside_the_payload(text: str) -> None:
 
 @pytest.mark.parametrize("value", ["3", "true", '{"i": 0}', "null"])
 def test_non_list_labels_degrade_to_unclassified(value: str) -> None:
-    assert llm.parse_labels('{"labels": %s}' % value, 2, V) == ["", ""]
+    assert llm.parse_labels(f'{{"labels": {value}}}', 2, V) == ["", ""]
