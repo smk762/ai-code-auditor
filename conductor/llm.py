@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from auditor.spend_ledger import get_ledger
+from auditor.spend_ledger import BudgetExceeded, get_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -107,13 +107,20 @@ def completion(
         # been billed), nothing after it may re-issue the request to another model.
         if not use_fallbacks:
             raise
+        budget_exc: BudgetExceeded | None = None
         for fb in models.fallbacks:
             fb_anthropic = _is_anthropic(fb)
             # Same rules as the primary path: Claude rejects sampling params, and
             # every Anthropic call is budget-checked and recorded in the ledger.
             fb_temperature = None if fb_anthropic or _is_openai_reasoning(fb) else requested_temperature
             if fb_anthropic:
-                get_ledger().check(lane)
+                try:
+                    get_ledger().check(lane)
+                except BudgetExceeded as be:
+                    # Only this fallback is blocked: later non-Anthropic ones still run.
+                    logger.warning("fallback %s skipped: %s", fb, be)
+                    budget_exc = budget_exc or be
+                    continue
             try:
                 resp = litellm.completion(
                     model=fb,
@@ -127,6 +134,9 @@ def completion(
                 _record_litellm_usage(lane, fb, resp, note)
             logger.warning("primary model %s failed (%s); used fallback %s", chosen, exc, fb)
             return str(resp.choices[0].message.content or "")
+        if budget_exc is not None:
+            # A spent lane stays visible as BudgetExceeded; the primary's failure is its cause.
+            raise budget_exc from exc
         raise
     if is_anthropic:
         _record_litellm_usage(lane, chosen, resp, note)

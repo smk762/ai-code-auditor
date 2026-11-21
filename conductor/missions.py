@@ -79,14 +79,62 @@ def system_for(mission: MissionType) -> str:
     }[mission]
 
 
+_FENCED_JSON = re.compile(r"```(?:json)?\s*\n([\s\S]*?)\n?```", re.IGNORECASE)
+
+
+def extract_json_object(raw: str, key: str) -> dict[str, Any] | None:
+    """The reply's JSON object carrying *key*, or None.
+
+    A reply may quote code, dict literals or patches with braces around its JSON, so one
+    first-'{'-to-last-'}' span is often not JSON. Tried in order: the whole text, fenced
+    ```json blocks, then a ``raw_decode`` from every '{'. The first dict holding *key* wins;
+    failing that, the first dict found (a reply that left *key* out is still a reply).
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    decoder = json.JSONDecoder()
+    first: dict[str, Any] | None = None
+    candidates = [text, *(m.group(1).strip() for m in _FENCED_JSON.finditer(text))]
+    for cand in candidates:
+        try:
+            data = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            if key in data:
+                return data
+            first = first or data
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            data, _ = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            if key in data:
+                return data
+            first = first or data
+    return first
+
+
+def _findings_list(value: Any) -> list[Any]:
+    """A worker's ``findings`` as a list. A lone object or string is one finding (not its
+    keys or characters); a number, bool or null carries none."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, (dict, str)) and value:
+        return [value]
+    return []
+
+
 def parse_worker_json(raw: str, task_id: str) -> WorkerResult:
     text = raw.strip()
-    m = re.search(r"\{[\s\S]*\}", text)
-    if not m:
+    if "{" not in text:
         return WorkerResult(task_id=task_id, status="FAILED", summary="no JSON", raw=raw)
-    try:
-        data = json.loads(m.group(0))
-    except json.JSONDecodeError:
+    data = extract_json_object(text, "status")
+    if data is None:
         return WorkerResult(task_id=task_id, status="FAILED", summary="invalid JSON", raw=raw)
     status = str(data.get("status") or "PARTIAL").upper()
     if status not in ("COMPLETED", "PARTIAL", "FAILED", "ESCALATE"):
@@ -95,7 +143,7 @@ def parse_worker_json(raw: str, task_id: str) -> WorkerResult:
         task_id=task_id,
         status=status,  # type: ignore[arg-type]
         summary=str(data.get("summary") or ""),
-        findings=list(data.get("findings") or [])[:10],
+        findings=_findings_list(data.get("findings"))[:10],
         patch_notes=str(data.get("patch_notes") or ""),
         escalate_reason=str(data.get("escalate_reason") or ""),
         raw=raw,

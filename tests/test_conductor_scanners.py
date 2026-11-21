@@ -74,14 +74,12 @@ def test_finding_ids_do_not_collide_across_runs(tmp_path: Path):
 
 
 def test_failed_scanner_run_is_reported_not_clean(tmp_path: Path, monkeypatch):
-    import subprocess
-
     import conductor.scanners as sc
 
     def crash(*a, **kw):
-        return subprocess.CompletedProcess(a[0] if a else kw.get("args"), 2, "", "semgrep: not found")
+        return 2
 
-    monkeypatch.setattr(sc.subprocess, "run", crash)
+    monkeypatch.setattr(sc, "_run_in_group", crash)
     res = sc.run_scanners(tmp_path, tmp_path / "out")
     assert res.findings == []
     assert res.error
@@ -101,7 +99,7 @@ def test_scanner_run_has_a_timeout(tmp_path: Path, monkeypatch):
             raise AssertionError("scanner run without a timeout")
         raise subprocess.TimeoutExpired(a[0], kw["timeout"])
 
-    monkeypatch.setattr(sc.subprocess, "run", hang)
+    monkeypatch.setattr(sc, "_run_in_group", hang)
     monkeypatch.setenv("AI_AUDIT_SCANNER_TIMEOUT_S", "5")
     res = sc.run_scanners(tmp_path, tmp_path / "out")
     assert seen["timeout"] == 5

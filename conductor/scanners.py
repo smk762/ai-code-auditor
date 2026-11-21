@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,23 +58,20 @@ def run_scanners(repo_path: str | Path, output_dir: str | Path) -> ScannerResult
     env["SECURITY_OUT"] = str(output_dir.resolve())
     errors: list[str] = []
     run_rc: int | None = None
+    # Outputs of an earlier run must not stand in for this one, whether it fails or the
+    # script is missing.
+    for name in (*(f"{t}.sarif" for t in SCANNER_TOOLS), "exit-codes.txt", "tool-versions.txt"):
+        (output_dir / name).unlink(missing_ok=True)
     if script.exists():
-        # Outputs of an earlier run must not stand in for this one if it fails.
-        for name in (*(f"{t}.sarif" for t in SCANNER_TOOLS), "exit-codes.txt", "tool-versions.txt"):
-            (output_dir / name).unlink(missing_ok=True)
         log_path = output_dir / "run-scanners.log"
         try:
             with log_path.open("w", encoding="utf-8") as log:
-                proc = subprocess.run(
+                run_rc = _run_in_group(
                     ["bash", str(script), str(repo_path)],
-                    check=False,
                     env=env,
                     stdout=log,
-                    stderr=subprocess.STDOUT,
-                    text=True,
                     timeout=_timeout_s(),
                 )
-            run_rc = proc.returncode
             if run_rc != 0:
                 errors.append(f"run-scanners.sh exited {run_rc}")
         except subprocess.TimeoutExpired:
@@ -89,6 +87,8 @@ def run_scanners(repo_path: str | Path, output_dir: str | Path) -> ScannerResult
             errors.append("exit-codes.txt missing")
     else:
         logger.warning("run-scanners.sh missing; writing empty SARIF")
+        # A scan that never ran must not read as a clean one.
+        errors.append("run-scanners.sh missing")
         for name in SCANNER_TOOLS:
             (output_dir / f"{name}.sarif").write_text(
                 '{"version":"2.1.0","runs":[]}\n', encoding="utf-8"
@@ -132,6 +132,37 @@ def run_scanners(repo_path: str | Path, output_dir: str | Path) -> ScannerResult
     )
 
 
+def _run_in_group(args: list[str], *, env: dict[str, str], stdout: Any, timeout: int) -> int:
+    """Run *args* in its own process group and return its exit code. On a timeout (or any
+    interruption) the whole group is killed, so scanners the script started don't outlive
+    it and write into the output dir after this run has returned."""
+    proc = subprocess.Popen(
+        args, env=env, stdout=stdout, stderr=subprocess.STDOUT, start_new_session=True,
+    )
+    try:
+        return proc.wait(timeout=timeout)
+    except BaseException:
+        _kill_group(proc)
+        raise
+
+
+def _kill_group(proc: subprocess.Popen[Any]) -> None:
+    """SIGTERM the process group, give it a moment, then SIGKILL whatever is left."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
+
+
 def sarif_to_findings(path: Path, *, source: str, repo: str) -> list[Finding]:
     if not path.exists():
         return []
@@ -147,16 +178,16 @@ def sarif_to_findings(path: Path, *, source: str, repo: str) -> list[Finding]:
     for run in runs if isinstance(runs, list) else []:
         if not isinstance(run, dict):
             continue
-        rules = {
-            r.get("id"): r
-            for r in _list(_dict(_dict(run.get("tool")).get("driver")).get("rules"))
-            if isinstance(r, dict) and r.get("id")
-        }
+        rule_list = _list(_dict(_dict(run.get("tool")).get("driver")).get("rules"))
+        rules = {r.get("id"): r for r in rule_list if isinstance(r, dict) and r.get("id")}
         for result in _list(run.get("results")):
             if not isinstance(result, dict):
                 continue
-            rule_id = str(result.get("ruleId") or "unknown")
-            level = str(result.get("level") or "warning").lower()
+            rule_id = _result_rule_id(result, rule_list)
+            # SARIF 2.1.0 §3.27.10: a result without a level takes its rule's
+            # defaultConfiguration.level, and only then "warning".
+            rule_level = _dict(_dict(rules.get(rule_id)).get("defaultConfiguration")).get("level")
+            level = str(result.get("level") or rule_level or "warning").lower()
             severity = {
                 "error": "HIGH",
                 "warning": "MEDIUM",
@@ -198,6 +229,21 @@ def sarif_to_findings(path: Path, *, source: str, repo: str) -> list[Finding]:
                 )
             )
     return out
+
+
+def _result_rule_id(result: dict[str, Any], rule_list: list[Any]) -> str:
+    """A result's rule: ``ruleId``, else ``rule.id``, else the driver rule at ``ruleIndex``
+    (or ``rule.index``), else 'unknown'."""
+    ref = _dict(result.get("rule"))
+    rid = result.get("ruleId") or ref.get("id")
+    if rid:
+        return str(rid)
+    index = result.get("ruleIndex", ref.get("index"))
+    if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(rule_list):
+        rid = _dict(rule_list[index]).get("id")
+        if rid:
+            return str(rid)
+    return "unknown"
 
 
 def _dict(value: Any) -> dict[str, Any]:

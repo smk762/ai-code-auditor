@@ -98,9 +98,9 @@ def in_rest_window(cfg: RestWindowConfig, now: datetime | None = None) -> bool:
 def wrap_up_deadline(cfg: RestWindowConfig, now: datetime | None = None) -> datetime:
     now = _local(cfg, now)
     end_dt = datetime.combine(now.date(), cfg.end, tzinfo=ZoneInfo(cfg.timezone))
-    if cfg.start > cfg.end and now.timetz().replace(tzinfo=None) >= cfg.start:
-        end_dt = end_dt + timedelta(days=1)
-    elif cfg.start <= cfg.end and now.timetz().replace(tzinfo=None) >= cfg.end:
+    # Today's end once it has passed means tomorrow's, whether or not the window wraps
+    # midnight (for a wrapping one, times before the end are still in last night's window).
+    if now.timetz().replace(tzinfo=None) >= cfg.end:
         end_dt = end_dt + timedelta(days=1)
     return end_dt - timedelta(minutes=cfg.wrap_up_before_end_minutes)
 

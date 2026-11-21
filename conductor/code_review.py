@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,11 +11,13 @@ from typing import Any
 import yaml
 
 from conductor.draft_pr import annotate_pr_review
-from conductor.missions import WorkerTask, parse_worker_json
+from conductor.missions import WorkerTask, extract_json_object, parse_worker_json
 from conductor.schemas import CodeReviewSummary, DraftPr
 from conductor.workers import run_worker  # noqa: F401 — used via run_worker below
 
 logger = logging.getLogger(__name__)
+
+VERDICTS = ("clean", "needs_fix", "escalate")
 
 
 @dataclass(slots=True)
@@ -102,21 +105,21 @@ def review_draft_pr(
         # The verdict comes from the reviewer's structured JSON, never from a substring of
         # its prose ("no need to escalate", "privilege escalation", ...).
         declared = _declared_verdict(result.raw or result.summary)
-        # A "clean" verdict that still lists findings contradicts itself: the findings win,
-        # so the PR goes through the fix rounds instead of being marked merge-ready.
-        if declared == "clean" and not findings:
-            status = "clean"
-            break
         if declared == "escalate" or result.status == "ESCALATE":
             status = "escalate"
             break
         if result.status not in ("COMPLETED", "PARTIAL"):
             # The review never ran (FAILED, timeout, unparseable): don't send the author
-            # blind fix rounds, say so.
+            # blind fix rounds, say so. A "clean" verdict in its text doesn't change that.
             status = "review_failed"
             break
         if not findings:
-            status = "clean" if result.status == "COMPLETED" else "escalate"
+            # Merge-ready only from a review that completed and didn't reject the PR: a
+            # PARTIAL review, or a needs_fix verdict with nothing to fix, goes to a person.
+            # (A "clean" verdict that still lists findings contradicts itself: the findings
+            # win, so the PR goes through the fix rounds below.)
+            ok = result.status == "COMPLETED" and declared in ("", "clean")
+            status = "clean" if ok else "escalate"
             break
         if rounds_left <= 0:
             status = "escalate"
@@ -152,20 +155,15 @@ def review_draft_pr(
 
 
 def _declared_verdict(raw: str) -> str:
-    """The reviewer's explicit ``verdict`` field (clean|needs_fix|escalate), or ''."""
-    import json
-    import re
+    """The reviewer's explicit ``verdict`` field (clean|needs_fix|escalate), or ''.
 
-    m = re.search(r"\{[\s\S]*\}", raw or "")
-    if not m:
+    The JSON is found among any code or dict literals the reply quotes; a verdict outside
+    the allowed set ("approved", "pass", ...) is no declared verdict."""
+    data = extract_json_object(raw or "", "verdict")
+    if not data:
         return ""
-    try:
-        data = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    return str(data.get("verdict") or "").strip().lower()
+    verdict = re.sub(r"[\s-]+", "_", str(data.get("verdict") or "").strip().lower())
+    return verdict if verdict in VERDICTS else ""
 
 
 def json_dumps(obj: Any) -> str:

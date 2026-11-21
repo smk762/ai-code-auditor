@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 from typing import Callable
 
@@ -57,7 +57,11 @@ def run_workers_parallel(
     dry_run: bool = False,
     should_cancel: Callable[[], bool] | None = None,
 ) -> list[WorkerResult]:
-    """Dispatch workers; returns as they complete. Cancel check between completions."""
+    """Dispatch workers; returns as they complete. Cancel check between completions.
+
+    Every task gets exactly one result. On cancellation, tasks that hadn't started are
+    recorded as FAILED with a "cancelled" summary, and workers already running are waited
+    for and their results kept (their work is done and paid for)."""
     if not tasks:
         return []
     results: list[WorkerResult] = []
@@ -65,19 +69,32 @@ def run_workers_parallel(
         futures: dict[Future[WorkerResult], WorkerTask] = {
             pool.submit(run_worker, t, dry_run=dry_run): t for t in tasks
         }
+        recorded: set[Future[WorkerResult]] = set()
         for fut in as_completed(futures):
+            results.append(_result_of(fut, futures[fut]))
+            recorded.add(fut)
             if should_cancel and should_cancel():
                 for pending in futures:
                     pending.cancel()
                 break
-            try:
-                results.append(fut.result())
-            except Exception as exc:
-                t = futures[fut]
-                results.append(
-                    WorkerResult(task_id=t.id, status="FAILED", summary=str(exc))
-                )
+        rest = [f for f in futures if f not in recorded]
+        wait([f for f in rest if not f.cancelled()])
+        for fut in rest:
+            t = futures[fut]
+            if fut.cancelled():
+                results.append(WorkerResult(
+                    task_id=t.id, status="FAILED", summary="cancelled before it started (time budget)",
+                ))
+            else:
+                results.append(_result_of(fut, t))
     return results
+
+
+def _result_of(fut: Future[WorkerResult], task: WorkerTask) -> WorkerResult:
+    try:
+        return fut.result()
+    except Exception as exc:
+        return WorkerResult(task_id=task.id, status="FAILED", summary=str(exc))
 
 
 def write_worker_handoff(task: WorkerTask, result: WorkerResult, out_dir: Path) -> Path:
