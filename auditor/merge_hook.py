@@ -23,6 +23,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -137,7 +138,10 @@ def verify_github_signature(body: bytes, signature_header: str | None, secret: s
 
 
 def parse_github_push_event(payload: dict[str, Any]) -> MergeEvent | None:
-    """Return a MergeEvent for pushes to the configured branch, else None."""
+    """Return a MergeEvent for pushes to the configured branch, else None.
+
+    A branch deletion (``deleted``, or an empty / all-zero ``after``) is not a merge: there is
+    no commit to audit."""
     ref = str(payload.get("ref") or "")
     branch = merge_branch()
     expected = f"refs/heads/{branch}"
@@ -147,10 +151,13 @@ def parse_github_push_event(payload: dict[str, Any]) -> MergeEvent | None:
     name = str(repo_obj.get("name") or "").strip()
     if not name:
         return None
+    after = str(payload.get("after") or "").strip()
+    if payload.get("deleted") or not after or after == _ZERO_SHA:
+        return None
     return MergeEvent(
         repo=name,
         before=str(payload.get("before") or ""),
-        after=str(payload.get("after") or ""),
+        after=after,
         ref=ref,
         source="github",
     )
@@ -203,7 +210,8 @@ def run_merge_refresh(
     if repo_cfg is None:
         raise ValueError(f"Repo {event.repo!r} not found in ecosystem config")
 
-    run_id = f"merge-{repo_cfg.name}-{int(time.time())}"
+    # The suffix keeps two merges of one repo in the same second from sharing a run_id.
+    run_id = f"merge-{repo_cfg.name}-{int(time.time())}-{uuid.uuid4().hex[:8]}"
     sync_info: dict[str, Any] = {"skipped": not sync_mirror}
     before = _require_sha("before", event.before)
     after = _require_sha("after", event.after)
@@ -237,10 +245,13 @@ def run_merge_refresh(
         before = parent or before
 
     diff_text = ""
+    diff_error = ""
     if before and after and before != after:
         try:
             diff_text = get_diff_between_refs(repo_path, before, after)
         except RuntimeError as exc:
+            # Not an empty diff: the merge was never audited, and the result must say so.
+            diff_error = str(exc)[:500] or exc.__class__.__name__
             logger.warning("merge diff failed for %s (%s..%s): %s", repo_cfg.name, before, after, exc)
 
     findings_count = 0
@@ -264,6 +275,8 @@ def run_merge_refresh(
             ingest_rag=do_rag,
         )
         packs_ids.extend(p.work_item_id for p in packs)
+    elif diff_error:
+        message = "diff failed — merge not audited; refreshed world pack only"
     else:
         message = "empty diff — refreshed world pack only"
 
@@ -281,6 +294,8 @@ def run_merge_refresh(
 
     return {
         "repo": repo_cfg.name,
+        "ok": not diff_error,
+        "error": f"diff failed: {diff_error}" if diff_error else "",
         "run_id": run_id,
         "before": before,
         "after": after,
@@ -367,6 +382,9 @@ class MergeHookScheduler:
                 self._arm_ready(repo)
             else:
                 timer = threading.Timer(delay, self._on_debounce_fire, args=(repo,))
+                # The callback gets its own Timer, so a stale one that fired while this lock
+                # was held can tell it has been replaced.
+                timer.args = (repo, timer)
                 timer.daemon = True
                 self._timers[repo] = timer
                 timer.start()
@@ -398,8 +416,11 @@ class MergeHookScheduler:
                 return False
             time.sleep(poll_s)
 
-    def _on_debounce_fire(self, repo: str) -> None:
+    def _on_debounce_fire(self, repo: str, timer: threading.Timer | None = None) -> None:
         with self._lock:
+            if timer is not None and self._timers.get(repo) is not timer:
+                # Cancelled too late: a newer push replaced this timer and restarted the window.
+                return
             self._timers.pop(repo, None)
             if repo not in self._pending:
                 return
@@ -440,9 +461,12 @@ class MergeHookScheduler:
                 repo = self._ready.popleft()
                 event = self._pending.pop(repo, None)
                 self._timers.pop(repo, None)
-                self._running_repo = repo
                 if event is None:
+                    self._running_repo = None
                     continue
+                self._running_repo = repo
+                # The status of the job that runs here. A push during the run replaces
+                # self._statuses[repo] with a new pending one, which this job must not touch.
                 st = self._statuses.get(repo) or MergeJobStatus(repo=repo, state="running")
                 st.state = "running"
                 st.started_at = time.time()
@@ -453,12 +477,13 @@ class MergeHookScheduler:
             try:
                 result = run_merge_refresh(event, sync_mirror=event.sync_mirror)
                 with self._lock:
-                    st = self._statuses.get(repo) or MergeJobStatus(repo=repo, state="done")
-                    st.state = "done"
+                    ok = result.get("ok", True) is not False
+                    st.state = "done" if ok else "error"
                     st.finished_at = time.time()
                     st.result = result
-                    self._statuses[repo] = st
-                    self._history.appendleft({"repo": repo, "ok": True, **result})
+                    if not ok:
+                        st.error = str(result.get("error") or "merge refresh not ok")[:500]
+                    self._history.appendleft({"repo": repo, **result, "ok": ok})
                 logger.info(
                     "merge refresh done for %s: findings=%s packs=%s",
                     repo,
@@ -468,11 +493,9 @@ class MergeHookScheduler:
             except Exception as exc:
                 logger.exception("merge refresh failed for %s", repo)
                 with self._lock:
-                    st = self._statuses.get(repo) or MergeJobStatus(repo=repo, state="error")
                     st.state = "error"
                     st.finished_at = time.time()
                     st.error = str(exc)[:500]
-                    self._statuses[repo] = st
                     self._history.appendleft(
                         {
                             "repo": repo,
@@ -484,6 +507,7 @@ class MergeHookScheduler:
 
             with self._lock:
                 self._last_finished = time.time()
+                self._running_repo = None
 
 
 _SCHEDULER: MergeHookScheduler | None = None

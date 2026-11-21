@@ -49,14 +49,17 @@ def test_unreadable_ledger_raises_instead_of_overwriting(tmp_path: Path, monkeyp
     ledger = tmp_path / rag_client.LEDGER_FILE
     original = json.dumps({"wiki:x": ["w1"], "packs": ["p1"]})
     ledger.write_text(original, encoding="utf-8")
-    real_read_text = Path.read_text
+    real_read_text, real_read_bytes = Path.read_text, Path.read_bytes
 
-    def flaky_read_text(self, *a, **k):
-        if self == ledger:
-            raise PermissionError("transient")
-        return real_read_text(self, *a, **k)
+    def flaky(real):
+        def read(self, *a, **k):
+            if self == ledger:
+                raise PermissionError("transient")
+            return real(self, *a, **k)
+        return read
 
-    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    monkeypatch.setattr(Path, "read_text", flaky(real_read_text))
+    monkeypatch.setattr(Path, "read_bytes", flaky(real_read_bytes))
     with pytest.raises(OSError):
         rag_client.update_ledger(tmp_path, "packs", add={"p2"})
     monkeypatch.undo()
