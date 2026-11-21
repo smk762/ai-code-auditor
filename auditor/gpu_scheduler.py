@@ -357,6 +357,7 @@ class GpuScheduler:
                     resp.status_code,
                 )
                 if resp.status_code == 503:
+                    transient = 0  # gothmog answered: the transient limit counts failures in a row
                     logger.info(
                         "gothmog: capacity unavailable (503). Retrying in %d min …",
                         self.retry_interval_s // 60,
