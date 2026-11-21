@@ -155,14 +155,22 @@ def _inside(path: Path, parent: Path) -> str | None:
         return None
 
 
+_PYTEST_RANK = {"skipped": 0, "passed": 1, "failed": 2, "error": 3}
+
+
 def parse_pytest_outcomes(output: str) -> dict[str, str]:
     """Test id -> outcome from ``pytest -rA`` short-summary lines. A collection error names a
-    file, not a test, so it carries no test id and is reported separately."""
+    file, not a test, so it carries no test id and is reported separately.
+
+    A test can be listed twice (a passing call whose teardown errors shows as ``ERROR`` and
+    ``PASSED``): the worst outcome wins, whatever order the sections come in."""
     out: dict[str, str] = {}
     for status, tid in _PYTEST_OUTCOME_RE.findall(output):
         if "::" not in tid:
             continue
-        out[tid] = {"PASSED": "passed", "FAILED": "failed", "ERROR": "error", "XPASS": "passed"}.get(status, "skipped")
+        new = {"PASSED": "passed", "FAILED": "failed", "ERROR": "error", "XPASS": "passed"}.get(status, "skipped")
+        if _PYTEST_RANK[new] > _PYTEST_RANK.get(out.get(tid, ""), -1):
+            out[tid] = new
     return out
 
 
@@ -170,7 +178,8 @@ def _pytest(root: Path, python: Path, files: list[str], timeout_s: int) -> tuple
     paths = [str(root / "src")] if (root / "src").is_dir() else []
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([*paths, str(root)]), "PYTHONDONTWRITEBYTECODE": "1"}
     try:
-        proc = proc_run([str(python), "-m", "pytest", "-q", "-rA", "--tb=line", "-p", "no:cacheprovider", *files],
+        proc = proc_run([str(python), "-m", "pytest", "-q", "-rA", "--tb=line", "-p", "no:cacheprovider",
+                         "--", *files],  # a file name from the patch is never read as an option
                               cwd=root, env=env, capture_output=True, text=True, timeout=timeout_s, check=False)
     except subprocess.TimeoutExpired:
         return {}, f"timed out after {timeout_s}s"

@@ -26,7 +26,8 @@ def test_old_entries_go_and_recent_ones_stay(tmp_path: Path) -> None:
     new = _entry(tmp_path, "new-1", used_days_ago=1, now=now)
     r = validate_cache.evict(tmp_path, now=now, force=True, age_days=7, limit_bytes=10 ** 9)
     assert r["removed"] == ["old-1"] and not old.exists() and new.exists()
-    assert not (tmp_path / ".old-1.lock").exists() and not (tmp_path / ".old-1.txt").exists()
+    assert not (tmp_path / ".old-1.txt").exists()
+    assert (tmp_path / ".old-1.lock").exists()  # never unlinked: a waiter may hold it open
 
 
 def test_over_the_size_cap_least_recently_used_go_first(tmp_path: Path) -> None:

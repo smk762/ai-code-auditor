@@ -163,7 +163,10 @@ def test_changed_file_names_are_never_lint_options(tmp_path: Path, monkeypatch) 
                         ValidationResult(passed=True, tool="lint_only", duration_ms=0, errors=[], raw_output=""))
     for ruff in ("/usr/bin/ruff", None):
         monkeypatch.setattr(validator.shutil, "which", lambda name, r=ruff: r)
+        before = len(seen)
         validator._lint_files(tmp_path, ["--fix.py", "-", "ok.py"], 30)
+        assert len(seen) == before + 1, f"no lint command ran with ruff={ruff}"  # 2f9424e5a5
+    assert seen[0][0] == "ruff" and seen[1][1:3] == ["-m", "py_compile"]
     for cmd in seen:
         files = cmd[-3:]
         assert files == ["./--fix.py", "./-", "ok.py"], cmd
