@@ -18,7 +18,7 @@ from typing import Callable
 from auditor.config import RepoConfig
 from auditor.contracts import ValidationResult
 from auditor.repo_resolver import resolve_repo_path
-from auditor.proc import run as proc_run
+from auditor.proc import child_env, run as proc_run
 from auditor import validate_cache
 
 logger = logging.getLogger(__name__)
@@ -155,6 +155,7 @@ def _exec(
             encoding="utf-8",
             errors="replace",  # a tool echoing non-UTF-8 bytes must not crash the run
             timeout=timeout_s,
+            env=child_env(),
         )
         elapsed = int((time.monotonic() - t0) * 1000)
         combined = (proc.stdout + proc.stderr)[-_OUTPUT_LIMIT:]
@@ -712,7 +713,7 @@ def ensure_test_venv(root: Path, cache_dir: Path, extra: list[str] | None = None
             proc_run([str(python), "-m", "pip", "install", "-q", "--disable-pip-version-check",
                             "-r", str(reqs)], check=True, capture_output=True, text=True,
                            timeout=VENV_BUILD_TIMEOUT_S,
-                           env={**os.environ, "PIP_CACHE_DIR": str(cache_dir / ".pip-cache")})
+                           env=child_env(PIP_CACHE_DIR=str(cache_dir / ".pip-cache")))
         except subprocess.CalledProcessError as exc:
             shutil.rmtree(venv, ignore_errors=True)
             return None, ((exc.stderr or exc.stdout or "").strip()[-800:] or str(exc))
@@ -752,7 +753,7 @@ def _run_project_tests(root: Path, python: Path, timeout_s: int,
     import os
 
     paths = [str(root / "src")] if (root / "src").is_dir() else []
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join([*paths, str(root)]), "PYTHONDONTWRITEBYTECODE": "1"}
+    env = child_env(PYTHONPATH=os.pathsep.join([*paths, str(root)]), PYTHONDONTWRITEBYTECODE="1")
     t0 = time.monotonic()
     try:
         proc = proc_run([str(python), "-m", "pytest", "-q", "--tb=short", "-rfE", "-p", "no:cacheprovider",

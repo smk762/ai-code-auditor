@@ -39,7 +39,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
-from auditor.proc import run as proc_run
+from auditor.proc import child_env, run as proc_run
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,7 @@ def parse_pytest_outcomes(output: str) -> dict[str, str]:
 
 def _pytest(root: Path, python: Path, files: list[str], timeout_s: int) -> tuple[dict[str, str], str]:
     paths = [str(root / "src")] if (root / "src").is_dir() else []
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join([*paths, str(root)]), "PYTHONDONTWRITEBYTECODE": "1"}
+    env = child_env(PYTHONPATH=os.pathsep.join([*paths, str(root)]), PYTHONDONTWRITEBYTECODE="1")
     try:
         proc = proc_run([str(python), "-m", "pytest", "-q", "-rA", "--tb=line", "-p", "no:cacheprovider",
                          "--", *files],  # a file name from the patch is never read as an option

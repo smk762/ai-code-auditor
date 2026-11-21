@@ -110,7 +110,9 @@ def check_python(root: Path, cache: Path, timeout_s: int = COLLECT_TIMEOUT_S) ->
     stub_version_files(root)
     # Same interpreter, PYTHONPATH and cwd as validator._run_project_tests.
     paths = [str(root / "src")] if (root / "src").is_dir() else []
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join([*paths, str(root)]), "PYTHONDONTWRITEBYTECODE": "1"}
+    from auditor.proc import child_env
+
+    env = child_env(PYTHONPATH=os.pathsep.join([*paths, str(root)]), PYTHONDONTWRITEBYTECODE="1")
     try:
         proc = subprocess.run([str(python), "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"],
                               cwd=root, env=env, capture_output=True, text=True, timeout=timeout_s, check=False)
