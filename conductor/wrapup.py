@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from conductor.briefing import build_briefing
-from conductor.publish import latest_urls, publish_status, public_base_url
+from conductor.publish import latest_urls, public_base_url, publish_status
 from conductor.schemas import (
+    _SEV_RANK,
     DecisionNeeded,
     DraftPr,
     FindingsSummary,
@@ -139,13 +141,17 @@ def ingest_latest_to_rag(status: dict[str, Any], body_md: str) -> dict[str, Any]
         ],
     }
     text = body_md.strip() + "\n\n---\n" + json.dumps(short, indent=2)
-    doc = {"id": f"auditor-rest-{status.get('run_id', 'unknown')}",
-           "title": f"Night conductor: {status.get('summary_one_liner') or status.get('run_id', '')}", "text": text}
+    # A missing or null run_id must not give every such run the same id (and overwrite it).
+    doc_key = status.get("run_id") or status.get("event_id") or f"unknown-{uuid.uuid4().hex[:12]}"
+    doc = {"id": f"auditor-rest-{doc_key}",
+           "title": f"Night conductor: {status.get('summary_one_liner') or status.get('run_id') or ''}", "text": text}
     r = post_documents([doc], tags=["kind:mithrandir_latest"])
     return {k: v for k, v in r.items() if k in ("ingested", "skipped", "status_code", "error")}
 
 
 def top_findings_from_worker_results(results: list[dict[str, Any]], limit: int = 3) -> list[TopFinding]:
+    """The *limit* most severe findings across all workers (CRITICAL first; ties keep the
+    order they were found in)."""
     tops: list[TopFinding] = []
     for r in results:
         for f in r.get("findings") or []:
@@ -154,11 +160,10 @@ def top_findings_from_worker_results(results: list[dict[str, Any]], limit: int =
             tops.append(
                 TopFinding(
                     repo=str(f.get("repo") or r.get("repo") or ""),
-                    severity=str(f.get("severity") or "MEDIUM"),
+                    severity=str(f.get("severity") or "MEDIUM").strip().upper() or "MEDIUM",
                     title=str(f.get("title") or f.get("symbol") or "finding")[:160],
                     pr_url=f.get("pr_url"),
                 )
             )
-            if len(tops) >= limit:
-                return tops
-    return tops
+    tops.sort(key=lambda t: -_SEV_RANK.get(t.severity, _SEV_RANK["MEDIUM"]))
+    return tops[:limit]
