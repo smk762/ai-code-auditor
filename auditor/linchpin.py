@@ -470,16 +470,32 @@ def apply_labels(
     rest: Rest | None = None,
 ) -> dict[str, Any]:
     """Label linchpins in mirrored repos; unlabel ones *this tool* labelled that are no
-    longer P0. A label someone put on by hand is never taken off (it is not in the ledger)."""
+    longer P0. A label someone put on by hand is never taken off (it is not in the ledger).
+
+    A ledger that exists but can't be read or isn't a JSON object stops the run before any
+    GitHub call, and is left as it is: treating it as empty and rewriting it would forget
+    every label this tool added, so none could ever be taken off."""
     label = label_name()
     call = rest or (lambda method, path, body=None: _rest(token, method, path, body))
     path = _ledger_path(output_dir)
+    out: dict[str, Any] = {"label": label, "dry_run": dry_run, "added": [], "removed": [], "errors": []}
     try:
         ledger = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         ledger = {}
+    except (OSError, ValueError) as exc:
+        ledger = exc
+    if not isinstance(ledger, dict):
+        why = str(ledger)[:200] if isinstance(ledger, Exception) else f"not a JSON object ({type(ledger).__name__})"
+        logger.warning("linchpin label ledger %s is unreadable, labels left alone: %s", path, why)
+        out["errors"].append({"ref": "*", "error": f"label ledger {path} unreadable, nothing changed: {why}"})
+        return out
     old_label = ledger.get("label", label)
     applied: dict[str, str] = dict(ledger.get("applied") or {}) if old_label == label else {}
+    # Renamed back to an earlier name (A -> B -> A): what this tool labelled A is ours again.
+    back = (ledger.get("stale") or {}).get(label) if isinstance(ledger.get("stale"), dict) else None
+    if isinstance(back, dict):
+        applied = {**back, **applied}
     # Items labelled under an earlier label name: still ours to take off (#8d81471265).
     stale: dict[str, dict[str, str]] = {
         str(k): dict(v) for k, v in (ledger.get("stale") or {}).items() if isinstance(v, dict) and k != label
@@ -490,7 +506,6 @@ def apply_labels(
         f"{lp['slug']}#{lp['number']}": lp
         for lp in report.get("linchpins") or [] if not lp.get("external")
     }
-    out: dict[str, Any] = {"label": label, "dry_run": dry_run, "added": [], "removed": [], "errors": []}
     now = datetime.now(timezone.utc).isoformat()
     enc = urllib.parse.quote(label, safe="")
     for key, lp in want.items():
