@@ -85,9 +85,24 @@ def render_pr_section() -> str:
     )
 
 
+def _managed_span(existing: str, start_marker: str, end_marker: str) -> tuple[str, int, int]:
+    """``(text, start, end)`` of the managed block, or ``(text, -1, -1)`` to append one.
+
+    The block starts at the start marker nearest before the first end marker, so a stale start
+    marker above it can't widen the replaced range over user text. A start marker with no end
+    marker after it is dropped (only the marker, never the text after it), so the appended block
+    is the only one and the next splice can't reach back to the orphan."""
+    start = existing.find(start_marker)
+    end = existing.find(end_marker, start + 1) if start != -1 else -1
+    if start != -1 and end != -1:
+        return existing, existing.rfind(start_marker, 0, end), end
+    if start != -1:
+        existing = existing.replace(start_marker + "\n", "").replace(start_marker, "")
+    return existing, -1, -1
+
+
 def _splice_pr(existing: str, section: str) -> str:
-    start = existing.find(PR_MARKER_START)
-    end = existing.find(PR_MARKER_END, start + 1) if start != -1 else -1
+    existing, start, end = _managed_span(existing, PR_MARKER_START, PR_MARKER_END)
     if start != -1 and end != -1:
         tail = existing[end + len(PR_MARKER_END):].lstrip("\n")
         return existing[:start] + section + (("\n" + tail) if tail else "")
@@ -171,8 +186,7 @@ class InstallResult:
 
 def _splice_section(existing: str, section: str) -> str:
     """Replace the marked block in *existing* or append *section*."""
-    start = existing.find(MARKER_START)
-    end = existing.find(MARKER_END, start + 1) if start != -1 else -1
+    existing, start, end = _managed_span(existing, MARKER_START, MARKER_END)
     if start != -1 and end != -1:
         tail = existing[end + len(MARKER_END):].lstrip("\n")
         head = existing[:start]
