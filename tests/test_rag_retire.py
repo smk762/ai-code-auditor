@@ -49,6 +49,7 @@ def fake(monkeypatch) -> FakeIngest:
     monkeypatch.setattr(requests, "post", f.post)
     monkeypatch.setenv("INGEST_SHARED_SECRET", "s3cret")
     monkeypatch.setenv("AI_AUDIT_RAG_INGEST_URL", "http://ingest.test:9050/ingest")
+    monkeypatch.delenv("AI_AUDIT_PACK_RAG_INGEST", raising=False)  # conftest's kill switch: sends go to the fake
     return f
 
 
