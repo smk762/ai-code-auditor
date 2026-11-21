@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from auditor.contracts import Finding
 from auditor.db import AuditRun, AuthAuditEvent, FindingRecord, PipelineCheckpoint, RepoRun, as_utc, db_session, utcnow
@@ -38,7 +38,15 @@ def record_run_progress(metadata: RunMetadata) -> None:
         row = session.execute(select(AuditRun).where(AuditRun.run_id == metadata.run_id)).scalar_one_or_none()
         if row is None or row.finished_at is not None:
             return  # a late tick must not overwrite a finished (or cancelled) run's final metadata
-        row.metadata_json = {**(row.metadata_json or {}), **asdict(metadata)}
+        merged = {**(row.metadata_json or {}), **asdict(metadata)}
+        # The finished check is repeated in the UPDATE itself: a finish that commits between the
+        # read above and this write must win, not be overwritten from the stale snapshot.
+        session.execute(
+            update(AuditRun)
+            .where(AuditRun.id == row.id, AuditRun.finished_at.is_(None))
+            .values(metadata_json=merged)
+            .execution_options(synchronize_session=False)
+        )
 
 
 def record_run_finish(metadata: RunMetadata, pipeline: str) -> None:
