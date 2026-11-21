@@ -376,11 +376,13 @@ def _run_pipeline(run_id: str) -> None:
             _active_process = None
             _active_run_id = None
 
-    if _cancel_event.is_set():
-        _db_merge_cancelled_stderr(run_id, stderr)
+    if rc is None:
         return
 
-    if rc is None:
+    # The outcome decides, not the event alone: a cancel that lands after the pipeline exited
+    # cleanly (terminate() on a finished process) stopped nothing, and the run did its work.
+    if _cancel_event.is_set() and rc != 0:
+        _db_merge_cancelled_stderr(run_id, stderr)
         return
 
     try:
@@ -845,6 +847,11 @@ def get_wiki_page(repo: str, page: str) -> HTMLResponse:
     return HTMLResponse(out)
 
 
+# Output dirs with a regenerate claimed in this process, from the 202 until its thread ends.
+_wiki_regen_lock = threading.Lock()
+_wiki_regen_claimed: set[str] = set()
+
+
 @app.post("/audit/wiki/{repo}/regenerate", status_code=202, dependencies=[Depends(_require_mutating_auth)])
 def post_wiki_regenerate(repo: str, force: bool = False) -> JSONResponse:
     """Rebuild a repo's stale wiki pages now (or every page with force=1), then export + publish.
@@ -858,16 +865,28 @@ def post_wiki_regenerate(repo: str, force: bool = False) -> JSONResponse:
     if repo not in {r.name for r in load_ecosystem_config().repos if r.enabled}:
         raise HTTPException(status_code=404, detail=f"Unknown repo {repo!r}.")
     out = _output_dir()
-    if is_running(out):
-        raise HTTPException(status_code=409, detail="A wiki refresh is already running.")
+    # Check and claim in one step: refresh() only takes its file lock once the thread runs, so
+    # two requests could otherwise both pass is_running() and both answer 202.
+    with _wiki_regen_lock:
+        if _wiki_regen_claimed or is_running(out):
+            raise HTTPException(status_code=409, detail="A wiki refresh is already running.")
+        _wiki_regen_claimed.add(out)
 
     def run() -> None:
         try:
             refresh(out, [repo], force=force)
         except Exception as exc:  # noqa: BLE001 — recorded for the status endpoint
             logger.warning("wiki regenerate for %s failed: %s", repo, exc)
+        finally:
+            with _wiki_regen_lock:
+                _wiki_regen_claimed.discard(out)
 
-    threading.Thread(target=run, name=f"wiki-regenerate-{repo}", daemon=True).start()
+    try:
+        threading.Thread(target=run, name=f"wiki-regenerate-{repo}", daemon=True).start()
+    except BaseException:
+        with _wiki_regen_lock:
+            _wiki_regen_claimed.discard(out)
+        raise
     return JSONResponse({"repo": repo, "force": force, "status": "started"}, status_code=202)
 
 
@@ -1630,11 +1649,19 @@ def _resolve_pack_after_validation(
             verification_updates=ver,
             expect=expect,
         )
-        refresh_pack_rag(out, updated)  # a resolved pack leaves the RAG collection; unverified stays
-        return {"id": pack_id, "updated": updated is not None, "status": status}
     except Exception as exc:  # closure is best-effort; the validation result stands
         logger.warning("could not set pack %s to %s: %s", pack_id, status, exc)
         return {"id": pack_id, "updated": False, "reason": str(exc)}
+    if updated is None:  # an expect/status mismatch: nothing changed, nothing to re-send
+        return {"id": pack_id, "updated": False, "status": status}
+    result: dict[str, Any] = {"id": pack_id, "updated": True, "status": status}
+    # The status is persisted by now, so a RAG outage must not report it as not updated.
+    try:
+        refresh_pack_rag(out, updated)  # a resolved pack leaves the RAG collection; unverified stays
+    except Exception as exc:
+        logger.warning("pack %s set to %s, but its RAG refresh failed: %s", pack_id, status, exc)
+        result["rag_refreshed"] = False
+    return result
 
 
 def _judge_evidence(
@@ -2014,8 +2041,12 @@ def git_raw_diff(request: _RawDiffRequest) -> JSONResponse:
         base_branch: str  — the branch diffed against.
         error:       str  — non-empty when the diff could not be generated.
         reason:      str  — machine-readable reason code for the error.
-                           One of: "repo_not_found", "branch_not_found",
-                           "path_error", "git_error", "timeout".
+                           One of: "repo_not_found" (404), "path_error" (400),
+                           "bad_ref" (400: compare_branch could become a git option),
+                           "branch_not_found" (422), "git_error" (502), "timeout" (504).
+
+    Every error comes with a non-2xx status, so a caller that only checks the status never
+    reads a failed diff as "no changes".
     """
     from auditor.repo_resolver import resolve_repo_path
 
@@ -2061,7 +2092,7 @@ def git_raw_diff(request: _RawDiffRequest) -> JSONResponse:
             "base_branch": request.compare_branch,
             "error": "git diff timed out after 30s",
             "reason": "timeout",
-        })
+        }, status_code=504)
 
     if r.returncode != 0:
         stderr = r.stderr.strip()
@@ -2078,7 +2109,7 @@ def git_raw_diff(request: _RawDiffRequest) -> JSONResponse:
             "diff": "", "is_empty": True,
             "base_branch": request.compare_branch,
             "error": error, "reason": reason,
-        })
+        }, status_code=422 if reason == "branch_not_found" else 502)
 
     diff_text = r.stdout
     return JSONResponse({
