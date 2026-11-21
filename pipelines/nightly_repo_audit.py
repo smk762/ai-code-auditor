@@ -57,33 +57,40 @@ def run() -> None:
             try:
                 t0 = time.monotonic()
                 for repo in cfg.repos:
-                    attempts = 0
+                    tries = [0]  # every call with_retries makes, not just the first
                     try:
-                        attempts += 1
                         unreviewed: set[str] = set()
 
-                        def audit(repo=repo, unreviewed=unreviewed):
+                        def audit(repo=repo, unreviewed=unreviewed, tries=tries):
+                            tries[0] += 1
                             unreviewed.clear()  # a retry starts over
                             return run_repo_audit(repo, llm=llm, unreviewed=unreviewed)
                         units, findings = with_retries(audit, retries=3, base_delay_s=1.0)
-                        meta.scanned_repos.append(repo.name)
+                        # Everything that can still fail runs before the repo counts as scanned:
+                        # a repo in scanned_repos whose findings never reach store_findings would
+                        # read as "all fixed" to pack GC and the trust metrics.
+                        unreviewed_rel: list[str] = []
                         if unreviewed:
                             # Silence about these files proves nothing (pack GC, trust metrics).
                             from auditor.trust_metrics import rel_path
 
-                            meta.extra.setdefault("unreviewed_files", {})[repo.name] = sorted(
-                                {rel_path(repo.name, f) for f in unreviewed})
+                            unreviewed_rel = sorted({rel_path(repo.name, f) for f in unreviewed})
                         # The commit the scan read, so trust metrics only count findings from code
                         # that could contain a fix (the mirrors lag dev until the nightly sync).
                         code = head_commit(resolve_scan_root(repo))
+                        n_files = len({u.file_path for u in units})
+                        upsert_repo_run(meta.run_id, repo.name, "completed", attempts=tries[0])
+                        write_checkpoint("repo-audit", meta.run_id, repo.name, "completed", {"units": len(units)})
+                        meta.scanned_repos.append(repo.name)
+                        if unreviewed_rel:
+                            meta.extra.setdefault("unreviewed_files", {})[repo.name] = unreviewed_rel
                         if code:
                             meta.extra.setdefault("scanned_code", {})[repo.name] = code
-                        meta.scanned_files += len({u.file_path for u in units})
+                        meta.scanned_files += n_files
                         meta.code_units += len(units)
                         all_findings.extend(findings)
-                        upsert_repo_run(meta.run_id, repo.name, "completed", attempts=attempts)
-                        write_checkpoint("repo-audit", meta.run_id, repo.name, "completed", {"units": len(units)})
                     except Exception as repo_exc:
+                        attempts = tries[0]
                         upsert_repo_run(meta.run_id, repo.name, "failed", attempts=attempts, error_message=str(repo_exc))
                         write_checkpoint("repo-audit", meta.run_id, repo.name, "failed", {"error": str(repo_exc)})
                         meta.add_error(f"{repo.name}: {repo_exc}")
