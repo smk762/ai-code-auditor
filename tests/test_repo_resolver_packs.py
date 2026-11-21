@@ -123,11 +123,22 @@ def test_unsafe_repo_name_never_touches_a_dir_outside_the_cache(
     monkeypatch.setattr(rr.subprocess, "run", fail)
     repo = RepoConfig(name=name, path="https://example.invalid/r.git",
                       local_cache_path=str(tmp_path / "cache"))
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    def untouched() -> None:
+        # Nothing outside the cache was removed or recreated: not the precious file, not its dir,
+        # not the cache's parent (a name like ".." resolves there).
+        assert (outside / "keep.txt").read_text() == "precious"
+        assert sorted(p.name for p in outside.iterdir()) == ["keep.txt"]
+        assert sorted(p.name for p in tmp_path.iterdir() if p.name != "cache") == \
+            [n for n in before if n != "cache"]
+
     with pytest.raises((ValueError, RuntimeError)):
         rr._clone_with_branch_fallback(repo, None)
-    assert (outside / "keep.txt").read_text() == "precious"
+    untouched()
     with pytest.raises(ValueError):
         rr._materialize_remote_repo(repo)
+    untouched()
     assert calls == []
 
 
