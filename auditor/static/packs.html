@@ -6,36 +6,8 @@
 <title>Packs board</title>
 <link rel="stylesheet" href="/audit/static/ui.css">
 <script src="/audit/static/ui.js"></script>
-<style>
-  /* Columns are sized per render: full columns share the width, empty ones collapse to a rail. */
-  .board { display: grid; gap: 12px; overflow-x: auto; padding-bottom: 8px; }
-  .col.rail { padding: 10px 0; align-items: center; }
-  /* A column that has the room (e.g. Open with the others empty) lays its cards out in sub-columns. */
-  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; align-items: start; }
-  .col.rail h2 { writing-mode: vertical-rl; transform: rotate(180deg); margin: 0; gap: 8px; white-space: nowrap; }
-  .cols { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 12px; font-size: 12px; }
-  .cols .lbl { color: var(--text-secondary); margin-right: 2px; }
-  .chip { font: inherit; font-size: 12px; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-secondary);
-          border-radius: 999px; padding: 3px 10px; cursor: pointer; text-transform: capitalize; }
-  .chip span { font-variant-numeric: tabular-nums; margin-left: 4px; color: var(--text-muted); }
-  .chip[aria-pressed="true"] { background: var(--surface-2); color: var(--text-primary); border-color: var(--text-muted); }
-  .chip[aria-pressed="true"]::before { content: "✓ "; }
-  .chip.preset { text-transform: none; border-style: dashed; }
-  .chip.preset::before { content: none; }
-  .col { background: var(--surface-2); border-radius: 10px; padding: 10px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-  .col h2 { font-size: 13px; margin: 0 2px; display: flex; justify-content: space-between; text-transform: capitalize; }
-  .col h2 span { color: var(--text-secondary); font-weight: 500; font-variant-numeric: tabular-nums; }
-  .pk { background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
-  .pk a.t { color: var(--text-primary); text-decoration: none; font-weight: 550; display: block; margin: 4px 0; overflow-wrap: anywhere; }
-  .pk a.t:hover { text-decoration: underline; }
-  .pk .meta { font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
-  .pk .foot { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 6px; }
-  .pk select { font-size: 11px; padding: 2px 4px; }
-  .more { font-size: 12px; color: var(--text-muted); text-align: center; padding: 4px; }
-  .flash { font-size: 12px; }
-</style>
 </head>
-<body>
+<body class="page-packs">
 <!--#nav-->
 <main>
   <header class="page">

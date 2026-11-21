@@ -6,16 +6,8 @@
 <title>Audit run</title>
 <link rel="stylesheet" href="/audit/static/ui.css">
 <script src="/audit/static/ui.js"></script>
-<style>
-  .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--warn); font-weight: 600; }
-  .live::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); animation: pulse 1.2s infinite; }
-  @keyframes pulse { 50% { opacity: .3; } }
-  @media (prefers-reduced-motion: reduce) { .live::before { animation: none; } }
-  ul.errors { margin: 0; padding-left: 18px; }
-  ul.errors li { font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; margin-bottom: 6px; }
-</style>
 </head>
-<body>
+<body class="page-run">
 <!--#nav-->
 <main>
   <header class="page">
@@ -62,7 +54,7 @@
       <h2>Reports</h2>
       <p class="hint">Reports are overwritten by each run; a file written outside this run's window is marked.</p>
       <div id="reports"></div>
-      <h2 style="margin-top:14px">Errors</h2>
+      <h2 class="spaced">Errors</h2>
       <div id="errors"></div>
     </div>
   </section>

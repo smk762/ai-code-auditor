@@ -37,7 +37,7 @@ here and in code. Don't add a rule to remember.
 | Serve a brand SVG with scripts or event handlers | `test_ui_topology::test_mark_rejects_active_content` |
 | An agent-facing request whose cost grows with the number of packs, or seconds of CPU-bound work inside the API process | `test_hot_paths::test_agent_hot_paths_cost_the_same_at_any_pack_count`, `::test_topology_rebuilds_outside_the_api_process`. At runtime, requests over `AI_AUDIT_SLOW_REQUEST_MS` (1000) are counted in `/audit/health` `slow_requests`, which should stay empty |
 | A non-GET endpoint without `_require_mutating_auth`, or a request value spliced into git as an option | `test_api_auth_sweep::test_every_non_get_route_requires_the_token` (exemptions listed with a reason in `OWN_AUTH`), `::test_refs_that_could_become_git_options_are_refused` |
-| Work pushed to `main`, a PR into `main` other than the release, or `main` ahead of `dev` except the release merge commit | **UNENFORCED** (see Branches) |
+| Work pushed to `main`, a PR into `main` other than the release, or `main` ahead of `dev` except the release merge commit | `scripts/check_branch_rules.py` in the `Branch rules` workflow: `pr-base` fails a PR into `main` whose head isn't this repo's `dev`; `main-tree` fails when `main`'s tree differs from its merge base with `dev` (`test_branch_rules`). A direct push to `main` is caught after the fact, not refused: that needs branch protection |
 | Deploy hooks in dragonhound-site, or docs committed into it | **UNENFORCED** here (another repo). Docs go live only by a `docs.lock.json` pin bump on its `dev` |
 
 ## Setup and commands
@@ -130,7 +130,9 @@ Spend comes from the ledger's `conductor` lane, because `cost_usd_est` is not fi
 **Ollama healthcheck** hits `/api/tags` (no model load), not generate.
 
 **Web UI.** Static pages in `auditor/static/` share `ui.css` and `ui.js`, and put `<!--#nav-->` where the server
-injects the nav. There is no build step, and each page has its own JSON endpoint. Markdown goes through
+injects the nav. Pages have no `<style>` or `style=""`: their rules sit at the end of `ui.css` under
+`:where(.page-<name>)` on `<body>`, which keeps the cascade a page-local block had (`test_ui::test_every_page_uses_shared_shell`).
+There is no build step, and each page has its own JSON endpoint. Markdown goes through
 `render_markdown()` (raw HTML escaped), the same renderer the public wiki export uses.
 
 ## Wiki and public docs
@@ -171,4 +173,4 @@ and their status alone. `bash scripts/install_agent_pack_awareness.sh` writes th
 
 ## Branches
 
-`dev` is the default branch and the base for every PR. Cut feature branches from `origin/dev` and bring them up to date by merging `origin/dev`, never `main`. Never push work to `main` or open a PR against it, except the release PR from `dev`: `main` must never be ahead of `dev`, with one exception. A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`), then tags it. If `main` is protected, the release is a reviewed PR from `dev` into `main`, and merging it leaves a merge commit on `main` alone. That merge commit is the one exception to the rule: it leaves `main` one commit ahead of `dev` with an identical tree. Leave it there and don't merge `main` back into `dev`. Anything else on `main` that `dev` lacks is a mistake (`git diff origin/dev origin/main` must be empty). Once `main` carries such a commit it can't be fast-forwarded, so later releases are PRs too.
+`dev` is the default branch and the base for every PR. Cut feature branches from `origin/dev` and bring them up to date by merging `origin/dev`, never `main`. Never push work to `main` or open a PR against it, except the release PR from `dev`: `main` must never be ahead of `dev`, with one exception. A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`), then tags it. If `main` is protected, the release is a reviewed PR from `dev` into `main`, and merging it leaves a merge commit on `main` alone. That merge commit is the one exception to the rule: it leaves `main` one commit ahead of `dev` with an identical tree. Leave it there and don't merge `main` back into `dev`. Anything else on `main` that `dev` lacks is a mistake: `git diff $(git merge-base origin/dev origin/main) origin/main` must be empty (right after a release that is `git diff origin/dev origin/main`; CI checks it). Once `main` carries such a commit it can't be fast-forwarded, so later releases are PRs too.

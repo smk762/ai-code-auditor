@@ -1142,11 +1142,11 @@ def get_usage_json(range: str = "month") -> JSONResponse:
 
 
 @app.get("/audit/prs")
-def get_pr_dashboard() -> FileResponse:
+def get_pr_dashboard() -> HTMLResponse:
     """Blocked-PR dashboard: what is stuck, why, and the suggested order to clear it."""
     from auditor.pr_intel import HTML_PATH
 
-    return FileResponse(HTML_PATH, media_type="text/html")
+    return HTMLResponse(render_page(HTML_PATH.name, "/audit/prs"))
 
 
 @app.get("/audit/prs.json")

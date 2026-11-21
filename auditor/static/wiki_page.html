@@ -6,52 +6,8 @@
 <title><!--#title--></title>
 <link rel="stylesheet" href="/audit/static/ui.css">
 <script src="/audit/static/ui.js"></script>
-<style>
-  .wiki { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: start; }
-  .wiki aside { position: sticky; top: 12px; }
-  .wiki aside h2 { font-size: 13px; margin: 0 0 6px; }
-  .wiki aside h2 a { color: var(--text-primary); text-decoration: none; }
-  .wiki aside ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
-  .wiki aside li a { display: block; padding: 5px 8px; border-radius: 6px; color: var(--text-secondary); text-decoration: none; font-size: 13px; }
-  .wiki aside li a:hover { background: var(--surface-2); color: var(--text-primary); }
-  .wiki aside li a[aria-current="page"] { background: var(--surface-2); color: var(--text-primary); font-weight: 600; }
-  .wiki aside .back { display: block; margin-top: 12px; font-size: 12px; }
-  .wiki .meta { font-size: 12px; color: var(--text-secondary); margin-bottom: 10px; }
-  .wiki .prose { max-width: none; }
-  .wiki .prose a code { background: none; padding: 0; font-size: 11px; color: var(--link); }
-  .wiki .prose pre code.language-mermaid::before { content: "diagram source (mermaid)"; display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
-  .wiki footer { margin-top: 14px; font-size: 12px; color: var(--text-muted); }
-  .wiki footer details { margin-top: 6px; }
-  .wiki footer summary { cursor: pointer; color: var(--text-secondary); }
-  .wiki footer ul.dropped { margin: 6px 0 0; padding-left: 18px; }
-  .wiki footer ul.dropped li { margin-bottom: 4px; }
-  .ok-badge { color: var(--ok); } .warn-badge { color: var(--warn); }
-  .wiki aside .ask-open { width: 100%; margin-top: 12px; }
-  dialog.ask { border: 1px solid var(--border); border-radius: 10px; padding: 0; width: min(760px, calc(100vw - 32px));
-    max-height: min(85vh, 900px); background: var(--surface-1); color: var(--text-primary); }
-  dialog.ask[open] { display: flex; flex-direction: column; }
-  dialog.ask::backdrop { background: rgba(0, 0, 0, .35); }
-  dialog.ask header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 18px 0; }
-  dialog.ask h2 { font-size: 15px; margin: 0; }
-  dialog.ask .close { font: inherit; font-size: 20px; line-height: 1; background: none; border: 0; color: var(--text-secondary); cursor: pointer; padding: 2px 6px; border-radius: 6px; }
-  dialog.ask .close:hover { background: var(--surface-2); color: var(--text-primary); }
-  dialog.ask .body { padding: 8px 18px 16px; overflow-y: auto; }
-  dialog.ask .hint { font-size: 12px; color: var(--text-muted); margin: 0 0 10px; }
-  dialog.ask textarea { width: 100%; resize: vertical; font: inherit; font-size: 14px; }
-  dialog.ask .row { display: flex; gap: 10px; align-items: center; margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
-  dialog.ask .kbd { margin-left: auto; color: var(--text-muted); }
-  dialog.ask .bug { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0;
-    background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); cursor: pointer; }
-  dialog.ask .bug:hover, dialog.ask .bug:focus-visible { color: var(--text-primary); background: var(--surface-2); }
-  dialog.ask .bug svg { width: 16px; height: 16px; }
-  dialog.ask #ask-answer { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; max-width: none; }
-  dialog.ask #ask-answer a code { background: none; padding: 0; font-size: 11px; color: var(--link); }
-  .regen { margin-left: 10px; display: inline-flex; gap: 8px; align-items: center; }
-  .regen button { font-size: 12px; padding: 2px 10px; }
-  @media (max-width: 800px) { .wiki { grid-template-columns: 1fr; } .wiki aside { position: static; } }
-</style>
 </head>
-<body>
+<body class="page-wiki-page">
 <!--#nav-->
 <main>
   <div class="wiki">
