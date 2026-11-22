@@ -36,3 +36,24 @@ def narrow(fn):
         return fn()
     except KeyError:
         pass  # a specific, expected exception is not this rule's concern
+
+
+def load_state(path, read_json):
+    try:
+        return read_json(path)
+    except Exception:  # noqa: S110 the caller treats {} as "start a new state" and logs that
+        return {}
+
+
+def lookup(fn):
+    try:
+        return fn()
+    except Exception:
+        return fn.default  # a real fallback value, not an empty one: outside this rule
+
+
+def narrow_empty(read):
+    try:
+        return read()
+    except FileNotFoundError:
+        return {}

@@ -235,7 +235,7 @@ def _service_from_url_node(
     # Case 2: URL is an expression we can unparse and search for fragments.
     try:
         url_repr = ast.unparse(url_node).upper()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — an expression unparse can't render names no service
         return None
 
     for frag, svc in env_to_service.items():

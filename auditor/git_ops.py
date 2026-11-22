@@ -180,7 +180,7 @@ def is_git_repo(path: Path) -> bool:
             capture_output=True, text=True, timeout=5,
         )
         return r.returncode == 0 and r.stdout.strip() == "true"
-    except Exception:
+    except (OSError, subprocess.SubprocessError):  # no git, or it hung: not a repo we can use
         return False
 
 

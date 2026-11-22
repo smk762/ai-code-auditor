@@ -131,7 +131,7 @@ def _mirror_dir() -> Path | None:
 
     try:
         repo = next((r for r in load_ecosystem_config().repos if r.name == CORTEX), None)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 — no config means no mirror; the mark falls back to its cache
         return None
     return Path(repo.path) / "brand" / "packages" if repo and repo.path else None
 

@@ -27,3 +27,17 @@ def unexplained(fn):
         return fn()
     except BaseException:  # noqa: S110
         pass
+
+
+def load_state(path, read_json):
+    try:
+        return read_json(path)
+    except Exception:
+        return {}  # a corrupt state file reads as an empty one
+
+
+def lookup(fn):
+    try:
+        return fn()
+    except BaseException:
+        return None
