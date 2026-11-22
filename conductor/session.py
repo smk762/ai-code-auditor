@@ -44,6 +44,17 @@ from conductor.wrapup import build_status, top_findings_from_worker_results, wra
 logger = logging.getLogger(__name__)
 
 
+def _autonomy(repo: str, pack_id: str, file_path: str, title: str, output_dir: str | Path):
+    """Trust-gated autonomy's answer for this PR (#61). The pack's class when the classifier
+    has set one, else the repo's ``unclassified`` scope."""
+    from auditor.agent_pack import load_pack
+    from auditor.autonomy import decide
+
+    cls = (((load_pack(output_dir, pack_id) or {}).get("governance") or {}).get("finding_class") or {})
+    return decide(repo, str(cls.get("id") or "") if isinstance(cls, dict) else "", paths=[file_path],
+                  title=title, output_dir=output_dir)
+
+
 @dataclass
 class SessionState:
     run_id: str
@@ -59,6 +70,8 @@ class SessionState:
     dismissed: int = 0
     ended_reason: str = "completed"
     cost_usd_est: float = 0.0
+    # PRs trust-gated autonomy held back at `report` (#61): {repo, title, scope, reason}
+    autonomy_held: list[dict[str, str]] = field(default_factory=list)
 
 
 def run_rest_session(
@@ -223,19 +236,29 @@ def run_rest_session(
                 run_id=run_id,
                 finding_id=str(top.get("id") or ""),
             )
+            title = str(top.get("title") or task.title)[:70]
+            gate = _autonomy(task.repo, pack_id, str(top.get("file") or top.get("file_path") or ""), title, out)
+            if not gate.may_open_pr:
+                # Still confirmed and still a pack; the scope hasn't earned a PR (#61).
+                logger.info("no PR for %s (%s): %s", task.repo, gate.scope, gate.reason)
+                state.autonomy_held.append({"repo": task.repo, "title": title, "scope": gate.scope,
+                                            "reason": gate.reason})
+                continue
             body = finding_to_pr_body(top, result.summary, pack_id=pack_id, repo_path=str(task.repo_path))
             pr_res = create_draft_pr(
                 Path(task.repo_path),
                 repo_name=task.repo,
-                title=str(top.get("title") or task.title)[:70],
+                title=title,
                 body=body,
                 slug=f"{task.mission}-{task.id[-6:]}",
                 severity=str(top.get("severity") or "MEDIUM"),
                 base_branch="dev",
                 dry_run=dry_run,
+                draft=gate.draft,
             )
             if pr_res.draft:
                 draft = pr_res.draft
+                draft.autonomy = f"{gate.level}: {gate.reason}"
                 if enable_pr_review:
                     draft = review_draft_pr(
                         draft,
@@ -301,6 +324,7 @@ def run_rest_session(
             "completed": sum(1 for r in state.tasks_done if r.status == "COMPLETED"),
             "failed": sum(1 for r in state.tasks_done if r.status == "FAILED"),
             "escalated": sum(1 for r in state.tasks_done if r.status == "ESCALATE"),
+            "autonomy_held": state.autonomy_held,
         },
         cost_usd_est=state.cost_usd_est,
         next_rest_window=next_window_start_label(rest),

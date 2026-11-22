@@ -114,3 +114,39 @@ def test_dry_run_attaches_no_placeholder_pr_url(monkeypatch: pytest.MonkeyPatch,
     out = cs.run_rest_session(dry_run=True, force=True, enable_pr_review=False, send_webhook=False,
                               ingest_rag=False)
     assert all("pr_url" not in t for t in out["status"]["findings"]["top"])
+
+
+# ── trust-gated autonomy (#61) ───────────────────────────────────────────────
+
+def test_a_scope_at_report_gets_no_pr_and_says_why(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    conf = tmp_path / "autonomy.yaml"
+    conf.write_text("overrides:\n  - {repo: a, class: '*', level: report, reason: release freeze}\n")
+    monkeypatch.setenv("AI_AUDIT_AUTONOMY_CONFIG", str(conf))
+    created = _setup(monkeypatch, tmp_path, [_task("t1", "a", tmp_path)], [_found("t1", "bug in a")],
+                     freeze_after_first=False, pr_repos={"a"})
+    out = cs.run_rest_session(force=True, enable_pr_review=False, send_webhook=False, ingest_rag=False)
+    assert created == []
+    [held] = out["status"]["worker_stats"]["autonomy_held"]
+    assert held["scope"] == "a/unclassified" and "release freeze" in held["reason"]
+    assert out["status"]["findings"]["confirmed"] == 1  # still confirmed, just no PR
+
+
+def test_a_promoted_scope_opens_its_pr_ready_for_review(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import json
+
+    created = _setup(monkeypatch, tmp_path, [_task("t1", "a", tmp_path)], [_found("t1", "bug in a")],
+                     freeze_after_first=False, pr_repos={"a"})
+    seen: dict[str, Any] = {}
+    real = cs.create_draft_pr
+
+    def spy(*a: Any, **k: Any) -> DraftPrResult:
+        seen.update(k)
+        return real(*a, **k)
+
+    monkeypatch.setattr(cs, "create_draft_pr", spy)
+    (tmp_path / "out").mkdir(exist_ok=True)
+    (tmp_path / "out" / "autonomy.json").write_text(json.dumps(
+        {"scopes": {"a/unclassified": {"level": "ready_pr", "reason": "promoted: 20 PRs"}}}))
+    out = cs.run_rest_session(force=True, enable_pr_review=False, send_webhook=False, ingest_rag=False)
+    assert created and seen["draft"] is False
+    assert out["status"]["draft_prs"][0]["autonomy"] == "ready_pr: promoted: 20 PRs"

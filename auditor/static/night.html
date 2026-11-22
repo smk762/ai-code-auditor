@@ -81,7 +81,8 @@ function render(d) {
     tile("Missions", `${int(ok)}<span class="muted"> / ${int(s.missions_total)}</span>`, `completed · ${mcounts(c)}`),
     tile("Findings", int(s.confirmed ?? s.findings_reported),
       s.confirmed != null ? `confirmed · ${int(s.dismissed)} dismissed · ${int(s.manual_review)} for manual review` : "reported by missions"),
-    tile("Draft PRs", int(prs), s.decisions_needed ? `<span class="status warn">${UI.plural(s.decisions_needed, "decision")} needed</span>` : "no decisions needed"),
+    tile("Draft PRs", int(prs), (s.decisions_needed ? `<span class="status warn">${UI.plural(s.decisions_needed, "decision")} needed</span>` : "no decisions needed") +
+      (s.autonomy_held.length ? ` · <span title="${esc(s.autonomy_held.map((h) => `${h.scope}: ${h.reason}`).join("\n"))}">${int(s.autonomy_held.length)} held at report level</span>` : "")),
     tile("Spend", s.spend ? money(s.spend.usd) : "—", s.spend ? `${int(s.spend.calls)} conductor calls · ${int(s.spend.input_tokens)} in / ${int(s.spend.output_tokens)} out` : "ledger unavailable"),
   ].join("");
 

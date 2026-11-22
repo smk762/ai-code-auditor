@@ -74,6 +74,7 @@ class DraftPr:
     repo: str
     action: DraftPrAction = "review"
     code_review: CodeReviewSummary | None = None
+    autonomy: str = ""  # "<level>: <why>" from auditor.autonomy (#61)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -83,6 +84,8 @@ class DraftPr:
             "repo": self.repo,
             "action": self.action,
         }
+        if self.autonomy:
+            d["autonomy"] = self.autonomy
         if self.code_review is not None:
             d["code_review"] = self.code_review.to_dict()
         return d

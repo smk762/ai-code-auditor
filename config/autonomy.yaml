@@ -1,0 +1,40 @@
+# Trust-gated autonomy (#61, auditor/autonomy.py): how far the night conductor may take a fix,
+# per (repo, finding class). Levels, lowest first:
+#   report     findings only: no PR
+#   draft_pr   a draft PR a person reviews
+#   ready_pr   a PR opened ready for review
+#   auto_merge (later) merged without a person; needs `ceiling: auto_merge` here first
+#
+# Every scope starts at `default`. The nightly run (after the trust metrics) promotes a scope one
+# level when its last `window_prs` mature agent PRs meet every threshold, every pack in them was
+# resolved with validate_patch evidence (no lint-only, no waiver), and it has held its level for
+# `min_days_at_level`. Any threshold breach demotes it one level, but never below `floor`: a draft
+# PR already waits for a person, so `report` stops PRs without making them safer (set
+# `floor: report` for that, or pin one scope with an override). Nothing goes above `ceiling`.
+default: draft_pr
+floor: draft_pr
+ceiling: ready_pr
+window_prs: 20
+min_days_at_level: 30
+thresholds:            # breached when the rate is above the value
+  revert_rate: 0.02
+  recurrence_rate: 0.05
+  false_resolve_rate: 0.05
+
+# Irreversible actions: whatever the metrics say, a change here never goes above draft_pr.
+irreversible:
+  classes: [secret_exposure, fail_open]       # auth and secrets
+  paths:                                      # fnmatch globs on repo-relative paths
+    - "*migrations/*"
+    - "*alembic/*"
+    - "*.sql"
+    - "*auth*"
+    - "*secret*"
+    - "*credential*"
+    - "*.env*"
+  title_patterns:                             # data deletion, matched case-insensitively
+    - "\\b(delete|drop|truncate|purge|wipe|erase)\\b"
+
+# Pin a scope regardless of its metrics. `class: "*"` pins every class in the repo.
+#   - {repo: argus-mint, class: "*", level: report, reason: "release freeze until 2026-12-10"}
+overrides: []

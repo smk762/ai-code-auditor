@@ -193,6 +193,22 @@ def _test_env_by_repo(out_dir: Path) -> dict[str, dict[str, Any]] | None:
     return out
 
 
+def _autonomy_by_repo(out_dir: Path) -> dict[str, Any]:
+    """Trust-gated autonomy (#61): the default level, and each measured (repo, class) scope."""
+    from auditor.autonomy import load_config, load_state
+
+    cfg = load_config()
+    by_repo: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for key, sc in (load_state(out_dir).get("scopes") or {}).items():
+        repo, _, cls = key.partition("/")
+        m = sc.get("metrics") or {}
+        by_repo[repo].append({"class": cls, "level": sc.get("level"), "since": sc.get("since"),
+                              "reason": sc.get("reason"), "prs": m.get("prs", 0)})
+    pins = {o["repo"]: o for o in cfg.overrides if o["class"] == "*"}
+    return {"default": cfg.default, "ceiling": cfg.ceiling, "window_prs": cfg.window_prs,
+            "by_repo": dict(by_repo), "pinned": pins}
+
+
 def repos_data(output_dir: str | Path) -> dict[str, Any]:
     """One card per enabled repo. Each source degrades on its own (listed in ``errors``)."""
     from auditor.config import load_ecosystem_config
@@ -220,6 +236,7 @@ def repos_data(output_dir: str | Path) -> dict[str, Any]:
     work = _try("pr intel", lambda: _github_work(out_dir), None)
     slugs = _try("mirror slugs", _github_slugs, {})
     test_env = _try("test env", lambda: _test_env_by_repo(out_dir), None)
+    autonomy = _try("autonomy", lambda: _autonomy_by_repo(out_dir), None)
 
     packs: dict[str, Counter] = defaultdict(Counter)
     open_high: Counter = Counter()
@@ -258,6 +275,10 @@ def repos_data(output_dir: str | Path) -> dict[str, Any]:
             "wiki": (out_dir / "wiki" / repo.name / "INDEX.json").is_file(),
             # None: the check hasn't run (or skipped this repo); see auditor/test_env_readiness.py
             "test_env": (test_env or {}).get(repo.name),
+            # None: the autonomy config couldn't be read
+            "autonomy": None if autonomy is None else {
+                "default": autonomy["default"], "pinned": autonomy["pinned"].get(repo.name),
+                "scopes": sorted(autonomy["by_repo"].get(repo.name, []), key=lambda x: x["class"])},
             # None: PR intel hasn't run, or failed for this repo (unknown, not zero)
             "github": (None if work is None or repo.name in work["failed"] else
                        work["by_repo"].get(repo.name) or {"prs": {"open": 0, "blocked": 0},
@@ -269,6 +290,7 @@ def repos_data(output_dir: str | Path) -> dict[str, Any]:
         "findings_has_baseline": bool(findings and findings["has_baseline"]),
         "poll_updated_at": poll.get("updated_at"),
         "pr_intel_at": work["generated_at"] if work else None,
+        "autonomy": None if autonomy is None else {k: autonomy[k] for k in ("default", "ceiling", "window_prs")},
         "errors": errors,
     }
 
