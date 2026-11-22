@@ -1358,6 +1358,10 @@ def main() -> None:
 
         cfg = load_ecosystem_config()
         out = cfg.output_dir
+        # Reads (bundle, brief, list) and dry runs need no role; anything that writes packs is admin.
+        if args.guard or args.set_status or (
+                (args.classes or args.classify or args.gc or args.dedupe) and not args.dry_run):
+            _enforce_cli_role(cfg, token, "admin", "cli:packs")
         if args.bundle:
             from auditor.agent_pack import build_pack_bundle
 

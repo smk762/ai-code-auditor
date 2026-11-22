@@ -115,3 +115,55 @@ def test_read_only_repair_without_jwt_is_refused_when_auth_is_on(monkeypatch) ->
     with pytest.raises(PermissionError, match="analyst JWT"):
         cli._run_repair(repo_name="r", repair_api_url="http://rag.test", pack_id="ext-1")
     assert sent == []
+
+
+@pytest.mark.parametrize("argv", [
+    ["packs", "--set-status", "resolved", "--id", "p1"],
+    ["packs", "--gc"],
+    ["packs", "--dedupe"],
+])
+def test_mutating_packs_ops_without_jwt_are_refused_when_auth_is_on(monkeypatch, tmp_path, argv) -> None:
+    from auditor import agent_pack, pack_gc
+
+    wrote = []
+    _main(monkeypatch, argv, auth_mode=True)
+    monkeypatch.setattr(cli, "load_ecosystem_config", lambda: SimpleNamespace(
+        auth_mode=True, auth_code_env="X", repos=[], output_dir=str(tmp_path)))
+    monkeypatch.setattr(agent_pack, "update_pack_status", lambda *a, **k: wrote.append(a))
+    monkeypatch.setattr(agent_pack, "dedupe_packs", lambda *a, **k: wrote.append(a))
+    monkeypatch.setattr(pack_gc, "run", lambda *a, **k: wrote.append(a))
+    with pytest.raises(PermissionError, match="admin JWT"):
+        cli.main()
+    assert wrote == []
+
+
+def test_mutating_packs_ops_are_role_checked_when_a_jwt_is_given(monkeypatch, tmp_path) -> None:
+    from auditor import agent_pack
+
+    seen = []
+    _main(monkeypatch, ["packs", "--set-status", "resolved", "--id", "p1"], auth_mode=False)
+    monkeypatch.setenv("AI_AUDIT_AUTH_TOKEN", "tok")
+    monkeypatch.setattr(cli, "load_ecosystem_config", lambda: SimpleNamespace(
+        auth_mode=False, auth_code_env="X", repos=[], output_dir=str(tmp_path)))
+
+    def refuse(tok, role, action):
+        seen.append((role, action))
+        raise PermissionError("low role")
+
+    monkeypatch.setattr(cli, "enforce_role", refuse)
+    monkeypatch.setattr(agent_pack, "update_pack_status", lambda *a, **k: pytest.fail("pack written"))
+    with pytest.raises(PermissionError):
+        cli.main()
+    assert seen == [("admin", "cli:packs")]
+
+
+def test_dry_run_and_reads_of_packs_need_no_jwt(monkeypatch, tmp_path) -> None:
+    from auditor import pack_gc
+
+    ran = []
+    _main(monkeypatch, ["packs", "--gc", "--dry-run", "--json"], auth_mode=True)
+    monkeypatch.setattr(cli, "load_ecosystem_config", lambda: SimpleNamespace(
+        auth_mode=True, auth_code_env="X", repos=[], output_dir=str(tmp_path)))
+    monkeypatch.setattr(pack_gc, "run", lambda *a, **k: ran.append(k["dry_run"]) or {})
+    cli.main()
+    assert ran == [True]
