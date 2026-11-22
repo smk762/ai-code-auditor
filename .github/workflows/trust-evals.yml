@@ -1,0 +1,60 @@
+name: Trust evals
+
+# The deterministic half of `ai-audit eval trust` (#63), run by name on every PR so a change that
+# breaks the evidence bar, the gates or the seeded-defect eval shows up as its own red check.
+# No paid models, no network, no real mirrors: every test builds its git repos and catalogues in a
+# temp dir, the DB is in-memory SQLite, and the run is cut off from the network where the runner
+# allows it. Left out: the real suite-rule catalogue (argus-ci's mirror), the classes gold set
+# (lives outside the repo) and the model council that labels it.
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic:
+    name: Evidence bar, gates, seeded eval, suite rules
+    runs-on: ubuntu-latest
+    env:
+      TESTS: >-
+        tests/test_trust_eval.py
+        tests/test_evidence.py tests/test_evidence_packs.py tests/test_evidence_batch4.py
+        tests/test_trust_metrics.py tests/test_trust_metrics_packs.py tests/test_trust_metrics_batch4.py
+        tests/test_trailers.py
+        tests/test_revalidate.py tests/test_revalidate_batch4.py
+        tests/test_suite_rules.py tests/test_suite_rules_packs.py tests/test_suite_rules_batch4.py
+        tests/test_finding_class.py tests/test_pack_classes.py tests/test_pack_classes_packs.py
+        tests/test_class_packs.py tests/test_class_packs_packs.py tests/test_class_packs_batch4.py
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run the deterministic trust evals offline
+        run: |
+          git config --global user.name ci && git config --global user.email ci@localhost
+          py="$(command -v python)"
+          # Only what the tests need; no API keys or service URLs reach them.
+          run=(env -i PATH="$PATH" HOME="$HOME" DATABASE_URL=sqlite:///./audit.db
+               REDIS_LOCK_REQUIRED=false LLM_HEALTHCHECK_REQUIRED=false EMBEDDER_HEALTHCHECK_REQUIRED=false
+               "$py" -m pytest -v -p no:cacheprovider $TESTS)
+          if unshare -rn true 2>/dev/null; then
+            echo "network: none (unshare -rn)"; unshare -rn "${run[@]}"
+          elif sudo -n unshare -n true 2>/dev/null; then
+            echo "network: none (sudo unshare -n, then back to $(id -un))"
+            sudo -n unshare -n setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups "${run[@]}"
+          else
+            echo "::warning::could not drop the network; running with no credentials instead"
+            "${run[@]}"
+          fi

@@ -1,0 +1,44 @@
+name: Branch rules
+
+# CLAUDE.md "Branches": dev is the base of every PR; only the release PR from dev targets main;
+# main is never ahead of dev. Logic lives in scripts/check_branch_rules.py (tests/test_branch_rules.py).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]  # edited: a PR retargeted to main is re-checked
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-base:
+    name: PR into main only from dev
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the PR's base and head
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          head="$HEAD_REF"
+          # a fork's "dev" is not this repo's dev
+          if [ "$HEAD_REPO" != "$REPO" ]; then head="$HEAD_REPO:$HEAD_REF"; fi
+          python3 scripts/check_branch_rules.py pr-base --base "$BASE_REF" --head "$head"
+
+  main-tree:
+    name: main not ahead of dev
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch dev and main
+        run: git fetch --no-tags origin +refs/heads/dev:refs/remotes/origin/dev +refs/heads/main:refs/remotes/origin/main
+      - name: Diff main against its merge base with dev (must be empty)
+        run: python3 scripts/check_branch_rules.py main-tree --dev origin/dev --main origin/main

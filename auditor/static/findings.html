@@ -6,53 +6,8 @@
 <title>Findings</title>
 <link rel="stylesheet" href="/audit/static/ui.css">
 <script src="/audit/static/ui.js"></script>
-<style>
-  #matrix td.cell { text-align: right; cursor: pointer; font-variant-numeric: tabular-nums; }
-  #matrix td.cell:hover, #matrix td.cell.on { outline: 2px solid var(--text-primary); outline-offset: -2px; }
-  #matrix td.zero { color: var(--text-muted); cursor: default; }
-  #matrix td.zero:hover { outline: none; }
-  #matrix tr.on th { color: var(--text-primary); }
-  #matrix tbody th { font-weight: 500; cursor: pointer; text-align: left; }
-  .toolbar input[type="search"] { min-width: 220px; flex: 1; }
-  td.sev-col { white-space: nowrap; }
-  .new-tag { font-size: 11px; font-weight: 600; color: var(--critical); margin-left: 6px; }
-  td.pack-col { white-space: nowrap; }
-  td.pack-col button { margin-left: 6px; padding: 1px 6px; font-size: 11px; }
-  .handoff { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 10px; }
-  #prompt-box[hidden] { display: none; }
-  #prompt-box textarea { width: 100%; min-height: 220px; font: 12px/1.45 var(--font-mono, ui-monospace, monospace);
-    background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--grid); border-radius: 6px; padding: 8px; box-sizing: border-box; }
-  #matrix .dl { font-size: 11px; margin-left: 4px; font-weight: 600; }
-  .dl.up { color: var(--critical); }
-  .dl.down { color: var(--ok); }
-  .dl.flat { color: var(--text-muted); font-weight: 400; }
-  #matrix td.spark { padding-block: 2px; width: 90px; }
-  #matrix td.spark svg { display: block; }
-  .trend-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
-  .trend-head .big { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-secondary); margin: 6px 0 4px; }
-  .legend i.hatch { background: repeating-linear-gradient(45deg, var(--neutral) 0 2px, var(--surface-1) 2px 4px); }
-  #matrix .res { display: block; font-size: 11px; font-weight: 400; color: var(--text-muted); }
-  #trend-work { font-size: 13px; color: var(--text-secondary); }
-  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
-  #trend { position: relative; }
-  #trend svg { display: block; width: 100%; overflow: visible; }
-  #trend .col { cursor: pointer; }
-  #trend .hit { fill: transparent; }
-  #trend .col:hover .hit, #trend .col.cur .hit { fill: var(--surface-2); }
-  #trend text { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-  #trend text.lbl { fill: var(--text-secondary); font-weight: 600; }
-  #trend tspan.up { fill: var(--critical); } #trend tspan.down { fill: var(--ok); }
-  #trend tspan.new-repos { fill: var(--text-muted); font-weight: 400; }
-  #trend line.grid { stroke: var(--grid); }
-  #trend line.base { stroke: var(--text-muted); }
-  #tip { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
-    border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.12); white-space: nowrap; z-index: 2; }
-  #tip table { border-collapse: collapse; } #tip td { padding: 1px 4px; border: 0; } #tip td.n { text-align: right; font-variant-numeric: tabular-nums; }
-  details.tbl summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; margin-top: 6px; }
-</style>
 </head>
-<body>
+<body class="page-findings">
 <!--#nav-->
 <main>
   <header class="page">
@@ -68,7 +23,7 @@
   <section class="grid">
     <div class="card span-12">
       <div class="trend-head">
-        <h2 id="trend-title" style="margin:0">Findings over time</h2>
+        <h2 id="trend-title">Findings over time</h2>
         <span class="big" id="trend-total"></span>
         <span id="trend-change"></span>
       </div>
@@ -101,7 +56,7 @@
       <p class="hint" id="count"></p>
       <div class="handoff">
         <button class="primary" id="copy-all" disabled>Copy agent prompt</button>
-        <span class="hint" id="pack-summary" style="margin:0"></span>
+        <span class="hint" id="pack-summary"></span>
         <span class="flash" id="flash" role="status"></span>
       </div>
       <div id="prompt-box" hidden>
@@ -164,7 +119,7 @@ function dl(n, quiet = false) {
 // isn't findings appearing.
 function change(p, q) { return p.total - q.total - p.added; }
 const addedNote = (p) => p.added || p.fresh.length
-  ? `<span class="hint" style="margin:0">+${int(p.added)} from ${UI.plural(p.fresh.length, "repo")} scanned for the first time</span>` : "";
+  ? `<span class="hint flush">+${int(p.added)} from ${UI.plural(p.fresh.length, "repo")} scanned for the first time</span>` : "";
 
 function sum(o) { return Object.values(o || {}).reduce((a, b) => a + b, 0); }
 
@@ -257,7 +212,7 @@ function trend(d) {
   const last = pts[cur >= 0 ? cur : pts.length - 1], before = pts[(cur >= 0 ? cur : pts.length - 1) - 1];
   document.getElementById("trend-total").textContent = last ? int(last.total) : "";
   document.getElementById("trend-change").innerHTML = last && before
-    ? `${dl(change(last, before))} <span class="hint" style="margin:0">since the previous run (${fmtWhen(before.started_at)})${last.fresh.length ? ", in repos it also scanned" : ""}</span>` +
+    ? `${dl(change(last, before))} <span class="hint flush">since the previous run (${fmtWhen(before.started_at)})${last.fresh.length ? ", in repos it also scanned" : ""}</span>` +
       (last.fresh.length ? ` · ${addedNote(last)}` : "") : "";
   const work = packWork(d, state.repo), ws = work.by_status;
   const active = (ws.open || 0) + (ws.claimed || 0) + (ws.in_progress || 0);
@@ -279,7 +234,7 @@ function trend(d) {
   const slot = pw / pts.length, bw = Math.max(4, Math.min(44, slot * 0.6));
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * ymax);
   let svg = `<defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="5" height="5" patternTransform="rotate(45)">` +
-    `<rect width="2.5" height="5" style="fill:var(--surface-1)"/></pattern></defs>` + ticks.map((v) => `<line class="${v ? "grid" : "base"}" x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}"/>` +
+    `<rect class="hatch-gap" width="2.5" height="5"/></pattern></defs>` + ticks.map((v) => `<line class="${v ? "grid" : "base"}" x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}"/>` +
     `<text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${int(Math.round(v))}</text>`).join("");
   const every = Math.ceil(pts.length / Math.max(1, Math.floor(pw / 90)));
   const showLabels = slot >= 34;
@@ -323,7 +278,7 @@ function trend(d) {
     if (!g) { tip.hidden = true; return; }
     const i = +g.dataset.i, p = pts[i], q = pts[i - 1];
     tip.innerHTML = `<b>${esc(fmtWhen(p.started_at))}</b> <span class="muted mono">${esc(p.run_id)}</span>` +
-      `<table>${SEV_STACK.map((s) => `<tr><td><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${sevVar(s)}"></i> ${s.toLowerCase()}</td><td class="n">${int(p.sev[s] || 0)}</td><td>${q ? dl((p.sev[s] || 0) - (q.sev[s] || 0), true) : ""}</td></tr>`).join("")}` +
+      `<table>${SEV_STACK.map((s) => `<tr><td><i class="sw" style="background:${sevVar(s)}"></i> ${s.toLowerCase()}</td><td class="n">${int(p.sev[s] || 0)}</td><td>${q ? dl((p.sev[s] || 0) - (q.sev[s] || 0), true) : ""}</td></tr>`).join("")}` +
       `<tr><td><b>total</b></td><td class="n"><b>${int(p.total)}</b></td><td>${q ? dl(change(p, q)) : ""}</td></tr></table>` +
       (q && p.fresh.length ? `${addedNote(p)}: ${esc(p.fresh.join(", "))}<br>` : "") +
       (p.blind ? `<span class="muted">Partial: ${UI.plural(p.blind, "file")} not reviewed (budget or cache-only), so findings there are missing, not fixed</span><br>` : "") +

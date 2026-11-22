@@ -7,32 +7,8 @@
 <link rel="stylesheet" href="/audit/static/ui.css">
 <script src="/audit/static/ui.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<style>
-  /* usage-page specifics; tokens and shared components come from ui.css */
-  .chart-box { position: relative; height: 240px; }
-  .chart-box.tall { height: 300px; }
-  .donut-box { position: relative; height: 220px; }
-  .lane-bars { display: grid; gap: 10px; }
-  .lane-row .top { display: flex; justify-content: space-between; font-size: 13px; }
-  .lane-row .top b { font-weight: 600; }
-  .lane-row .top span { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-  .lane-row .fill { border-radius: 4px; }
-  .heat-wrap { overflow-x: auto; }
-  .heat { display: grid; grid-template-columns: 74px repeat(24, minmax(18px, 1fr)); gap: 2px; min-width: 560px; }
-  .heat .h { font-size: 10px; color: var(--text-muted); text-align: center; }
-  .heat .d { font-size: 11px; color: var(--text-secondary); white-space: nowrap; padding-right: 6px; align-self: center; }
-  .heat .c { height: 18px; border-radius: 3px; background: var(--surface-2); position: relative; }
-  .heat .c:hover { outline: 2px solid var(--text-primary); outline-offset: -1px; }
-  .scale { display: flex; align-items: center; gap: 2px; font-size: 11px; color: var(--text-muted); margin-top: 8px; }
-  .scale i { width: 22px; height: 10px; border-radius: 2px; display: inline-block; }
-  .tip {
-    position: fixed; pointer-events: none; z-index: 10; background: var(--surface-1); color: var(--text-primary);
-    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px;
-    box-shadow: 0 4px 16px rgba(0,0,0,.15); display: none; max-width: 260px;
-  }
-</style>
 </head>
-<body>
+<body class="page-usage-dashboard">
 <!--#nav-->
 <main>
   <header class="page">
@@ -217,8 +193,8 @@ function heatmap() {
     });
   }
   el.innerHTML = html;
-  document.getElementById("scale").innerHTML = `<span style="margin-right:6px">$0</span>` +
-    steps.map((c) => `<i style="background:${c}"></i>`).join("") + `<span style="margin-left:6px">${money(max)}/hour</span>`;
+  document.getElementById("scale").innerHTML = `<span class="lo">$0</span>` +
+    steps.map((c) => `<i style="background:${c}"></i>`).join("") + `<span class="hi">${money(max)}/hour</span>`;
 }
 
 function donut(id, legendId, entries, colorFn, labelFn) {

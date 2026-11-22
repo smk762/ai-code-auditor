@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -20,14 +21,68 @@ def test_nav_marks_active_page() -> None:
     assert '<a href="/">Overview</a>' in nav
 
 
-def test_every_page_uses_shared_shell() -> None:
-    for page in ("index.html", "usage_dashboard.html"):
-        raw = (ui.STATIC_DIR / page).read_text(encoding="utf-8")
-        assert ui.NAV_MARKER in raw
-        assert "/audit/static/ui.css" in raw and "/audit/static/ui.js" in raw
-        assert "--surface-0:" not in raw  # tokens live only in ui.css
-        rendered = ui.render_page(page, "/")
-        assert ui.NAV_MARKER not in rendered and 'class="ui-nav"' in rendered
+# Files under auditor/static/ that are not full pages, each with the reason. Every other *.html there
+# must use the shared shell. Empty today: every .html file is a whole page.
+NOT_PAGES: dict[str, str] = {}
+
+_SCRIPT = re.compile(r"<script\b[^>]*>.*?</script>", re.DOTALL | re.IGNORECASE)
+_STYLE_ATTR = re.compile(r"""\sstyle\s*=\s*["']([^"']*)""", re.IGNORECASE)
+
+
+def shell_violations(raw: str) -> list[str]:
+    """What keeps a page from using the shared shell. Markup may carry no style="" and no <style>;
+    a style="" built in a script is allowed only for a runtime value (one containing ${...})."""
+    problems = []
+    if ui.NAV_MARKER not in raw:
+        problems.append("no nav marker")
+    for asset in ("/audit/static/ui.css", "/audit/static/ui.js"):
+        if asset not in raw:
+            problems.append(f"does not link {asset}")
+    if "--surface-0:" in raw:
+        problems.append("defines tokens (they live only in ui.css)")
+    markup = _SCRIPT.sub("", raw)
+    if re.search(r"<style\b", markup, re.IGNORECASE):
+        problems.append("<style> block")
+    problems += [f"inline style={s!r}" for s in _STYLE_ATTR.findall(markup)]
+    for script in _SCRIPT.findall(raw):
+        problems += [f"static inline style={s!r} in a script" for s in _STYLE_ATTR.findall(script) if "${" not in s]
+    return problems
+
+
+def _pages() -> list[str]:
+    return sorted(p.name for p in ui.STATIC_DIR.glob("*.html") if p.name not in NOT_PAGES)
+
+
+def test_page_list_covers_every_static_html() -> None:
+    assert len(_pages()) >= 15  # the glob found the pages, not an empty or moved dir
+    assert set(NOT_PAGES) <= {p.name for p in ui.STATIC_DIR.glob("*.html")}
+
+
+@pytest.mark.parametrize("page", _pages())
+def test_every_page_uses_shared_shell(page: str) -> None:
+    raw = (ui.STATIC_DIR / page).read_text(encoding="utf-8")
+    assert shell_violations(raw) == []
+    rendered = ui.render_page(page, "/")
+    assert ui.NAV_MARKER not in rendered and 'class="ui-nav"' in rendered
+
+
+@pytest.mark.parametrize("seeded, expected", [
+    ('<div style="margin-top:12px">', "inline style='margin-top:12px'"),
+    ("<style>.x { color: red; }</style>", "<style> block"),
+    ('<script>el.innerHTML = `<span style="margin:0">`;</script>', "static inline style='margin:0' in a script"),
+])
+def test_shell_check_catches_a_seeded_violation(seeded: str, expected: str) -> None:
+    clean = (ui.STATIC_DIR / "runs.html").read_text(encoding="utf-8")
+    assert shell_violations(clean) == []
+    assert expected in shell_violations(clean.replace("</main>", seeded + "</main>", 1))
+
+
+def test_shell_check_allows_runtime_style_values_in_scripts() -> None:
+    clean = (ui.STATIC_DIR / "runs.html").read_text(encoding="utf-8")
+    seeded = clean.replace("</body>", '<script>x = `<i style="width:${w}%">`;</script></body>', 1)
+    assert shell_violations(seeded) == []
+    assert "no nav marker" in shell_violations(clean.replace(ui.NAV_MARKER, ""))
+    assert "does not link /audit/static/ui.css" in shell_violations(clean.replace("/audit/static/ui.css", "/x.css"))
 
 
 def test_landing_and_static_routes(client: TestClient) -> None:
