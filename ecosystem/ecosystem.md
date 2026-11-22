@@ -58,10 +58,11 @@ Night conductor scans `dev` on every `smk762/argus-*` repo except `argus-docs` (
 
   atlas / realms (maps, demo)     survey / sightline (point clouds)
   mask (face)      halo (demo infra)
-  puppet (pose)    retina (detectors)
+  puppet (pose)
   echo (speech)    iris (GPU leases)
   herald (releases)
   scout (homelab) ──► echo / mask
+  curator / darkroom / proof / lens ──► retina (detectors)
 
   cortex (shared contracts)     ci / pkg-template (tooling)     handbook (docs)
 
