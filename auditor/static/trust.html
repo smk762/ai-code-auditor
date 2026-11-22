@@ -208,14 +208,15 @@ function renderGates(ev) {
   const yes = (b) => b ? `<span class="status ok">yes</span>` : `<span class="muted">not yet</span>`;
   const g2 = ev.exit.gates_two_weeks, m4 = ev.exit.metrics_four_weeks, s = ev.summary;
   document.getElementById("exit").innerHTML =
-    `<span>${int(s.pass)} pass · ${int(s.fail)} fail · ${int(s.insufficient)} need data · ${int(s.pending)} not built</span>` +
+    `<span>${int(s.pass)} pass · ${int(s.fail)} fail · ${int(s.insufficient)} need data · ${int(s.pending)} not built` +
+    `${s.informational ? ` · ${int(s.informational)} informational` : ""}</span>` +
     `<span>Gates green two weeks running: ${yes(g2.met)}</span>` +
     `<span>Metrics not worse over 4 weeks: ${yes(m4.met)}${m4.note ? ` <span class="muted">(${esc(m4.note)})</span>` : ""}</span>` +
     `<span>Epic done: ${yes(ev.exit.met)}</span> <span class="muted">evaluated ${UI.ago(ev.at)}</span>`;
   const fmt = (g) => g.value == null ? "—" : g.threshold <= 1 ? pct(g.value) : String(g.value);
   document.querySelector("#gates tbody").innerHTML = ev.gates.map((g) => `<tr>
     <td>${esc(g.description)}<div class="muted mono">${esc(g.id)}</div>${g.note ? `<div class="muted">${esc(g.note)}</div>` : ""}</td>
-    <td><span class="gate ${esc(g.status)}">${esc(label[g.status] || g.status)}</span></td>
+    <td><span class="gate ${esc(g.status)}">${esc(label[g.status] || g.status)}</span>${g.informational ? ` <span class="muted">info only</span>` : ""}</td>
     <td class="num">${fmt(g)}</td><td class="num">${esc(g.op)} ${g.threshold <= 1 ? pct(g.threshold) : esc(g.threshold)}</td>
     <td class="num">${int(g.n)}${g.status === "insufficient" ? ` <span class="muted">/ ${int(g.min_n)}</span>` : ""}</td>
     <td><a href="https://github.com/smk762/ai-code-auditor/issues/${int(g.issue)}">${esc(g.component)} #${int(g.issue)}</a></td></tr>`).join("");
