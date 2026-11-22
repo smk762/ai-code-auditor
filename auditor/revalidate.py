@@ -243,6 +243,8 @@ def api_poster(api_base: str = "", timeout_s: int = 900, busy_wait_s: float | No
         headers["X-API-Token"] = tok
 
     def post(body: dict[str, Any]) -> dict[str, Any]:
+        if not base:  # no built-in host: refuse rather than guess where the API is
+            raise ValueError("revalidate needs the audit API: set AI_AUDIT_PUBLIC_BASE_URL or pass api_base")
         waited = 0.0
         while True:
             req = urllib.request.Request(f"{base}/audit/validate_patch", data=json.dumps(body).encode(),

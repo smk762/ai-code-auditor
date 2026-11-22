@@ -8,7 +8,7 @@ import pytest
 
 from tests.test_repo_readiness_packs import _load
 
-PRE = {"opsec": ["docs/setup.md:L4 private IP: 192.168.1.198", "README.md:L9 email: ops@corp.example.net"],
+PRE = {"opsec": ["docs/setup.md:L4 private IP: 192.168.200.198", "README.md:L9 email: ops@corp.example.net"],
        "undocumented_env": {}, "undocumented_routes": {}, "undocumented_subcommands": {},
        "undocumented_entry_points": [], "package_init_without_all": [], "module_docstring_pct": None,
        "oversize_in_tree": [], "docs": ["README.md", "docs/setup.md"]}
@@ -18,10 +18,10 @@ GI = {"readme": "README.md", "readme_last_date": "2026-11-01", "readme_last_comm
 def test_a_public_issue_lists_opsec_hits_without_their_values(monkeypatch) -> None:
     mod = _load(monkeypatch)
     body = mod.issue_body("argus-x", "a" * 40, GI, PRE, None, public=True)
-    assert "192.168.1.198" not in body and "ops@corp.example.net" not in body
+    assert "192.168.200.198" not in body and "ops@corp.example.net" not in body
     assert "`docs/setup.md:L4 private IP`" in body and "`README.md:L9 email`" in body
     private = mod.issue_body("argus-x", "a" * 40, GI, PRE, None, public=False)
-    assert "192.168.1.198" in private  # a private repo's draft keeps the value to make the fix easy
+    assert "192.168.200.198" in private  # a private repo's draft keeps the value to make the fix easy
 
 
 def test_unknown_or_oddly_cased_severities_sort_last_instead_of_crashing(monkeypatch) -> None:

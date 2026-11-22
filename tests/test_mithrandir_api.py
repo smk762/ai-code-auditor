@@ -18,8 +18,8 @@ def test_latest_endpoints(tmp_path: Path, monkeypatch):
         ended_reason="completed",
         summary_one_liner="API test clean run.",
         speakable=True,
-        latest_url="http://192.168.1.198:8765/reports/mithrandir/LATEST.json",
-        latest_md_url="http://192.168.1.198:8765/reports/mithrandir/LATEST.md",
+        latest_url="http://audit.example.test:8765/reports/mithrandir/LATEST.json",
+        latest_md_url="http://audit.example.test:8765/reports/mithrandir/LATEST.md",
         window=RestWindowInfo(start="00:30", end="06:00"),
         findings=FindingsSummary(),
     )

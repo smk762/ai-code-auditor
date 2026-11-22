@@ -41,7 +41,7 @@ PUBLIC_PAGES = ("overview", "architecture", "interfaces", "integration")  # neve
 DEFAULT_DENYLIST = Path.home() / ".config" / "ai-code-auditor" / "opsec-denylist.txt"
 OWNER = "smk762"
 
-# an address may end a sentence ("… at 192.168.1.9."), so only a dot followed by a digit
+# an address may end a sentence ("… at 192.168.200.9."), so only a dot followed by a digit
 # means "part of a longer dotted number"
 _IPV4 = re.compile(r"(?<!\d)(?<!\d\.)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)(?!\.\d)")
 _IPV6_LOCAL = re.compile(r"(?i)\b(fe80|fc[0-9a-f]{2}|fd[0-9a-f]{2}):[0-9a-f:]+")

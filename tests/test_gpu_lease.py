@@ -171,9 +171,9 @@ def test_home_node_and_operator_node_urls(monkeypatch) -> None:
     with _lease() as grant:
         assert grant.endpoint == LOCAL
     monkeypatch.delenv("ARGUS_GPU_HOME_NODE")
-    monkeypatch.setenv("AI_AUDIT_OLLAMA_NODE_URLS", "dragon=http://192.168.1.20:11434")
+    monkeypatch.setenv("AI_AUDIT_OLLAMA_NODE_URLS", "dragon=http://192.168.200.20:11434")
     with _lease() as grant:
-        assert grant.endpoint == "http://192.168.1.20:11434/api/generate"
+        assert grant.endpoint == "http://192.168.200.20:11434/api/generate"
 
 
 @pytest.mark.parametrize("bad", [
@@ -193,7 +193,7 @@ def test_unsafe_node_urls_are_refused_and_the_lease_released(monkeypatch, bad: s
 
 
 def test_lan_and_other_unique_local_nodes_stay_usable(monkeypatch) -> None:
-    for ok in ("http://[fd00:ec2::253]:11434", "http://100.100.100.201:11434", "http://192.168.1.109:11434"):
+    for ok in ("http://[fd00:ec2::253]:11434", "http://100.100.100.201:11434", "http://192.168.200.109:11434"):
         _use(monkeypatch, FakeCoordinator(GpuLease(via="broker", lease_id="L5", node="jarrah", base_url=ok)))
         with _lease() as grant:
             assert grant.endpoint == ok + "/api/generate"
