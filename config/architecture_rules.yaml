@@ -124,9 +124,28 @@ call_graph_rules:
     - from: argus-scout
       to: argus-mask
       note: "mask voice channel (GET /health, POST /push; the channel's url)"
+    # argus-iris reads and frees the GPU residents its broker config (IRIS_CONFIG) lists as services,
+    # through its adapters (src/argus_iris/broker/adapters, actions.py). The targets are deployment
+    # config, so the code names none; these are the ones deploy/iris.example.yaml wires. Services
+    # absent from that file (argus-retina, argus-echo) get no edge. Its node agent (iris-agent,
+    # src/argus_iris/agent) is part of argus-iris, so broker -> agent calls need no entry.
     - from: argus-iris
       to: voluptas
-      note: "Reads ComfyUI queue and system stats for GPU residency (a configured service)"
+      note: >-
+        GPU residents in iris.example.yaml: comfyui adapter (GET /system_stats, /queue; POST /free) and
+        argus-http residents image-gen-diffusers and miso (GET /health; POST /admin/unload, /admin/wake)
+    - from: argus-iris
+      to: agent-composer
+      note: >-
+        GPU residents in iris.example.yaml: argus-http residents xtts, tts, whisper, modernbert and
+        infinity through rag-chat's /api/runtime/residents/<name> gateway (GET /health; POST
+        /admin/unload, /admin/evict, /admin/wake), and the ollama adapter on its Ollama (GET /api/ps,
+        /api/tags; POST /api/generate keep_alive)
+    - from: argus-iris
+      to: argus-lens
+      note: >-
+        GPU resident in iris.example.yaml: argus-http resident lens (GET /health; POST /admin/unload;
+        LENS_ADMIN_TOKEN)
     # Detectors on argus-retina, reached by URL (POST /infer, NudeNet's shape) through cortex clients
     # or the caller's own; no caller has a direct httpx.<verb>(url) the analyzer can see, so these
     # are policy-only edges.
