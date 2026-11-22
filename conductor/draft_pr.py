@@ -104,9 +104,11 @@ def create_draft_pr(
     action: str = "review",
     base_branch: str | None = None,
     dry_run: bool = False,
+    draft: bool = True,
 ) -> DraftPrResult:
     """Create repair branch, notes commit, push, open draft PR: all in a throwaway clone of
-    *repo_path* (``scratch_clone``), which is never itself branched, committed to or checked out."""
+    *repo_path* (``scratch_clone``), which is never itself branched, committed to or checked out.
+    ``draft=False`` opens it ready for review: only where trust-gated autonomy allows (#61)."""
     if dry_run:
         return DraftPrResult(
             draft=DraftPr(
@@ -125,7 +127,7 @@ def create_draft_pr(
         return DraftPrResult(draft=None, error=f"scratch clone failed: {exc}")
     try:
         return _draft_pr_in(work, repo_name=repo_name, title=title, body=body, slug=slug,
-                            severity=severity, action=action, base_branch=base_branch)
+                            severity=severity, action=action, base_branch=base_branch, draft=draft)
     finally:
         shutil.rmtree(work.parent, ignore_errors=True)
 
@@ -140,6 +142,7 @@ def _draft_pr_in(
     severity: str,
     action: str,
     base_branch: str | None,
+    draft: bool = True,
 ) -> DraftPrResult:
     """The draft PR flow inside *repo_path*, a scratch clone already at the base.
 
@@ -176,7 +179,7 @@ def _draft_pr_in(
                 "gh",
                 "pr",
                 "create",
-                "--draft",
+                *(["--draft"] if draft else []),
                 "--title",
                 title[:70],
                 "--body",

@@ -127,6 +127,8 @@ def _session(output_dir: Path, run_dir: Path, rec: dict[str, Any] | None, end: d
         "dismissed": findings.get("dismissed"),
         "manual_review": findings.get("manual_review"),
         "draft_prs": list((rec or {}).get("draft_prs") or []),
+        # fixes trust-gated autonomy kept at `report` (#61): confirmed, but no PR
+        "autonomy_held": list(((rec or {}).get("worker_stats") or {}).get("autonomy_held") or []),
         "decisions_needed": len((rec or {}).get("decisions_needed") or []),
         "ended_reason": (rec or {}).get("ended_reason"),
         "headline": (rec or {}).get("summary_one_liner"),

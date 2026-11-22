@@ -168,6 +168,10 @@ def run() -> None:
 
     logger.info("revalidate: %s", revalidate(cfg.output_dir))
     logger.info("trust metrics: %s", refresh_trust(cfg.output_dir))
+    # Trust-gated autonomy (#61): each (repo, class) moves at most one level on the fresh metrics.
+    from auditor.autonomy import refresh_quietly as refresh_autonomy
+
+    logger.info("autonomy: %s", refresh_autonomy(cfg.output_dir))
     # Gates last: they read the fresh metrics. The seeded-defect eval re-runs when it's a week old (#63).
     from auditor.trust_eval import evaluate_quietly
 

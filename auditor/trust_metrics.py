@@ -123,6 +123,7 @@ class PackView:
     recurrence_of: str = ""
     duplicate_of: str = ""
     snippet: str = ""  # location.code_snippet: numbered lines ("  17| code") around the finding
+    finding_class: str = ""  # governance.finding_class.id (#53); "" when unclassified
 
     @property
     def is_finding(self) -> bool:
@@ -155,6 +156,8 @@ def pack_view(data: dict[str, Any]) -> PackView:
         recurrence_of=str(gov.get("recurrence_of") or ""),
         duplicate_of=str(gov.get("duplicate_of") or ""),
         snippet=str(loc.get("code_snippet") or ""),
+        finding_class=str((gov.get("finding_class") or {}).get("id") or "")
+        if isinstance(gov.get("finding_class"), dict) else "",
     )
 
 
@@ -471,7 +474,8 @@ def fix_landings(packs: Iterable[PackView], changes_by_repo: dict[str, Changes],
 
 
 def recurrence_metric(packs: list[PackView], scans: list[Scan],
-                      landed: dict[str, datetime | None] | None = None) -> dict[str, Any]:
+                      landed: dict[str, datetime | None] | None = None, *,
+                      outcomes: dict[str, str] | None = None) -> dict[str, Any]:
     """Resolved finding packs whose issue came back after the resolution.
 
     Evidence is a later pack linked by ``recurrence_of`` (definitive), a later pack in the same
@@ -489,7 +493,10 @@ def recurrence_metric(packs: list[PackView], scans: list[Scan],
     A patch-resolved pack is judged from when its fix reached dev (``landed``, see
     ``fix_landings``), not from when ``validate_patch`` passed: until the patch merges and the
     mirror syncs, every scan still reads the unfixed code. Those are ``unlanded``, counted apart
-    from pending: a pack that stays unlanded is a resolution whose fix never shipped."""
+    from pending: a pack that stays unlanded is a resolution whose fix never shipped.
+
+    *outcomes*, when given, is filled with each observed pack's ``held``, ``regressed`` or
+    ``disputed`` (for ``scope_metric``)."""
     linked: dict[str, list[PackView]] = defaultdict(list)
     by_file: dict[tuple[str, str], list[PackView]] = defaultdict(list)
     for p in packs:
@@ -554,6 +561,7 @@ def recurrence_metric(packs: list[PackView], scans: list[Scan],
         used.update(keys)
 
     observed = regressed = disputed = 0
+    outcomes = outcomes if outcomes is not None else {}
     examples: list[dict[str, Any]] = []
     by_repo: dict[str, dict[str, int]] = defaultdict(lambda: {"observed": 0, "regressed": 0, "disputed": 0})
     for i, (p, t) in enumerate(resolved):
@@ -563,10 +571,12 @@ def recurrence_metric(packs: list[PackView], scans: list[Scan],
             continue
         observed += 1
         by_repo[p.repo]["observed"] += 1
+        outcomes[p.id] = "held"
         if not evidence:
             continue
         note = next((str(h.get("note") or "") for h in reversed(p.history) if h.get("status") == "resolved"), "")
         kind = "disputed" if (_DISPUTE_RE.search(note) and not note.startswith("validate_patch passed")) else "regressed"
+        outcomes[p.id] = kind
         if kind == "disputed":
             disputed += 1
         else:
@@ -761,10 +771,12 @@ def classify_followups(pr: dict[str, Any], commits: list[tuple[str, str, str]], 
 
 
 def agent_pr_metric(prs: list[dict[str, Any]], git_log: GitLog | None, *, now: datetime,
-                    window_days: int = REVERT_WINDOW_DAYS) -> dict[str, Any]:
-    rows = []
+                    window_days: int = REVERT_WINDOW_DAYS, rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Merged agent PRs and their reverts. *rows*, when given, gets every PR row (the report keeps 100)."""
+    rows = rows if rows is not None else []
     for pr in prs:
         row = {k: pr.get(k) for k in ("repo", "number", "title", "url", "merged_at")}
+        row["pack_ids"] = list(pr.get("pack_ids") or [])
         merged = _parse_ts(pr.get("merged_at"))
         row["mature"] = bool(merged and now - merged >= timedelta(days=window_days))
         try:
@@ -947,23 +959,75 @@ def fetch_agent_prs(graphql: Callable[[str, dict[str, Any]], dict[str, Any]], ow
 
 # ── report ───────────────────────────────────────────────────────────────────
 
+SCOPE_WINDOW_PRS = 20  # the trust-gated autonomy window (#61)
+
+
+def scope_key(repo: str, finding_class: str) -> str:
+    return f"{repo}/{finding_class or 'unclassified'}"
+
+
+def scope_metric(packs: list[PackView], events: list[dict[str, Any]], outcomes: dict[str, str],
+                 pr_rows: list[dict[str, Any]], *, window: int = SCOPE_WINDOW_PRS) -> dict[str, Any]:
+    """The trust metrics per (repo, finding class): what trust-gated autonomy (#61) promotes on.
+
+    A scope's window is its last *window* mature, observed agent PRs (a PR fixing packs of
+    several classes counts in each). Over the window's packs: ``reverted`` PRs, ``regressed``
+    resolutions (of those a later scan observed), ``no_tests`` resolutions (lint only), and
+    ``unproven`` packs: resolved without validate_patch evidence, or on a waiver."""
+    by_id = {p.id: p for p in packs}
+    last_event: dict[str, dict[str, Any]] = {}
+    for e in events:
+        last_event[e["pack_id"]] = e
+    scoped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in pr_rows:
+        if not (r.get("mature") and r.get("observed")):
+            continue
+        keys = {scope_key(p.repo, p.finding_class) for pid in r.get("pack_ids") or [] if (p := by_id.get(pid))}
+        for k in keys:
+            scoped[k].append(r)
+    out: dict[str, Any] = {}
+    for key, rows in sorted(scoped.items()):
+        rows = sorted(rows, key=lambda r: str(r.get("merged_at") or ""), reverse=True)[:window]
+        pids = sorted({pid for r in rows for pid in r.get("pack_ids") or []
+                       if (p := by_id.get(pid)) and scope_key(p.repo, p.finding_class) == key})
+        evs = [last_event[pid] for pid in pids if pid in last_event]
+        observed = [pid for pid in pids if pid in outcomes]
+        reverted = sum(1 for r in rows if r.get("reverts"))
+        regressed = sum(1 for pid in observed if outcomes[pid] == "regressed")
+        no_tests = sum(1 for e in evs if _no_tests(e))
+        unproven = sum(1 for pid in pids if pid not in last_event or last_event[pid]["evidence"] in ("", "waiver"))
+        out[key] = {
+            "prs": len(rows), "packs": len(pids), "oldest_merged_at": rows[-1].get("merged_at"),
+            "reverted": reverted, "revert_rate": _rate(reverted, len(rows)),
+            "observed": len(observed), "regressed": regressed, "recurrence_rate": _rate(regressed, len(observed)),
+            "no_tests": no_tests, "false_resolve_rate": _rate(no_tests, len(evs)),
+            "unproven": unproven,
+        }
+    return out
+
+
 def compute(packs: list[PackView], scans: list[Scan], prs: list[dict[str, Any]] | None,
             git_log: GitLog | None, *, now: datetime | None = None,
             pack_commits: dict[str, Any] | None = None,
             landed: dict[str, datetime | None] | None = None) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     events = resolution_events(packs)
+    outcomes: dict[str, str] = {}
+    recurrence = recurrence_metric(packs, scans, landed, outcomes=outcomes)
+    pr_rows: list[dict[str, Any]] = []
+    prs_metric = (agent_pr_metric([p for p in prs if p.get("trailers")
+                                   or is_agent_pr(p.get("title") or "", " ".join(p.get("pack_ids") or []))],
+                                  git_log, now=now, rows=pr_rows) if prs is not None else None)
     report = {
         "generated_at": now.isoformat(),
         "false_resolve": false_resolve_metric(events, now=now),
         "reopen": reopen_metric(packs),
-        "recurrence": recurrence_metric(packs, scans, landed),
+        "recurrence": recurrence,
         "scan_persistence": scan_persistence_metric(scans, packs),
         "gc": gc_metric(packs),
         "pack_commits": pack_commits,
-        "agent_prs": (agent_pr_metric([p for p in prs if p.get("trailers")
-                                       or is_agent_pr(p.get("title") or "", " ".join(p.get("pack_ids") or []))],
-                                      git_log, now=now) if prs is not None else None),
+        "agent_prs": prs_metric,
+        "by_scope": scope_metric(packs, events, outcomes, pr_rows),
         "flow": flow_metric(scans),
         "inputs": {
             "packs": len(packs), "finding_packs": sum(p.is_finding for p in packs),

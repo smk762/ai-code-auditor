@@ -153,6 +153,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # Git automation flags (only meaningful with --apply --mode auto_fix)
     repair_cmd.add_argument("--commit", action="store_true", help="Create a repair branch and commit the patch after apply")
     repair_cmd.add_argument("--push", action="store_true", help="Push the repair branch after commit (implies --commit)")
+    repair_cmd.add_argument("--override-autonomy", default="", metavar="REASON",
+                            help="Push even where trust-gated autonomy (#61) keeps the pack's scope at `report`; "
+                                 "the reason is logged")
     repair_cmd.add_argument("--base-branch", default="", help="Base branch for the repair branch (default: repo default)")
     repair_cmd.add_argument("--remote", default="origin", help="Remote name for push (default: origin)")
     repair_cmd.add_argument("--author-name", default="ai-code-auditor", help="Git commit author name")
@@ -315,6 +318,15 @@ def _build_parser() -> argparse.ArgumentParser:
     sav.add_argument("--json", action="store_true", help="Print the full report as JSON")
     sav.add_argument("--cached", action="store_true", help="Show the last report instead of re-measuring")
     sav.add_argument("--history", action="store_true", help="Show the recorded trend instead")
+
+    aut = sub.add_parser(
+        "autonomy",
+        help="Trust-gated autonomy (#61): each (repo, finding class) level and why; --refresh moves them a step",
+    )
+    aut.add_argument("--repo", default="", help="Only this repo")
+    aut.add_argument("--refresh", action="store_true",
+                     help="Move each scope one step on the current trust metrics (the nightly run does this)")
+    aut.add_argument("--json", action="store_true", help="Print the state as JSON")
 
     rv = sub.add_parser(
         "revalidate",
@@ -1012,6 +1024,7 @@ def _run_repair(
     pack_id: str = "",
     audit_api_base: str = "",
     rag_chat_api_key: str = "",
+    override_autonomy: str = "",
 ) -> None:
     """Forward a repair request to the rag-chat repair API and stream SSE output.
 
@@ -1059,6 +1072,24 @@ def _run_repair(
             f"Create a key at {base_url}/ui/api-keys (or POST {base_url}/api-keys). "
             "Read-only runs (--mode review / suggest without --apply) need no key."
         )
+
+    if push and pack_id:
+        # Trust-gated autonomy (#61): a pushed repair branch is a step towards a PR.
+        from auditor.agent_pack import load_pack
+        from auditor.autonomy import decide
+
+        pk = load_pack(cfg.output_dir, pack_id) or {}
+        cls = ((pk.get("governance") or {}).get("finding_class") or {})
+        gate = decide(repo_name or str((pk.get("repo") or {}).get("name") or ""),
+                      str(cls.get("id") or "") if isinstance(cls, dict) else "",
+                      paths=[str((pk.get("location") or {}).get("file_path") or "")],
+                      title=str((pk.get("narrative") or {}).get("title") or ""), output_dir=cfg.output_dir)
+        if not gate.may_open_pr:
+            if not override_autonomy.strip():
+                raise SystemExit(f"{gate.scope} is at `report` ({gate.reason}): not pushing. "
+                                 "Pass --override-autonomy REASON to push anyway.")
+            print(f"autonomy override for {pack_id} ({gate.scope}, {gate.reason}): {override_autonomy.strip()}",
+                  file=sys.stderr)
 
     # Acquire diff text
     if repair_compare_branch:
@@ -1567,6 +1598,7 @@ def main() -> None:
             pack_id=args.repair_pack_id,
             audit_api_base=args.repair_audit_api_base,
             rag_chat_api_key=args.rag_chat_api_key,
+            override_autonomy=args.override_autonomy,
         )
     elif args.command == "merge-refresh":
         from auditor.merge_hook import MergeEvent, get_scheduler, run_merge_refresh
@@ -1673,6 +1705,21 @@ def main() -> None:
             print(trailers.summary_markdown(_output_dir_default(), ids))
     elif args.command == "trust":
         _run_trust(as_json=args.json, cached=args.cached, history=args.history, github=args.github)
+    elif args.command == "autonomy":
+        from auditor import autonomy
+
+        state = autonomy.refresh(cfg.output_dir) if args.refresh else autonomy.load_state(cfg.output_dir)
+        scopes = {k: v for k, v in (state.get("scopes") or {}).items()
+                  if not args.repo or k.partition("/")[0] == args.repo}
+        if args.json:
+            print(json.dumps({**state, "scopes": scopes}, indent=2))
+        else:
+            ac = autonomy.load_config()
+            print(f"default {ac.default}, ceiling {ac.ceiling}, window {ac.window_prs} mature agent PRs")
+            for k, v in sorted(scopes.items()):
+                print(f"  {k:48} {v['level']:10} {v['reason']}")
+            if not scopes:
+                print("  no measured scope yet: every scope is at the default")
     elif args.command == "revalidate":
         _run_revalidate(args)
     elif args.command == "pack-savings":

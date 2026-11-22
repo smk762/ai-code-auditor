@@ -73,6 +73,14 @@ function card(r) {
     : te.error ? `<a class="blocked" href="/audit/test-env.json" title="${esc(te.error)}">check failed</a>`
     : te.failing.length ? `<a class="blocked" href="/audit/test-env.json" title="${esc(te.failing.map((p) => `${p.project}: ${p.status}${p.missing.length ? ` (${p.missing.join(", ")})` : ""}`).join("\n"))}">${int(te.failing.length)} of ${int(te.projects)} projects can't run tests</a>`
     : `${int(te.ready)} of ${int(te.projects)} ready`;
+  // Trust-gated autonomy (#61): how far the conductor may take a fix here, per finding class.
+  const au = r.autonomy;
+  const autonomy = !au ? `<span class="muted">—</span>`
+    : au.pinned ? `<span class="status warn" title="${esc(au.pinned.reason)}">${esc(au.pinned.level.replace("_", " "))} (pinned)</span>`
+    : !au.scopes.length ? `<span title="No class here has a mature agent PR yet">${esc(au.default.replace("_", " "))} <span class="muted">(default)</span></span>`
+    : Object.entries(au.scopes.reduce((acc, s) => ((acc[s.level] = (acc[s.level] || 0) + 1), acc), {}))
+        .map(([lvl, n]) => `${esc(lvl.replace("_", " "))} <span class="muted">×${int(n)}</span>`).join(" · ") +
+      ` <span class="muted" title="${esc(au.scopes.map((s) => `${s.class}: ${s.level} — ${s.reason}`).join("\n"))}">ⓘ</span>`;
   const viol = r.violations == null ? `<span class="muted">—</span>` : r.violations ? `<a href="/ui/reports/architecture_violations.md">${int(r.violations)}</a>` : "0";
   return `<article class="card repo-card span-4">
     <h2>${esc(r.name)}<span>${r.wiki ? `<a class="gh" href="/ui/wiki/${encodeURIComponent(r.name)}">Wiki</a> ` : ""}${r.github_url ? `<a class="gh" href="${esc(r.github_url)}">GitHub</a>` : ""}</span></h2>
@@ -85,6 +93,7 @@ function card(r) {
       <dt>Issues</dt><dd>${gh("issues", "issues")}</dd>
       <dt>Arch. violations</dt><dd>${viol}</dd>
       <dt>Test env</dt><dd>${testEnv}</dd>
+      <dt>Autonomy</dt><dd>${autonomy}</dd>
     </dl>
   </article>`;
 }
