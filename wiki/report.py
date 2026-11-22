@@ -6,11 +6,14 @@ pack says so and points at the code at the SHA the answer was given for.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from auditor.contracts import Finding
 from wiki.citations import CITE
+
+logger = logging.getLogger(__name__)
 
 SOURCE = "ask"
 MAX_TEXT = 6000
@@ -69,6 +72,6 @@ def report(output_dir: str | Path, repo: str, **kw: Any) -> dict[str, Any]:
     if pack_rag_ingest_enabled():
         try:
             ingest_packs_to_rag([AgentCodingPack.from_dict(data)], output_dir=output_dir)
-        except Exception:  # the pack is on disk either way; RAG catches up on the next emit
-            pass
+        except Exception as exc:  # noqa: BLE001 — the pack is on disk either way; RAG catches up on the next emit
+            logger.warning("RAG ingest of %s failed: %s", pack.work_item_id, exc)
     return {"id": pack.work_item_id, "status": data.get("status", "open"), "created": existing is None}

@@ -210,98 +210,189 @@ def test_guard_paths_outside_the_export_fail_and_never_run(mirror, bad: str) -> 
         assert res["status"] == "failed" and "outside the repo" in res["note"]
 
 
-# ── closing children ─────────────────────────────────────────────────────────
+# ── closing children: only what the guard's own rule covers ─────────────────
 
 NOW = datetime(2026, 11, 16, tzinfo=UTC)
+RULE = {"tool": "ruff", "select": ["B905"]}
+ZIP_TEXT = "zip() silently truncates clips when raw_paths and names differ in length"
+
+BEFORE_SRC = """def build(raw_paths, names, a1, b1):
+    clips = []
+    for path, name in zip(raw_paths, names):
+        clips.append((path, name))
+    pairs = list(zip(a1, b1))
+    return clips, pairs
+"""
 
 
-def view(kind: str = "nightly", **kw) -> PackView:
-    return PackView(**{"id": "a", "kind": kind, "repo": "r1", "path": "app/a.py", "line": 10,
-                       "title": "Callback URL lets the caller pick the host", "status": "open",
-                       "detected_at": NOW, "run_id": "", **kw})
+def view(kind: str = "diff_audit", **kw) -> PackView:
+    return PackView(**{"id": "a", "kind": kind, "repo": "r1", "path": "app/clips.py", "line": 1,
+                       "title": ZIP_TEXT, "status": "open", "detected_at": NOW, "run_id": "", **kw})
 
 
 def scan(at: datetime, findings: list[dict]) -> Scan:
     return Scan(run_id=f"run-{at:%d%H}", repo="r1", at=at, findings=findings)
 
 
-PROOF = {"status": "proven", "merged_at": NOW.isoformat()}
-SAME = {"path": "app/a.py", "line": 11, "title": "Callback URL lets the caller pick the host", "type": "security"}
+SAME = {"path": "app/clips.py", "line": 3, "title": ZIP_TEXT, "type": "bug"}
 
 
-def test_nightly_child_rules() -> None:
-    before, after = NOW - timedelta(days=1), NOW + timedelta(days=1)
-    assert cp.judge_child(view(), PROOF, [scan(before, [])], None)[0] == "wait"        # silence predates the guard
-    assert cp.judge_child(view(), PROOF, [scan(after, [])], None)[0] == "close"
-    assert cp.judge_child(view(), PROOF, [scan(after, [SAME])], None)[0] == "exception"
+def zip_mirror(tmp_path: Path, guarded_src: str) -> SimpleNamespace:
+    """A dev mirror: the zip code, then a guard commit that rewrites it to *guarded_src*."""
+    from auditor.pack_gc import Mirror
+
+    m = tmp_path / "zm"
+    (m / "app").mkdir(parents=True)
+    git(m, "init", "-q", "-b", "dev")
+    git(m, "config", "user.email", "t@t")
+    git(m, "config", "user.name", "t")
+    (m / "app" / "clips.py").write_text(BEFORE_SRC)
+    git(m, "add", ".")
+    git(m, "commit", "-qm", "base")
+    (m / "app" / "clips.py").write_text(guarded_src)
+    (m / "tests").mkdir()
+    (m / "tests" / "test_guard.py").write_text("def test_fires():\n    assert True\n")
+    (m / "tests" / "bad.py").write_text("zip(a, b)\n")
+    git(m, "add", ".")
+    git(m, "commit", "-qm", "guard")
+    sha = git(m, "rev-parse", "HEAD")
+    return SimpleNamespace(path=m, guard=sha, mirror=Mirror(m), rec={"commit": sha, "rule": RULE})
 
 
-class FakeMirror:
-    ok = True
-
-    def __init__(self, lines):
-        self._lines = lines
-
-    def lines(self, path):
-        return self._lines
+FIXED = BEFORE_SRC.replace("zip(raw_paths, names)", "zip(raw_paths, names, strict=True)").replace(
+    "zip(a1, b1)", "zip(a1, b1, strict=False)")
+PROOF = {"status": "proven", "merged_at": (NOW - timedelta(days=1)).isoformat()}
+AFTER = [scan(NOW + timedelta(days=1), [])]
 
 
-def test_diff_audit_child_needs_the_cited_code_gone() -> None:
-    snip = " 9| def f(url):\n10|     return requests.get(url)\n11|     # done"
-    after = [scan(NOW + timedelta(days=1), [])]
-    d = view(kind="diff_audit", snippet=snip)
-    assert cp.judge_child(d, PROOF, after, FakeMirror(["def f(url):", "    return requests.get(url)", "    # done"]))[0] == "wait"
-    assert cp.judge_child(d, PROOF, after, FakeMirror(["def f(url):", "    return safe_get(url)"]))[0] == "close"
-    assert cp.judge_child(d, PROOF, [], FakeMirror(["x"]))[0] == "wait"      # covered file: needs a scan too
-    assert cp.judge_child(view(kind="diff_audit"), PROOF, after, FakeMirror(["x"]))[0] == "wait"  # no snippet
+def test_parse_rule() -> None:
+    assert cp.parse_rule("ruff: s110, B905,B905") == {"tool": "ruff", "select": ["B905", "S110"]}
+    assert cp.parse_rule("") is None
+    for bad in ("B905", "semgrep:x", "ruff:", "ruff:B905;rm -rf"):
+        with pytest.raises(ValueError, match="rule must be"):
+            cp.parse_rule(bad)
 
 
-def test_run_closes_children_marks_exceptions_and_resolves_the_class(tmp_path: Path, mirror, monkeypatch) -> None:
+def test_record_guard_stores_the_rule(tmp_path: Path) -> None:
+    child(tmp_path, "a", repo="r1")
+    child(tmp_path, "b", repo="r2")
+    cp.emit(tmp_path)
+    g = cp.record_guard(tmp_path, "pack-class-ssrf", repo="r1", commit="abcdef1000000000000000000000000000000000",
+                        proof_test="tests/test_g.py", fixtures=[], rule="ruff:B905")
+    assert g["rule"] == {"tool": "ruff", "select": ["B905"]}
+    assert "rule" not in cp.record_guard(tmp_path, "pack-class-ssrf", repo="r2", proof_test="t.py", fixtures=[],
+                                         commit="abcdef1000000000000000000000000000000000")
+
+
+def test_attribution_needs_the_findings_own_identifiers() -> None:
+    lines = BEFORE_SRC.splitlines()
+    hit = cp.RuleHit(3, "B905", lines[2])
+    assert cp.rule_attributed(hit, lines, ZIP_TEXT) == {"raw_paths", "names"}
+    other = cp.RuleHit(5, "B905", lines[4])
+    assert cp.rule_attributed(other, lines, ZIP_TEXT) == set()            # same rule, another zip
+    assert cp.rule_attributed(hit, lines, "the path and name can differ") == set()  # nothing distinctive
+    # names in comments or strings never count
+    commented = ["x = 1  # raw_paths and names", "for p in zip(a, b):"]
+    assert cp.rule_attributed(cp.RuleHit(2, "B905", commented[1]), commented, ZIP_TEXT) == set()
+    # one distinctive name is enough when the hit's code is in the cited snippet
+    snip = "  3|     for path, name in zip(raw_paths, names):"
+    assert cp.rule_attributed(hit, lines, "raw_paths may be short", snip) == {"raw_paths"}
+    assert cp.rule_attributed(hit, lines, "raw_paths may be short") == set()
+
+
+def test_rule_hits_ignores_noqa_and_never_reads_a_failure_as_clean(monkeypatch) -> None:
+    src = "def f(a, b):\n    return list(zip(a, b))  # noqa: B905 lengths match by construction\n"
+    assert [(h.line, h.code) for h in cp.rule_hits(src, "m.py", RULE)] == [(2, "B905")]
+    assert cp.rule_hits(src, "m.py", {"tool": "semgrep", "select": ["x"]}) is None
+    monkeypatch.setattr(cp.shutil, "which", lambda _x: None)
+    monkeypatch.setattr(cp.sys, "executable", "/nonexistent/python")
+    assert cp.rule_hits(src, "m.py", RULE) is None
+
+
+def test_child_closes_only_when_its_rule_hit_is_gone(tmp_path: Path) -> None:
+    z = zip_mirror(tmp_path, FIXED)
+    verdict, why = cp.judge_child(view(), PROOF, AFTER, z.mirror, z.rec, ZIP_TEXT)
+    assert verdict == "close" and "B905 at app/clips.py:3" in why and "raw_paths" in why
+    assert cp.judge_child(view(), PROOF, [], z.mirror, z.rec, ZIP_TEXT)[0] == "wait"   # no scan since the guard
+    assert cp.judge_child(view(), PROOF, [scan(NOW + timedelta(days=1), [SAME])], z.mirror, z.rec,
+                          ZIP_TEXT)[0] == "exception"
+    # the scan's silence alone closes nothing: a finding the rule never fired on stays open
+    assert cp.judge_child(view(title="Upload size is unbounded"), PROOF, AFTER, z.mirror, z.rec,
+                          "Upload size is unbounded in read_upload")[0] == "unattributed"
+    assert cp.judge_child(view(), PROOF, AFTER, z.mirror, {"commit": z.guard}, ZIP_TEXT)[0] == "unattributed"
+    assert cp.judge_child(view(), PROOF, AFTER, z.mirror, z.rec, ZIP_TEXT,
+                          runner=lambda *a: None)[0] == "wait"                       # rule couldn't run
+
+
+def test_a_waived_hit_is_not_a_closure(tmp_path: Path) -> None:
+    waived = BEFORE_SRC.replace("zip(raw_paths, names):", "zip(raw_paths, names):  # noqa: B905 caller pairs them")
+    z = zip_mirror(tmp_path, waived)
+    verdict, why = cp.judge_child(view(), PROOF, AFTER, z.mirror, z.rec, ZIP_TEXT)
+    assert verdict == "exception" and "still fires" in why
+
+
+def test_a_deleted_file_closes_an_attributed_child(tmp_path: Path) -> None:
+    z = zip_mirror(tmp_path, FIXED)
+    git(z.path, "rm", "-q", "app/clips.py")
+    git(z.path, "commit", "-qm", "drop")
+    from auditor.pack_gc import Mirror
+
+    assert cp.judge_child(view(), PROOF, AFTER, Mirror(z.path), z.rec, ZIP_TEXT)[0] == "close"
+
+
+def test_run_closes_attributed_children_only(tmp_path: Path, monkeypatch) -> None:
     out = tmp_path / "reports"
-    child(out, "a", repo="r1", title="Callback URL lets the caller pick the host")
-    child(out, "b", repo="r1", title="Webhook target is taken from the request body", line=40)
-    child(out, "c", repo="r2")
+    z = zip_mirror(tmp_path, FIXED)
+    child(out, "a", cls="silent_failure", repo="r1", kind="diff_audit", path="app/clips.py", line=1, title=ZIP_TEXT)
+    child(out, "b", cls="silent_failure", repo="r1", kind="nightly", path="app/clips.py", line=40,
+          title="Webhook failures are swallowed")
+    child(out, "c", cls="silent_failure", repo="r1", kind="diff_audit", path="app/clips.py", line=1,
+          title="pairs drops entries when a1 and b1 differ")
+    child(out, "d", cls="silent_failure", repo="r2")
     cp.emit(out)
-    cp.record_guard(out, "pack-class-ssrf", repo="r1", commit=mirror.guard, proof_test="tests/test_guard.py",
-                    fixtures=["tests/bad.py"])
-    monkeypatch.setattr("auditor.pack_gc.mirror_paths", lambda *_: {"r1": mirror.path})
+    cp.record_guard(out, "pack-class-silent-failure", repo="r1", commit=z.guard, proof_test="tests/test_guard.py",
+                    fixtures=["tests/bad.py"], rule="ruff:B905")
+    monkeypatch.setattr("auditor.pack_gc.mirror_paths", lambda *_: {"r1": z.path})
     later = datetime.now(UTC) + timedelta(hours=1)
-    monkeypatch.setattr(cp, "_scans_by_repo", lambda *_: {"r1": [scan(later, [{
-        "path": "app/a.py", "line": 40, "title": "Webhook target is taken from the request body", "type": "s"}])]})
+    monkeypatch.setattr(cp, "_scans_by_repo", lambda *_: {"r1": [scan(later, [])]})
     runner = fake_runner({"tests/test_guard.py::test_fires": "passed"}, "failed")
 
     dry = cp.run(out, runner=runner, dry_run=True)
     assert [c["pack"] for c in dry["closed"]] == ["a"] and load_pack(out, "a")["status"] == "open"
 
     rep = cp.run(out, runner=runner)
-    assert [c["pack"] for c in rep["closed"]] == ["a"] and [c["pack"] for c in rep["exceptions"]] == ["b"]
+    # "c" names a1/b1, but neither is distinctive, so it isn't attributed: precision over recall
+    assert [c["pack"] for c in rep["closed"]] == ["a"] and rep["unattributed"] == 2 and not rep["exceptions"]
     a = load_pack(out, "a")
-    assert a["status"] == "resolved" and a["verification"]["evidence"]["kind"] == "class_guard"
-    assert a["status_history"][-1]["note"].startswith("class_guard")
-    assert load_pack(out, "b")["status"] == "open" and gov(out, "b")["class_exception"]["parent"] == "pack-class-ssrf"
-    assert load_pack(out, "c")["status"] == "open"                     # r2 has no guard: untouched
-    assert load_pack(out, "pack-class-ssrf")["status"] == "in_progress"  # children still open
+    assert a["status"] == "resolved" and a["verification"]["evidence"]["rule"] == {"tool": "ruff", "select": ["B905"]}
+    assert a["status_history"][-1]["note"].startswith("class_guard (pack-class-silent-failure): rule B905")
+    for pid in ("b", "c", "d"):
+        assert load_pack(out, pid)["status"] == "open" and "class_exception" not in gov(out, pid)
+    assert cp.lifecycle_metric(out)["n"] == 1
 
     # Once nothing's left open, the class pack resolves itself.
-    for pid in ("b", "c"):
-        child(out, pid, repo="r1" if pid == "b" else "r2", status="wontfix")
+    for pid, repo in (("b", "r1"), ("c", "r1"), ("d", "r2")):
+        child(out, pid, cls="silent_failure", repo=repo, status="wontfix")
     cp.run(out, runner=lambda *a: pytest.fail("proof is not re-run once proven"))
-    assert load_pack(out, "pack-class-ssrf")["status"] == "resolved"
+    assert load_pack(out, "pack-class-silent-failure")["status"] == "resolved"
 
 
-def test_lifecycle_gate(tmp_path: Path) -> None:
+def test_lifecycle_gate_counts_rule_attributed_closures_only(tmp_path: Path) -> None:
     out = tmp_path
     d = packs_dir(out)
     d.mkdir(parents=True)
-    hist = [{"status": "resolved", "note": "class_guard (pack-class-ssrf): gone", "at": "2026-11-01T00:00:00+00:00"}]
-    for i in range(10):
+    ruled = [{"status": "resolved", "note": "class_guard (pack-class-ssrf): rule B905 at a.py:3 (x_y) fired",
+              "at": "2026-11-01T00:00:00+00:00"}]
+    silent = [{"status": "resolved", "note": "class_guard (pack-class-ssrf): not reported by scan s",
+               "at": "2026-11-01T00:00:00+00:00"}]
+    for i in range(12):
         later = [{"status": "open", "note": "reported again", "at": "2026-11-02T00:00:00+00:00"}] if i == 0 else []
         (d / f"k{i}.yaml").write_text(json.dumps({
             "work_item_id": f"k{i}", "kind": "nightly", "status": "open" if i == 0 else "resolved",
             "repo": {"name": "r"}, "location": {"file_path": "a.py"}, "narrative": {"title": "t"},
-            "status_history": hist + later}))
+            "status_history": (silent if i >= 10 else ruled) + later}))
     m = cp.lifecycle_metric(out)
-    assert (m["n"], m["held"], m["rate"]) == (10, 9, 0.9)
+    assert (m["n"], m["held"], m["rate"]) == (10, 9, 0.9)      # the two silence-only closures don't count
     g = {x.id: x for x in trust_eval.build_gates(None, None, None, m)}["class_packs.lifecycle"]
     assert g.status == "fail" and g.n == 10
     assert {x.id: x for x in trust_eval.build_gates(None, None, None, {"n": 0})}["class_packs.lifecycle"].status \
@@ -325,3 +416,12 @@ def test_board_filters_by_class_and_page_lists_children(tmp_path: Path) -> None:
     meta = _class_meta(tmp_path, AgentCodingPack.from_dict(load_pack(tmp_path, "pack-class-ssrf")))
     assert [k["id"] for k in meta["children"]] == ["a", "b"] and meta["guard_type"] == "helper"
     assert _class_meta(tmp_path, AgentCodingPack.from_dict(load_pack(tmp_path, "a")))["class_parent"] == "pack-class-ssrf"
+
+
+def test_an_except_hit_is_attributed_through_its_try_body() -> None:
+    lines = ["def load(state_path):", "    try:", "        data = read_state(state_path)",
+             "    except Exception:", "        pass", "    x = parse_header(blob)", "    try:", "        y = 1",
+             "    except Exception:", "        pass"]
+    text = "Unreadable state file is silently reset: read_state(state_path) errors are swallowed"
+    assert cp.rule_attributed(cp.RuleHit(4, "S110", lines[3]), lines, text) == {"read_state", "state_path"}
+    assert cp.rule_attributed(cp.RuleHit(9, "S110", lines[8]), lines, text) == set()   # another try entirely

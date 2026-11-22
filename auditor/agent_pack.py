@@ -1611,7 +1611,8 @@ def emit_world_model_packs(
                     continue
                 try:
                     root = resolve_repo_path(repo)
-                except Exception:
+                except Exception as exc:  # noqa: BLE001 — one unresolvable repo must not stop the rest
+                    logger.warning("skipping %s: can't resolve its path: %s", repo.name, exc)
                     continue
                 if not root.exists():
                     continue

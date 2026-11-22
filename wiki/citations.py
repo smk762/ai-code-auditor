@@ -167,7 +167,7 @@ def drop_failed_claims(md: str, root: Path) -> tuple[str, list[dict[str, str]]]:
         prefix = _BLOCK_PREFIX.match(text).group(0)
         bounds = [len(prefix)] + [s.end() for s in _SENTENCE_END.finditer(text, len(prefix))] + [len(text)]
         kept = []
-        for start, end in zip(bounds, bounds[1:]):
+        for start, end in zip(bounds, bounds[1:], strict=False):  # adjacent pairs
             sentence = text[start:end]
             hits = [(m, v) for m, v in bad if start <= m.start() < end]
             if hits:
