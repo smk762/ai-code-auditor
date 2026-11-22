@@ -109,6 +109,7 @@ def _candidates(output_dir: Path, decisions_path: str | Path) -> dict[str, Any] 
             "units": [{**u, "key": unit_key(u), "suggested": suggested(u), "chosen": unit_key(u) in chosen}
                       for u in units],
             "rationale": c.get("rationale"), "risks": c.get("risks"), "reported": reported,
+            "copy_risk": c.get("copy_risk"),
             "decision": d, "pack": pack_of(cid) if d else None,
         }
 

@@ -215,6 +215,13 @@ def run() -> None:
                 logger.warning("extraction decisions unreadable, ids matched on the last run only: %s", exc)
                 decisions = {}
             stabilize_ids(extraction_candidates, cfg.output_dir, decisions)
+            from auditor.extraction import annotate_copy_risk
+            from auditor.trust_metrics import load_prs_cache
+
+            try:
+                annotate_copy_risk(extraction_candidates, repo_roots, load_prs_cache(cfg.output_dir))
+            except Exception as exc:  # noqa: BLE001 — the candidates still go out, unranked by copy risk
+                logger.warning("copy risk not computed: %s", exc)
             write_extraction_candidates_yaml(extraction_candidates, output_dir=cfg.output_dir, ecosystem_name="smk-stack")
             write_extraction_candidates_markdown(extraction_candidates, output_dir=cfg.output_dir)
             meta.mark_stage("pattern_mining", int((time.monotonic() - t2) * 1000))

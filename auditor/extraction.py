@@ -182,6 +182,60 @@ def stabilize_ids(candidates: list[dict[str, Any]], output_dir: str | Path,
     return candidates
 
 
+# ── copy risk (#60) ──────────────────────────────────────────────────────────
+
+COPY_RISK_DAYS = 90
+
+
+def _agent_touches(repo_paths: dict[str, str | Path], prs: list[dict[str, Any]],
+                   since_days: int = COPY_RISK_DAYS) -> dict[tuple[str, str], set[str]]:
+    """(repo, repo-relative path) -> the agent PR urls whose commits changed it, from one
+    ``git log`` per mirror over the last *since_days*. Reads only."""
+    import subprocess
+
+    by_sha: dict[str, str] = {}
+    for pr in prs or []:
+        for sha in [*(pr.get("commit_shas") or []), pr.get("merge_sha") or ""]:
+            if sha:
+                by_sha[str(sha)] = str(pr.get("url") or f"{pr.get('repo')}#{pr.get('number')}")
+    out: dict[tuple[str, str], set[str]] = {}
+    for repo, root in repo_paths.items():
+        if not (Path(root) / ".git").exists():
+            continue
+        r = subprocess.run(["git", "-C", str(root), "log", f"--since={since_days}.days", "--name-only",
+                            "--format=@%H", "--no-renames"], capture_output=True, text=True, check=False, timeout=120)
+        if r.returncode != 0:
+            logger.info("copy risk: no git log for %s: %s", repo, (r.stderr or "")[:200])
+            continue
+        cur = ""
+        for line in r.stdout.splitlines():
+            if line.startswith("@"):
+                cur = by_sha.get(line[1:], "")
+            elif line and cur:
+                out.setdefault((repo, line), set()).add(cur)
+    return out
+
+
+def annotate_copy_risk(candidates: list[dict[str, Any]], repo_paths: dict[str, str | Path],
+                       prs: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Add ``copy_risk`` to each candidate (in place): how likely an agent is to copy it again.
+
+    ``score`` = 0.4 · copies (8 or more is 1) + 0.3 · the cluster's 90-day churn score + 0.3 ·
+    agent PRs that changed a copy's file in 90 days (3 or more is 1). Copies are what an agent
+    finds to imitate, so test, script and demo copies don't count; churn and agent edits say agents
+    are working right there."""
+    touches = _agent_touches(repo_paths, prs or []) if prs else {}
+    for c in candidates:
+        units = [u for u in units_of(c) if suggested(u)]  # a test or script helper is rarely copied into code
+        files = {(u["repo"], u["path"]) for u in units}
+        agent_prs = set().union(*(touches.get(f, set()) for f in files)) if files else set()
+        churn = float((c.get("score_breakdown") or {}).get("churn_score") or 0.0)
+        score = 0.4 * min(1.0, len(files) / 8) + 0.3 * min(1.0, churn) + 0.3 * min(1.0, len(agent_prs) / 3)
+        c["copy_risk"] = {"score": round(score, 3), "copies": len(files), "churn": round(churn, 3),
+                          "agent_prs": len(agent_prs)}
+    return candidates
+
+
 # ── progress ─────────────────────────────────────────────────────────────────
 
 def _defines(path: Path, symbol: str) -> bool | None:

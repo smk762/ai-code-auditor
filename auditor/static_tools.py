@@ -21,12 +21,13 @@ def _run_tool(cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
 
 
 def run_static_checks(repo_name: str, repo_path: str) -> list[Finding]:
-    from auditor import suite_rules
+    from auditor import suite_rules, workaround
 
     findings: list[Finding] = []
     findings.extend(_run_bandit(repo_name, ["-r", repo_path]))
     findings.extend(_run_semgrep(repo_name, [repo_path]))
     findings.extend(suite_rules.scan(repo_name, repo_path))  # the argus-ci catalogue, as CI runs it (#55)
+    findings.extend(workaround.scan(repo_name, repo_path))  # comments admitting a workaround (#60)
     return findings
 
 
@@ -43,8 +44,11 @@ def run_static_checks_on_files(repo_name: str, file_paths: list[str], *, root: s
 
         from auditor import suite_rules
 
+        from auditor import workaround
+
         rel = [os.path.relpath(p, root) for p in file_paths]
         findings.extend(suite_rules.scan(repo_name, root, rel))
+        findings.extend(workaround.scan(repo_name, root, rel))
     return findings
 
 
