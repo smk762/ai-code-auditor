@@ -164,3 +164,24 @@ def test_non_utf8_state_file_falls_back_to_empty(tmp_path: Path):
     state = tmp_path / "state.json"
     state.write_bytes(b'{"repos": {"\xff\xfe": 1}}')
     assert load_state(state) == {"repos": {}, "updated_at": ""}
+
+
+def test_the_poller_never_saves_over_a_state_it_could_not_read(tmp_path: Path, monkeypatch):
+    """pack-ai-code-auditor-02f4deb33a: an unreadable state was read as empty and then saved over."""
+    import pytest
+
+    from auditor.merge_poll import StateUnreadable, load_state, poll_dev_tips
+
+    state = tmp_path / "state.json"
+    state.write_text('{"repos": {"argus-cortex": {"sha": "abc"}}')  # truncated JSON
+    assert load_state(state) == {"repos": {}, "updated_at": ""}       # pages still render
+    with pytest.raises(StateUnreadable):
+        load_state(state, strict=True)
+    monkeypatch.setenv("AI_AUDIT_MERGE_POLL_ENABLED", "0")
+    res = poll_dev_tips(state_path=state, dispatch=lambda ev: {"accepted": True})
+    [kept] = list(tmp_path.glob("state.json.corrupt-*"))
+    assert kept.read_text().startswith('{"repos": {"argus-cortex"')  # the old state survives for a human
+    assert any("state unreadable" in e["error"] and "re-baselined" in e["error"] for e in res.errors)
+    state.write_text("[1, 2]")
+    with pytest.raises(StateUnreadable, match="not an object"):
+        load_state(state, strict=True)

@@ -8,6 +8,10 @@ rule in stdlib, plus one thing ruff doesn't check: a ``noqa`` for it must give a
 * An ``except`` (bare, ``Exception`` or ``BaseException``) whose whole body is ``pass`` or
   ``continue`` swallows the error. Log it, narrow it, or mark the ``except`` line
   ``# noqa: S110 <why nothing is lost>`` (``S112`` for ``continue``).
+* So does one whose whole body returns an empty value (``return {}``, ``[]``, ``""``, ``0``,
+  ``False``, ``None``, ``set()``…, or a bare ``return``): a corrupt state file read as empty state
+  looks like success. No ruff rule covers it, so only this test does; it reports ``S110`` so one
+  reasoned ``noqa`` works for both. The seeded-recall gate (#63) found this gap.
 
 It fires on ``fixtures/silent_failure_guard/unguarded.py``, stays quiet on ``guarded.py``, and
 finds nothing in the repo's own code.
@@ -46,6 +50,23 @@ def _broad(handler: ast.ExceptHandler) -> bool:
     return any(isinstance(e, ast.Name) and e.id in _BROAD for e in elts)
 
 
+_EMPTY_CALLS = frozenset({"dict", "list", "set", "tuple", "str", "bytes", "frozenset"})
+
+
+def _empty(value: ast.expr | None) -> bool:
+    """A return value that reads as "nothing here": None, a falsy constant, an empty literal or call."""
+    if value is None:
+        return True
+    if isinstance(value, ast.Constant):
+        return value.value in (None, False, 0, "", b"") and not isinstance(value.value, float)
+    if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+        return not value.elts
+    if isinstance(value, ast.Dict):
+        return not value.keys
+    return (isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id in _EMPTY_CALLS
+            and not value.args and not value.keywords)
+
+
 def findings(path: Path) -> list[str]:
     """``file:line code`` for each silent-failure pattern in *path* without a reasoned noqa."""
     source = path.read_text(encoding="utf-8")
@@ -65,6 +86,8 @@ def findings(path: Path) -> list[str]:
                 hit(node.lineno, "S110")
             elif isinstance(node.body[0], ast.Continue):
                 hit(node.lineno, "S112")
+            elif isinstance(node.body[0], ast.Return) and _empty(node.body[0].value):
+                hit(node.lineno, "S110")
     return out
 
 
@@ -75,8 +98,8 @@ def repo_files() -> list[Path]:
 
 def test_fires_on_the_positive_fixture() -> None:
     hits = findings(FIXTURES / "unguarded.py")
-    # zip, except-continue, bare except-pass, and a noqa that gives no reason
-    assert sorted(h.rsplit(" ", 1)[1] for h in hits) == ["B905", "S110", "S110", "S112"], hits
+    # zip, except-continue, bare except-pass, a noqa that gives no reason, and two empty returns
+    assert sorted(h.rsplit(" ", 1)[1] for h in hits) == ["B905", "S110", "S110", "S110", "S110", "S112"], hits
 
 
 def test_silent_on_the_negative_fixture() -> None:

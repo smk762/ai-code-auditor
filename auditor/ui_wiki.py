@@ -38,7 +38,7 @@ def _repo_configs() -> dict[str, Any]:
 
     try:
         return {r.name: r for r in load_ecosystem_config().repos}
-    except Exception:  # noqa: BLE001 — the viewer still works without config details
+    except Exception:  # noqa: BLE001, S110 — the viewer still works without config details
         return {}
 
 
@@ -47,7 +47,7 @@ def _poll(output_dir: str | Path) -> dict[str, Any]:
 
     try:
         return load_state(merge_poll_state_path(output_dir)).get("repos") or {}
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 — the page shows no poll status rather than failing
         return {}
 
 

@@ -104,14 +104,28 @@ class PollResult:
         return asdict(self)
 
 
-def load_state(path: Path) -> dict[str, Any]:
+class StateUnreadable(ValueError):
+    """The state file exists but can't be read or isn't a state: not the same as no state yet."""
+
+
+def load_state(path: Path, *, strict: bool = False) -> dict[str, Any]:
+    """The poll state. A missing file is an empty state. An unreadable or malformed one is read as
+    empty too, with a warning, for the pages that only show it; the poller passes *strict* and gets
+    :class:`StateUnreadable`, so it never saves an empty state over the one it couldn't read."""
     if not path.exists():
         return {"repos": {}, "updated_at": ""}
+    problem = ""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):  # ValueError covers JSONDecodeError and UnicodeDecodeError
-        return {"repos": {}, "updated_at": ""}
-    if not isinstance(data, dict):
+    except (OSError, ValueError) as exc:  # ValueError covers JSONDecodeError and UnicodeDecodeError
+        problem = f"{exc.__class__.__name__}: {exc}"[:300]
+    else:
+        if not isinstance(data, dict):
+            problem = f"top level is {type(data).__name__}, not an object"
+    if problem:
+        if strict:
+            raise StateUnreadable(f"{path}: {problem}")
+        logger.warning("merge poll state %s unreadable, shown as empty: %s", path, problem)
         return {"repos": {}, "updated_at": ""}
     repos = data.get("repos")
     if not isinstance(repos, dict):
@@ -230,7 +244,19 @@ def poll_dev_tips(
 
     br = (branch or merge_branch()).strip() or "dev"
     path = state_path or merge_poll_state_path()
-    state = load_state(path)
+    reset_error: dict[str, str] | None = None
+    try:
+        state = load_state(path, strict=True)
+    except StateUnreadable as exc:
+        # Keep the unreadable file for a human (a failed rename raises: the poll fails, state untouched),
+        # and start fresh. Tips are re-baselined, so merges since the last good poll aren't audited: say so.
+        aside = path.with_name(f"{path.name}.corrupt-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}")
+        path.replace(aside)
+        logger.error("merge poll state unreadable (%s); kept as %s. Repos are re-baselined, so merges since "
+                     "the last good poll are not audited", exc, aside.name)
+        state = {"repos": {}, "updated_at": ""}
+        reset_error = {"repo": "*", "error": f"state unreadable, kept as {aside.name}; repos re-baselined "
+                                             f"(merges since the last good poll are not audited): {exc}"[:400]}
     repos_state: dict[str, Any] = dict(state.get("repos") or {})
     tok = token if token is not None else github_token()
 
@@ -238,6 +264,8 @@ def poll_dev_tips(
         polled_at=datetime.now(timezone.utc).isoformat(),
         branch=br,
     )
+    if reset_error:
+        result.errors.append(reset_error)
 
     if not merge_poll_enabled():
         result.errors.append({"repo": "*", "error": "merge poll disabled"})
