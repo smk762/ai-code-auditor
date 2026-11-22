@@ -10,7 +10,6 @@ from auditor.agent_pack import (
     AgentCodingPack,
     build_pack_from_finding,
     dedupe_packs,
-    emit_packs_from_extraction_candidates,
     emit_packs_from_findings,
     finding_from_violation,
     link_recurrences,
@@ -156,29 +155,6 @@ def test_violation_repo_prefixed_path_is_made_repo_relative() -> None:
 
 
 # --- extraction candidates (0dbddbb7bc, d9535e92ec) ---------------------------------------------
-
-@pytest.mark.parametrize("body", ["- just\n- a list\n", "42\n", "candidates: oops\n"])
-def test_malformed_candidates_file_returns_nothing(tmp_path: Path, body: str) -> None:
-    (tmp_path / "extraction_candidates.yaml").write_text(body)
-    assert emit_packs_from_extraction_candidates(output_dir=tmp_path) == []
-
-
-def test_top_level_candidate_list_is_accepted(tmp_path: Path) -> None:
-    (tmp_path / "extraction_candidates.yaml").write_text("- id: ex-1\n  title: T\n")
-    assert [p.work_item_id for p in emit_packs_from_extraction_candidates(output_dir=tmp_path)] == ["pack-ex-1"]
-
-
-def test_scalar_rationale_and_symbols_are_not_split_into_characters(tmp_path: Path) -> None:
-    cand = {"id": "ex-2", "title": "T", "rationale": "shared parsing", "repos_involved": ["a"],
-            "source_units": [{"repo": "a", "path": "p.py", "symbols": "parse_all"}]}
-    [pack] = emit_packs_from_extraction_candidates([cand], output_dir=tmp_path)
-    assert "- shared parsing" in pack.narrative["description"]
-    assert "- s\n" not in pack.narrative["description"]
-    assert pack.location["symbol"] == "parse_all"
-    cand2 = dict(cand, id="ex-3", source_units=[{"path": "p.py", "symbols": ["a", 7]}])
-    [pack2] = emit_packs_from_extraction_candidates([cand2], output_dir=tmp_path)
-    assert pack2.location["symbol"] == "a,7"
-
 
 def test_non_utf8_pack_file_reads_as_unreadable(tmp_path: Path) -> None:
     bad = tmp_path / "pack-x.yaml"

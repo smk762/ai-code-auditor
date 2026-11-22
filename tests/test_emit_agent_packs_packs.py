@@ -39,7 +39,8 @@ def env(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(mod, "load_architecture_rules", lambda: {})
     monkeypatch.setattr(mod, "GraphBuilder", lambda path: SimpleNamespace(close=lambda: None))
     monkeypatch.setattr(mod, "emit_packs_from_violations", lambda *a, **kw: [])
-    monkeypatch.setattr(mod, "emit_packs_from_extraction_candidates", lambda **kw: [])
+    monkeypatch.setattr("auditor.extraction.sync_packs",
+                        lambda *a, **kw: {"refreshed": 0, "closed": 0, "left": {}})
     monkeypatch.setattr(mod, "restore_pack_lifecycle", lambda *a, **kw: 0)
     monkeypatch.setattr(mod, "rebuild_index", rebuild_index)
     monkeypatch.setattr(mod, "list_packs", lambda *a, **kw: [])

@@ -9,7 +9,6 @@ import yaml
 from fastapi.testclient import TestClient
 
 from auditor import ui_arch, ui_night
-from patterns.pattern_feedback import append_architecture_rule_for_extraction
 
 
 # ── night summary ────────────────────────────────────────────────────────────
@@ -96,7 +95,8 @@ def test_night_unknown_and_empty(nights: Path, tmp_path_factory) -> None:
 
 CANDIDATE = {"id": "ext-retr-001", "title": "Extract retry into retry-core", "domain": "retry", "priority": "high",
              "extraction_score": 0.82, "repos_involved": ["argus-cortex", "argus-studio"],
-             "source_units": [{"repo": "argus-cortex", "path": "a.py", "symbols": ["retry"]}],
+             "source_units": [{"repo": "argus-cortex", "path": "/m/argus-cortex/a.py", "symbols": ["retry"]},
+                              {"repo": "argus-studio", "path": "/m/argus-studio/src/s.py", "symbols": ["retry"]}],
              "proposed_library": {"name": "retry-core", "owner_repo": "argus-cortex"},
              "rationale": "same backoff in two repos", "risks": ["signature drift"]}
 
@@ -129,7 +129,7 @@ def test_architecture_data_reads_all_three_reports(arch: Path) -> None:
     (arch / "architecture_violations.json").write_text(json.dumps({"generated_at": "t", "violations": [
         {"rule_name": "ui_in_worker", "repo": "agent-composer", "violating_path": "agent-composer: a.py:4",
          "severity": "medium", "evidence": "HTMLResponse(", "entities": ["agent-composer"]}]}))
-    d = ui_arch.architecture_data(arch, [], arch / "rules.yaml")
+    d = ui_arch.architecture_data(arch, [], arch / "decisions.json")
     assert d["violations"]["source"] == "json"
     assert d["violations"]["violations"][0] == {"rule": "ui_in_worker", "repo": "agent-composer", "path": "agent-composer: a.py:4",
                                                 "severity": "MEDIUM", "evidence": "HTMLResponse(", "entities": ["agent-composer"]}
@@ -138,7 +138,8 @@ def test_architecture_data_reads_all_three_reports(arch: Path) -> None:
     assert d["proposals"][0]["recommendation"] == "Standardize usage pattern: requests"
     assert d["proposal_counts"] == {"pending": 1, "approved": 1}
     c = d["extraction"]["candidates"][0]
-    assert c["rule_name"] == "use_retry_core" and c["approved"] is False and c["library"] == "retry-core"
+    assert c["id"] == "ext-retr-001" and c["decision"] is None and c["pack"] is None and c["reported"]
+    assert [u["key"] for u in c["units"]] == ["argus-cortex:a.py:retry", "argus-studio:src/s.py:retry"]
 
 
 def test_violations_markdown_fallback(arch: Path) -> None:
@@ -146,7 +147,7 @@ def test_violations_markdown_fallback(arch: Path) -> None:
         "# Architecture Violations\n\n- Total violations: 2\n\n## UI in Worker Violations\n\n"
         "### agent-composer: rag-ingest/app/main.py:474\n- Severity: MEDIUM\n- Evidence: UI response pattern\n\n"
         "## Call Graph Violations\n\n### argus-studio → gateway\n- Severity: HIGH\n- Entities: argus-studio, gateway\n- Evidence: direct call\n")
-    v = ui_arch.architecture_data(arch, ["agent-composer", "argus-studio"], arch / "rules.yaml")["violations"]
+    v = ui_arch.architecture_data(arch, ["agent-composer", "argus-studio"], arch / "decisions.json")["violations"]
     assert v["source"] == "markdown"
     assert [(x["rule"], x["repo"], x["severity"]) for x in v["violations"]] == [
         ("ui_in_worker", "agent-composer", "MEDIUM"), ("call_graph_violation", "argus-studio", "HIGH")]
@@ -154,44 +155,8 @@ def test_violations_markdown_fallback(arch: Path) -> None:
 
 
 def test_missing_reports_are_none(tmp_path: Path) -> None:
-    d = ui_arch.architecture_data(tmp_path, [], tmp_path / "rules.yaml")
+    d = ui_arch.architecture_data(tmp_path, [], tmp_path / "decisions.json")
     assert d["violations"] is None and d["proposals"] is None and d["extraction"] is None
-
-
-def test_approve_appends_rule_keeping_comments_and_is_idempotent(arch: Path) -> None:
-    rules = arch / "rules.yaml"
-    out = ui_arch.approve_extraction(arch, "ext-retr-001", rules)
-    assert out == {"id": "ext-retr-001", "rule_name": "use_retry_core", "rules_path": str(rules), "already_present": False}
-    text = rules.read_text()
-    assert "# Service roles for the suite." in text  # comments survive
-    data = yaml.safe_load(text)
-    assert [r["name"] for r in data["rules"]] == ["service_boundary", "use_retry_core"]
-    assert data["service_roles"] == [{"name": "argus-cortex", "role": "worker"}]
-    assert data["rules"][1]["applies_to"] == ["argus-cortex", "argus-studio"]
-    assert ui_arch.approve_extraction(arch, "ext-retr-001", rules)["already_present"] is True
-    assert rules.read_text() == text  # second approval writes nothing
-    assert ui_arch.architecture_data(arch, [], rules)["extraction"]["candidates"][0]["approved"] is True
-    assert ui_arch.approve_extraction(arch, "ext-nope", rules) is None
-
-
-def test_rule_append_without_rules_list_falls_back_to_full_dump(tmp_path: Path) -> None:
-    flow = tmp_path / "flow.yaml"
-    flow.write_text("rules: []\nother: 1\n")  # flow-style list: nothing to append to as text
-    append_architecture_rule_for_extraction(CANDIDATE, str(flow))
-    data = yaml.safe_load(flow.read_text())
-    assert [r["name"] for r in data["rules"]] == ["use_retry_core"] and data["other"] == 1
-    new = tmp_path / "new.yaml"
-    append_architecture_rule_for_extraction(CANDIDATE, str(new))
-    assert yaml.safe_load(new.read_text())["rules"][0]["name"] == "use_retry_core"
-
-
-def test_rule_append_at_end_of_file(tmp_path: Path) -> None:
-    only = tmp_path / "only.yaml"
-    only.write_text("# header\nrules:\n  - name: a\n    description: x")  # no trailing newline
-    append_architecture_rule_for_extraction(CANDIDATE, str(only))
-    text = only.read_text()
-    assert text.startswith("# header\n")
-    assert [r["name"] for r in yaml.safe_load(text)["rules"]] == ["a", "use_retry_core"]
 
 
 # ── routes ───────────────────────────────────────────────────────────────────
@@ -205,34 +170,36 @@ def test_pages_and_json(client: TestClient, nights: Path) -> None:
     assert client.get("/audit/architecture.json").status_code == 200
 
 
-def test_approve_endpoint_needs_auth_and_writes_rules(client: TestClient, arch: Path, monkeypatch) -> None:
-    monkeypatch.setenv("AI_AUDIT_ARCH_RULES_PATH", str(arch / "rules.yaml"))
+def test_decision_endpoints_need_auth_and_write_the_pack(client: TestClient, arch: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AI_AUDIT_EXTRACTION_DECISIONS_PATH", str(arch / "rules" / "extraction_decisions.json"))
+    monkeypatch.setenv("AI_AUDIT_PACK_RAG_INGEST", "0")
     monkeypatch.setattr("auditor.audit_api._output_dir", lambda: str(arch))
-    monkeypatch.setenv("AI_AUDIT_API_TOKEN", "s3cret")
-    url = "/audit/extraction/ext-retr-001/approve"
-    assert client.post(url).status_code == 401
-    r = client.post(url, headers={"X-API-Token": "s3cret", "X-Auth-Code": "s3cret"})
-    assert r.status_code == 200 and r.json()["rule_name"] == "use_retry_core"
-    assert "use_retry_core" in (arch / "rules.yaml").read_text()
-    assert client.post("/audit/extraction/ext-nope/approve", headers={"X-API-Token": "s3cret"}).status_code == 404
-
-
-def test_approve_writes_the_json_overlay_and_reports_an_unwritable_one(client: TestClient, arch: Path,
-                                                                       monkeypatch) -> None:
-    import json
-
-    monkeypatch.setattr("auditor.audit_api._output_dir", lambda: str(arch))
+    monkeypatch.setattr("auditor.audit_api._repo_paths", dict)
     monkeypatch.setenv("AI_AUDIT_API_TOKEN", "s3cret")
     auth = {"X-API-Token": "s3cret"}
-    url = "/audit/extraction/ext-retr-001/approve"
-    (arch / "rules").mkdir()
-    monkeypatch.setenv("AI_AUDIT_ARCH_RULES_PATH", str(arch / "rules" / "architecture_rules.json"))
-    r = client.post(url, headers=auth)
-    assert r.status_code == 200 and not r.json()["already_present"]
-    assert [x["name"] for x in json.loads((arch / "rules" / "architecture_rules.json").read_text())["rules"]] \
-        == ["use_retry_core"]
-    assert client.post(url, headers=auth).json()["already_present"]
+    url = "/audit/extraction/ext-retr-001/decision"
+    body = {"status": "approved", "target_repo": "argus-cortex"}
+    assert client.post(url, json=body).status_code == 401
+    assert client.delete(url).status_code == 401
+    r = client.post(url, json=body, headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["pack_id"] == "pack-ext-retr-001" and r.json()["status"] == "open"
+    c = client.get("/audit/architecture.json").json()["extraction"]["candidates"][0]
+    assert c["decision"]["status"] == "approved" and c["pack"]["status"] == "open"
+    assert client.post("/audit/extraction/ext-nope/decision", json=body, headers=auth).status_code == 404
+    assert client.post(url, json={**body, "status": "maybe"}, headers=auth).status_code == 422
+    assert client.post(url, json={**body, "units": ["x:y:z"]}, headers=auth).status_code == 422
+    assert client.post("/audit/extraction/a%20b/decision", json=body, headers=auth).status_code == 422
+    assert client.delete(url, headers=auth).json()["pack_status"] == "obsolete"
+    assert client.delete(url, headers=auth).status_code == 404
+
+
+def test_an_unwritable_decisions_file_is_a_503(client: TestClient, arch: Path, monkeypatch) -> None:
     # The 500 of 2026-11-21: the rules folder wasn't writable in the container.
-    monkeypatch.setenv("AI_AUDIT_ARCH_RULES_PATH", "/proc/nope/architecture_rules.json")
-    r = client.post(url, headers=auth)
-    assert r.status_code == 503 and "Can't write approved rules" in r.json()["detail"]
+    monkeypatch.setenv("AI_AUDIT_EXTRACTION_DECISIONS_PATH", "/proc/nope/extraction_decisions.json")
+    monkeypatch.setattr("auditor.audit_api._output_dir", lambda: str(arch))
+    monkeypatch.setattr("auditor.audit_api._repo_paths", dict)
+    monkeypatch.setenv("AI_AUDIT_API_TOKEN", "s3cret")
+    r = client.post("/audit/extraction/ext-retr-001/decision", json={"status": "dismissed"},
+                    headers={"X-API-Token": "s3cret"})
+    assert r.status_code == 503 and "Can't write extraction decisions" in r.json()["detail"]

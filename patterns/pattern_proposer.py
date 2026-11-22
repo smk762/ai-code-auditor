@@ -95,7 +95,7 @@ def propose_extraction_candidates(
         candidates.append(
             {
                 "id": f"ext-{domain[:4]}-{idx:03d}",
-                "title": f"Extract {symbol} into {package_name}",
+                "title": f"Extract {symbol} ({len(repos)} repos)",  # where it goes is the approver's call
                 "domain": domain,
                 "priority": priority,
                 "extraction_score": score,

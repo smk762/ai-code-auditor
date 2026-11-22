@@ -20,9 +20,10 @@ here and in code. Don't add a rule to remember.
 | "Notable findings" or internal INDEX data in the public bundle | `test_wiki_public::test_export_bundle` |
 | Keep a wiki claim whose citation is missing, out of range, or names nothing in the cited lines | `test_wiki::test_drop_failed_claims` |
 | Commit the opsec deny-list, the classes gold set, or anything quoting real findings | Location only: they live under `~/.config/ai-code-auditor/`, and `reports/_classes/` is gitignored. **UNENFORCED** for a copy placed elsewhere |
+| An extraction pack without an approval, a decision moving a pack an agent holds, or one resolved on a first passing PR or while a copy can't be read | `test_extraction::test_sync_closes_unapproved_open_packs_and_refreshes_approved_ones`, `::test_a_decision_never_moves_a_pack_an_agent_holds`, `::test_sync_resolves_a_pack_once_every_copy_is_gone_and_never_on_unknown`; `test_evidence::test_a_passing_patch_leaves_an_extraction_pack_in_progress` |
 | Pack GC closing a claimed, in-progress or unverified pack, a wontfix pack whose cited code is still there, or a mass close without `--force` | `test_pack_gc::test_only_open_finding_packs_are_considered`, `::test_wontfix_is_kept_while_its_code_is_there`, `::test_mass_closure_is_held_unless_forced`, `::test_broken_latest_scan_skips_the_repo_but_not_file_gone`, `test_pack_write_integrity::test_gc_never_overwrites_a_claim_that_lands_mid_apply`; for architecture packs `test_architecture_packs::test_only_open_architecture_packs_are_closed`, `::test_a_pack_claimed_after_planning_is_left_alone`, `::test_mass_architecture_closure_is_held_unless_forced` |
 | Read a scan's silence about a file it couldn't review (cache-only miss, over budget, backend down) as the issue being gone: no GC closure, no "gone" or "not refound" in the trust metrics | `test_blind_scans::test_blind_scans_never_close_a_pack_as_not_rescanned`, `::test_blind_scans_dont_confirm_code_changed`, `::test_metrics_ignore_findings_a_blind_scan_could_not_see`, `test_nightly_repo_audit_packs::test_batch_mode_restores_cache_only_after_the_repo_pass` |
-| An architecture rule naming a role or repo that doesn't resolve, or one that can match nothing (a silent no-op), or a checked-in rule without a seeded violation it fires on | `config.load_architecture_rules` validates (`ecosystem/arch_contracts.py`); `test_arch_contracts::test_a_rule_that_cannot_resolve_or_match_is_a_load_error`, `::test_every_checked_in_rule_has_a_seeded_fixture`; the `arch.contracts` gate |
+| An architecture rule naming a role or repo that doesn't resolve, or one that can match nothing (a silent no-op, including the old extraction approvals' unevaluated `required_imports`/`forbidden_patterns`), or a checked-in rule without a seeded violation it fires on | `config.load_architecture_rules` validates (`ecosystem/arch_contracts.py`); `test_arch_contracts::test_a_rule_that_cannot_resolve_or_match_is_a_load_error`, `::test_every_checked_in_rule_has_a_seeded_fixture`, `test_approved_rules::test_a_checked_in_rule_with_only_unevaluated_keys_is_a_load_error`, `::test_an_old_extraction_approval_is_dropped_not_loaded`; the `arch.contracts` gate |
 | Revalidation demoting a pack, or touching one not resolved on a waiver or unverified | `test_evidence::test_revalidate_never_demotes`, `::test_revalidate_leaves_a_proven_resolution_alone`, `::test_revalidate_does_nothing_with_the_bar_off` |
 | Two agents holding the same pack, or a pack writer overwriting another's change | `test_pack_write_integrity::test_concurrent_claims_have_exactly_one_winner`, `::test_a_second_claim_gets_409_unless_forced`. Writers that load, check and write a pack hold `pack_lock` for the whole step |
 | Record a class guard by a sha prefix (a mistyped one waits as `pending` forever, like an unsynced mirror) | `test_class_packs::test_record_guard_validates` |
@@ -194,8 +195,11 @@ GitHub is the only GitHub write, and it is opt-in (`--label-p0`, or `AI_AUDIT_LI
 
 Loop: scan → world model → specialist coding packs, in `reports/agent_packs/` (`INDEX.json`). Agents fetch them
 themselves; [AGENTS.md](AGENTS.md) has the bundle → claim → fix → `validate_patch` flow.
-`python scripts/emit_agent_packs.py` rebuilds world-model, architecture and extraction packs, and leaves finding packs
-and their status alone. `bash scripts/install_agent_pack_awareness.sh` writes the flow into every ecosystem repo on disk
+`python scripts/emit_agent_packs.py` rebuilds world-model and architecture packs, syncs extraction packs, and leaves
+finding packs and their status alone. Extraction candidates are proposals: only one approved on `/ui/architecture`
+(a decision in `rules/extraction_decisions.json`, outside git) has a pack, and that pack is several PRs, so
+`validate_patch` moves it to `in_progress` and the nightly sync resolves it once every copy is gone from `dev`
+(`auditor/extraction.py`). Candidate ids follow their units across runs, not their rank. `bash scripts/install_agent_pack_awareness.sh` writes the flow into every ecosystem repo on disk
 (local files only, never git). Re-run it after changing the API base or the flow text.
 
 ## Branches

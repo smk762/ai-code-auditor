@@ -40,9 +40,10 @@ from auditor.contracts import RuleViolation
 
 logger = logging.getLogger(__name__)
 
-# Keys the evaluator understands. ``required_imports`` / ``forbidden_patterns`` are what
-# ``approve-extraction`` writes (``use_<lib>``): accepted at load, but no evaluator reads them
-# yet, so the seeded-fixture gate counts such a rule as not firing.
+# Keys the evaluator understands. ``required_imports`` / ``forbidden_patterns`` are what the old
+# ``approve-extraction`` wrote (``use_<lib>``). No evaluator ever read them, so such a rule is a load
+# error; ``config.approved_rules`` drops the ones still in a local approved-rules file, with a
+# warning (extraction approvals are decisions now: ``auditor/extraction.py``).
 ROLE_KEY = "forbid"
 UNEVALUATED_KEYS = ("required_imports", "forbidden_patterns")
 LEGACY_KEYS = ("forbidden_edges", "allowed")
@@ -216,8 +217,10 @@ def validate(data: dict[str, Any], repos: set[str] | None) -> None:
                           f"never builds, so the rule can match nothing; use `forbid` with from_roles/to_roles")
         for repo in rule.get("applies_to") or []:
             repo_ok(repo, f"{rn} applies_to")
-        if ROLE_KEY not in rule and not any(k in rule for k in UNEVALUATED_KEYS) and not legacy:
-            errors.append(f"{rn}: no condition (`forbid`), so it can match nothing")
+        if ROLE_KEY not in rule and not legacy:
+            unread = [k for k in UNEVALUATED_KEYS if k in rule]
+            errors.append(f"{rn}: no condition (`forbid`), so it can match nothing"
+                          + (f" ({', '.join(unread)} are never evaluated)" if unread else ""))
         if ROLE_KEY in rule:
             forbid = rule[ROLE_KEY]
             if not isinstance(forbid, list) or not forbid:

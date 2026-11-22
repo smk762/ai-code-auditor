@@ -362,6 +362,20 @@ def test_endpoint_marks_unverified_without_a_test_and_resolves_with_a_waiver(mon
     assert "GPU pipeline" in load_pack(mono["out"], mono["pack"])["verification"]["evidence"]["waiver"]
 
 
+def test_a_passing_patch_leaves_an_extraction_pack_in_progress(mono) -> None:
+    """Extraction is several PRs: the first passing one must not close it (auditor/extraction.py)."""
+    from auditor.agent_pack import load_pack, write_pack
+    from auditor.extraction import build_pack
+
+    copies = [{"repo": "other", "path": "x.py", "symbol": "add", "state": "left"}]
+    write_pack(build_pack("ext-calc", {"target_repo": "mono", "symbol": "add", "title": "Extract add"}, copies),
+               mono["out"])
+    body = _post(patch=FIX + NEW_TEST, pack_id="pack-ext-calc")
+    assert body["passed"] and body["pack"]["status"] == "in_progress", body["pack"]
+    data = load_pack(mono["out"], "pack-ext-calc")
+    assert data["status"] == "in_progress" and "until no copy is left" in data["status_note"]
+
+
 def test_endpoint_test_that_passes_on_dev_is_not_proof(mono) -> None:
     passes_anyway = ("--- /dev/null\n+++ b/svc/tests/test_calc.py\n@@ -0,0 +1,5 @@\n+from app.calc import add\n+\n+\n"
                      "+def test_add_zero():\n+    assert add(0, 0) == 0\n")

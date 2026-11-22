@@ -15,7 +15,6 @@ from copilot.copilot_engine import CopilotEngine
 from ecosystem.graph_builder import GraphBuilder
 from pipelines.ecosystem_audit import run as run_ecosystem_audit
 from pipelines.nightly_repo_audit import run as run_repo_audit
-from patterns.pattern_feedback import append_architecture_rule_for_extraction
 from qa.benchmark import run_benchmark
 from semantic.embedding_index import EmbeddingIndex
 from semantic.semantic_search import SemanticSearch
@@ -106,12 +105,15 @@ def _build_parser() -> argparse.ArgumentParser:
     qa.add_argument("--json", action="store_true", help="Output as JSON")
     qa.add_argument("--auth-token", default="", help="JWT token with analyst role")
 
-    approve = sub.add_parser("approve-extraction", help="Approve extraction candidate and auto-generate architecture rule")
+    approve = sub.add_parser("approve-extraction",
+                             help="Approve an extraction candidate: writes its pack (same as the Approve button)")
     approve.add_argument("--candidate-id", required=True, help="Candidate id from reports/extraction_candidates.yaml")
-    approve.add_argument("--report", default="reports/extraction_candidates.yaml", help="Extraction candidate YAML report path")
-    approve.add_argument("--rules-path", default="",
-                         help="Rules file to append (default: AI_AUDIT_ARCH_RULES_PATH, else rules/architecture_rules.json, "
-                              "the approved rules merged into config/architecture_rules.yaml)")
+    approve.add_argument("--target-repo", default="argus-cortex", help="Repo the shared code goes in")
+    approve.add_argument("--target-module", default="", help="Module for it, e.g. argus_cortex.hashing (optional)")
+    approve.add_argument("--unit", action="append", default=None,
+                         help="repo:path:symbol of a copy to include (repeat); default: all but tests/scripts/demos")
+    approve.add_argument("--note", default="", help="Note for the agent")
+    approve.add_argument("--dismiss", action="store_true", help="Dismiss the candidate instead")
     approve.add_argument("--auth-token", default="", help="JWT token with admin role")
 
     repair_cmd = sub.add_parser("repair", help="Run agentic repair loop via rag-chat repair API")
@@ -1691,20 +1693,17 @@ def main() -> None:
         )
     elif args.command == "approve-extraction":
         _enforce_cli_role(cfg, token, "admin", "cli:approve-extraction")
-        report_path = Path(args.report)
-        if not report_path.exists():
-            raise FileNotFoundError(f"Extraction report not found: {report_path}")
-        payload = yaml.safe_load(report_path.read_text(encoding="utf-8")) or {}
-        candidates = payload.get("candidates", [])
-        target = next((c for c in candidates if c.get("id") == args.candidate_id), None)
-        if target is None:
-            raise ValueError(f"Candidate id not found: {args.candidate_id}")
-        from auditor.config import approved_rules_path
+        from auditor.extraction import decide
+        from auditor.repo_resolver import resolve_repo_path
+        from conductor.publish import public_base_url
 
-        rules_path = args.rules_path or approved_rules_path()
-        Path(rules_path).parent.mkdir(parents=True, exist_ok=True)
-        append_architecture_rule_for_extraction(target, rules_path=rules_path)
-        print(f"Approved candidate {args.candidate_id} and updated {rules_path}")
+        out = decide(cfg.output_dir, args.candidate_id, "dismissed" if args.dismiss else "approved",
+                     target_repo=args.target_repo, target_module=args.target_module, units=args.unit,
+                     note=args.note, repo_paths={r.name: resolve_repo_path(r) for r in cfg.repos},
+                     public_base_url=public_base_url())
+        if out is None:
+            raise ValueError(f"Candidate id not found: {args.candidate_id}")
+        print(json.dumps(out, indent=2))
     else:
         parser.print_help()
 

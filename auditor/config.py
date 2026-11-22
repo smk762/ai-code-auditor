@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -146,7 +147,18 @@ def approved_rules(path: str | Path | None = None) -> list[dict[str, Any]]:
         return []
     if not isinstance(rules, list):
         raise ValueError(f"{path or approved_rules_path()}: 'rules' must be a list")
-    return [r for r in rules if isinstance(r, dict)]
+    kept = []
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        if "forbid" not in r and any(k in r for k in ("required_imports", "forbidden_patterns")):
+            # what the old approve-extraction wrote: never evaluated, so it checked nothing
+            logging.getLogger(__name__).warning(
+                "%s: ignoring %r, an old extraction approval that checks nothing; re-approve the candidate "
+                "on /ui/architecture", path or approved_rules_path(), r.get("name"))
+            continue
+        kept.append(r)
+    return kept
 
 
 def load_architecture_rules(path: str | Path = "config/architecture_rules.yaml", *,

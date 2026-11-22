@@ -20,7 +20,6 @@ from auditor.env_loader import load_env_file
 load_env_file()
 
 from auditor.agent_pack import (
-    emit_packs_from_extraction_candidates,
     emit_packs_from_violations,
     emit_world_model_packs,
     ingest_packs_to_rag,
@@ -151,16 +150,16 @@ def _emit_owned(args, cfg, out: Path, base: str) -> set[str]:
     finally:
         graph.close()
 
-    print("=== 3. Specialist packs (extraction) ===")
-    extraction = emit_packs_from_extraction_candidates(
-        output_dir=out,
-        run_id="emit-packs-manual",
-        public_base_url=base,
-        ingest_rag=False,
-        limit=args.limit,
-    )
-    print(f"  extraction packs: {len(extraction)}")
-    return {p.work_item_id for p in (*world, *arch, *extraction)}
+    print("=== 3. Specialist packs (extraction: approved candidates only) ===")
+    from auditor.extraction import sync_packs
+
+    ext = sync_packs(out, repo_paths, public_base_url=base, run_id="emit-packs-manual")
+    print(f"  extraction packs: {ext}")
+    # Extraction packs come from approvals, not this run: keep every approved one, and any an agent
+    # holds or closed, so only open/obsolete leftovers of the old unapproved emit are removed.
+    extraction = {str(e.get("id")) for e in list_packs(out, kind="extraction", limit=1_000_000)
+                  if e.get("status") not in ("open", "obsolete")} | set(ext["left"])
+    return {p.work_item_id for p in (*world, *arch)} | extraction
 
 
 def main() -> None:
