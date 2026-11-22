@@ -101,7 +101,8 @@ on `dev` and passes patched. Other code changes need tests or npm checks to have
 
 **Trust** (epic #64). `auditor/trust_metrics.py` measures whether agent fixes can be trusted, and every trust-upgrade
 change is judged against it. `auditor/trust_eval.py` defines the gates: below its minimum sample a gate is
-`insufficient`, never a pass. The exit criteria are every non-pending gate passing in each of the last two ISO weeks,
+`insufficient`, never a pass. The exit criteria are every gate that isn't pending or informational (`INFORMATIONAL`: today
+`class_packs.lifecycle`, so guards are judged by `guards.seeded_recall`) passing in each of the last two ISO weeks,
 with headline metrics not worse over 4 weekly snapshots. `auditor/eval_seeded.py` tests the evidence bar against
 planted bugs in real mirrors. These run nightly after the repo audit, in this order: pack GC, pack classes, class
 packs, test-env readiness, revalidation, trust metrics, gates. The evidence gates judge the last 14 days of resolutions

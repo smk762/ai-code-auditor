@@ -685,9 +685,11 @@ def _run_eval_trust(args) -> None:
         val = "" if g["value"] is None else f"{g['value']:.0%}" if g["threshold"] <= 1 else f"{g['value']}"
         need = f"{g['op']} {g['threshold']:.0%}" if g["threshold"] <= 1 else f"{g['op']} {g['threshold']}"
         extra = f"n={g['n']}" + (f" (needs {g['min_n']})" if g["status"] == "insufficient" else "")
-        print(f"{mark[g['status']]}  {g['id']:<28} {val:>6} {need:<7} {extra:<18} #{g['issue']} {g['note']}")
+        tag = "info" if g.get("informational") else mark[g["status"]]
+        print(f"{tag:>4}  {g['id']:<28} {val:>6} {need:<7} {extra:<18} #{g['issue']} {g['note']}")
     s, ex = rep["summary"], rep["exit"]
-    print(f"\n{s['pass']} pass · {s['fail']} fail · {s['insufficient']} need data · {s['pending']} not built")
+    print(f"\n{s['pass']} pass · {s['fail']} fail · {s['insufficient']} need data · {s['pending']} not built"
+          + (f" · {s['informational']} informational (not in the exit criteria)" if s.get("informational") else ""))
     print(f"exit: gates green two weeks running: {ex['gates_two_weeks']['met']} · "
           f"metrics not worse over 4 weeks: {ex['metrics_four_weeks']['met']} "
           f"({ex['metrics_four_weeks'].get('note') or ex['metrics_four_weeks'].get('worse')}) · epic done: {ex['met']}")

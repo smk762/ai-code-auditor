@@ -81,6 +81,25 @@ def test_gates_exit_needs_two_green_weeks() -> None:
     assert not gates_exit([{"at": wk(7), "statuses": {"x": "pending"}}, {"at": wk(0), "statuses": {"x": "pending"}}])["met"]
 
 
+def test_an_informational_gate_never_blocks_the_exit() -> None:
+    wk = lambda d: (NOW - timedelta(days=d)).isoformat()
+    for lifecycle in ("insufficient", "fail"):
+        row = {"a": "pass", "class_packs.lifecycle": lifecycle}
+        assert gates_exit([{"at": wk(7), "statuses": row}, {"at": wk(0), "statuses": row}])["met"]
+    # informational gates alone don't make a green week
+    only = {"class_packs.lifecycle": "pass"}
+    assert not gates_exit([{"at": wk(7), "statuses": only}, {"at": wk(0), "statuses": only}])["met"]
+
+
+def test_evaluate_marks_informational_gates_and_keeps_them_out_of_the_counts(tmp_path: Path) -> None:
+    r = trust_eval.evaluate(tmp_path, record=False)
+    g = {x["id"]: x for x in r["gates"]}["class_packs.lifecycle"]
+    assert g["informational"] is True and "seeded recall" in g["note"] and g["status"] == "insufficient"
+    assert r["summary"]["informational"] == 1
+    assert r["summary"]["insufficient"] == sum(1 for x in r["gates"]
+                                               if x["status"] == "insufficient" and not x["informational"])
+
+
 def test_the_last_evaluation_of_a_week_wins() -> None:
     green = {"a": "pass", "b": "pass"}
     red = {"a": "pass", "b": "fail"}
