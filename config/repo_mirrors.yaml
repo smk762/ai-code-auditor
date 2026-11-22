@@ -81,6 +81,9 @@ mirrors:
   - name: argus-safelight
     url: https://github.com/smk762/argus-safelight.git
     path: /home/smk/mirrors/argus-safelight
+  - name: argus-scout
+    url: https://github.com/smk762/argus-scout.git
+    path: /home/smk/mirrors/argus-scout
   - name: argus-sightline
     url: https://github.com/smk762/argus-sightline.git
     path: /home/smk/mirrors/argus-sightline
