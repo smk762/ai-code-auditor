@@ -677,13 +677,75 @@ def _logical_lines(text: str) -> list[str]:
     return out
 
 
+# Minor versions a project's requires-python may pick when the image's interpreter doesn't satisfy it.
+TEST_PYTHONS = ("3.9", "3.10", "3.11", "3.12", "3.13", "3.14")
+
+
+def requires_python(root: Path) -> str:
+    """``[project] requires-python`` of *root*, or ""."""
+    import tomllib
+
+    try:
+        project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8")).get("project") or {}
+    except (OSError, ValueError):
+        return ""
+    return str(project.get("requires-python") or "").strip()
+
+
+def test_python(root: Path, here: str = "") -> tuple[str, str]:
+    """``(minor, "")`` for the interpreter *root*'s tests should run on, or ``("", error)``.
+
+    The image's own interpreter when it satisfies the project's ``requires-python`` (or the project
+    declares none): nothing to download, and envs keep their cache keys. Otherwise the oldest
+    minor version that satisfies it, which is what a project's CI most often tests first (#141)."""
+    import sys
+
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+
+    here = here or f"{sys.version_info[0]}.{sys.version_info[1]}"
+    spec_text = requires_python(root)
+    if not spec_text:
+        return here, ""
+    try:
+        spec = SpecifierSet(spec_text)
+    except InvalidSpecifier:
+        return here, ""  # an unreadable spec: keep the old behaviour rather than refuse
+
+    def fits(minor: str) -> bool:
+        return any(spec.contains(f"{minor}.{patch}") for patch in (0, 99))
+
+    if fits(here):
+        return here, ""
+    for minor in TEST_PYTHONS:
+        if fits(minor):
+            return minor, ""
+    return "", f"no supported Python satisfies requires-python {spec_text!r} (tried {', '.join(TEST_PYTHONS)})"
+
+
+def _uv() -> str:
+    import sys
+
+    return shutil.which("uv") or str(Path(sys.executable).with_name("uv"))
+
+
+def venv_python_version(python: Path) -> str:
+    """The ``major.minor.patch`` a venv's interpreter is, from its ``pyvenv.cfg``, or ""."""
+    try:
+        text = (python.parent.parent / "pyvenv.cfg").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    m = re.search(r"^version(?:_info)?\s*=\s*([0-9][0-9.]*)", text, re.M)
+    return m.group(1) if m else ""
+
+
 def ensure_test_venv(root: Path, cache_dir: Path, extra: list[str] | None = None) -> tuple[Path | None, str]:
     """Python of a venv holding *root*'s declared deps plus pytest; built once per deps hash.
 
     Returns ``(python, "")`` or ``(None, error)``. Requirement lines that install the project
     itself (``-e .``, ``.``) are skipped: the venv outlives this tree, and tests import the
     patched code through PYTHONPATH instead. *extra* adds specs (a markerless root's
-    :func:`loose_test_deps`)."""
+    :func:`loose_test_deps`). The interpreter is :func:`test_python`'s: the image's own, or one uv
+    provides when the project's ``requires-python`` rules the image's out."""
     import fcntl
     import hashlib
     import sys
@@ -693,7 +755,13 @@ def ensure_test_venv(root: Path, cache_dir: Path, extra: list[str] | None = None
     for f in req_files:
         lines += _requirement_lines(f)
     lines = list(dict.fromkeys(lines + specs + list(extra or [])))
-    key = hashlib.sha256("\n".join([sys.version, *sorted(lines)]).encode()).hexdigest()[:16]
+    minor, why = test_python(root)
+    if not minor:
+        return None, why
+    here = f"{sys.version_info[0]}.{sys.version_info[1]}"
+    # the image's interpreter keys on its full version, as before; a uv one on the minor it asked for
+    interp = sys.version if minor == here else f"uv-python-{minor}"
+    key = hashlib.sha256("\n".join([interp, *sorted(lines)]).encode()).hexdigest()[:16]
     cache_dir = cache_dir.resolve()  # tests run from the project dir, so a relative path would break
     cache_dir.mkdir(parents=True, exist_ok=True)
     venv = cache_dir / f"{root.name or 'repo'}-{key}"
@@ -707,8 +775,17 @@ def ensure_test_venv(root: Path, cache_dir: Path, extra: list[str] | None = None
         reqs = cache_dir / f".{venv.name}.txt"
         reqs.write_text("\n".join(["pytest", *lines]) + "\n", encoding="utf-8")
         try:
-            subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, capture_output=True,
-                           text=True, timeout=120)
+            if minor == here:
+                subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, capture_output=True,
+                               text=True, timeout=120)
+            else:
+                # uv fetches a managed interpreter once into the cache dir (HOME is / in the image, not
+                # writable); --seed puts pip in the venv so the install below is the same either way.
+                proc_run([_uv(), "venv", "--seed", "--python", minor, str(venv)], check=True,
+                         capture_output=True, text=True, timeout=VENV_BUILD_TIMEOUT_S,
+                         env=child_env(UV_PYTHON_INSTALL_DIR=str(cache_dir / ".uv-python"),
+                                       UV_CACHE_DIR=str(cache_dir / ".uv-cache"),
+                                       UV_PYTHON_DOWNLOADS="automatic", UV_NO_CONFIG="1"))
             # pip's default cache is under HOME, which is / (unwritable) for the container's uid.
             proc_run([str(python), "-m", "pip", "install", "-q", "--disable-pip-version-check",
                             "-r", str(reqs)], check=True, capture_output=True, text=True,
