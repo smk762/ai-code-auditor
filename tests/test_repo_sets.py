@@ -80,6 +80,19 @@ def test_the_flow_draws_exactly_the_allowed_calls_into_retina() -> None:
     assert drawn  # the diagram does draw them
 
 
+def test_the_flow_draws_exactly_the_allowed_calls_out_of_iris() -> None:
+    # iris's resident targets are deployment config; the diagram must draw the ones allowed_calls
+    # records (those deploy/iris.example.yaml wires) and no others.
+    doc = (ROOT / "ecosystem" / "ecosystem.md").read_text(encoding="utf-8")
+    _, flow = parse_ecosystem_doc(doc)
+    scanned = set(_scanned())
+    drawn = {b if b in scanned else f"argus-{b}" for a, b in flow if a == "iris"}
+    rules = yaml.safe_load((ROOT / "config" / "architecture_rules.yaml").read_text(encoding="utf-8"))
+    allowed = {c["to"] for c in rules["call_graph_rules"]["allowed_calls"] if c["from"] == "argus-iris"}
+    assert drawn == allowed
+    assert drawn
+
+
 def test_every_scanned_argus_repo_has_a_brand_stage() -> None:
     scanned = _scanned()
     assert {r for r in scanned if not r.startswith("argus-")} == NOT_ARGUS
