@@ -224,3 +224,29 @@ def test_hash_pinned_requirements_are_joined(tmp_path: Path) -> None:  # fdc5890
         "httpx==0.27.0 \\\n    --hash=sha256:aaa \\\n    --hash=sha256:bbb\n"
         "# via\n#   app\nrich==13.0 --hash=sha256:ccc\nfastapi\n", encoding="utf-8")
     assert validator._requirement_lines(tmp_path / "requirements.txt") == ["httpx==0.27.0", "rich==13.0", "fastapi"]
+
+
+def test_failed_ids_count_a_failing_subtest() -> None:
+    out = ("SUBFAILED[msg] (i=1) tests/test_a.py::T::test_sub - AssertionError\n"
+           "SUBFAILED(i=0) tests/test_a.py::test_native - assert 0\n"
+           "FAILED tests/test_a.py::test_native - contains 1 failed subtest\n"
+           "ERROR tests/test_b.py::test_x - fixture\n"
+           "3 failed, 1 error, 2 passed in 0.10s\n")
+    assert validator._failed_ids(out) == {"tests/test_a.py::T::test_sub", "tests/test_a.py::test_native",
+                                          "tests/test_b.py::test_x"}
+    # one line per counted failure, so the tail is complete and the base comparison can run
+    assert len(validator._failure_lines(out)) == validator._reported_failures(out) == 4
+
+
+def test_a_subtest_failure_already_on_dev_does_not_block_the_patch(tmp_path: Path) -> None:
+    body = ("import unittest\n\nclass T(unittest.TestCase):\n    def test_sub(self):\n"
+            "        for i in range(2):\n            with self.subTest(i=i):\n                self.assertEqual(i, 0)\n")
+    for tree in (tmp_path / "patched", tmp_path / "base"):
+        (tree / "tests").mkdir(parents=True)
+        (tree / "tests" / "test_s.py").write_text(body, encoding="utf-8")
+    root = tmp_path / "patched"
+    outcome, res = validator._run_project_tests(root, Path(sys.executable), 60)
+    assert outcome == "ran" and not res.passed, res.raw_output
+    notes: list[str] = []
+    res = validator._against_base(root, root, lambda: tmp_path / "base", Path(sys.executable), 60, res, ".", notes)
+    assert res.passed and "fail on the base branch too" in " ".join(notes), (res.raw_output, notes)

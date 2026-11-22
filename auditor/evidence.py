@@ -56,6 +56,11 @@ _NON_CODE_RE = re.compile(
     re.IGNORECASE,
 )
 _PYTEST_OUTCOME_RE = re.compile(r"^(PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED)\s+(\S+?)(?:\s+-\s+.*)?$", re.MULTILINE)
+# A failing subtest (pytest >= 9 built in, or pytest-subtests) gets its own summary line, with the
+# subtest's message and params before the test id: ``SUBFAILED[msg] (i=1) tests/t.py::T::test_a - ...``.
+# pytest 9 still lists a unittest-style test whose subtests failed as ``PASSED``, so this line is the
+# only sign it failed.
+_PYTEST_SUBFAIL_RE = re.compile(r"^SUBFAIL(?:ED)?\b.*?\s(\S+?\.py::\S+)", re.MULTILINE)
 
 
 def enabled() -> bool:
@@ -165,9 +170,11 @@ def parse_pytest_outcomes(output: str) -> dict[str, str]:
     file, not a test, so it carries no test id and is reported separately.
 
     A test can be listed twice (a passing call whose teardown errors shows as ``ERROR`` and
-    ``PASSED``): the worst outcome wins, whatever order the sections come in."""
+    ``PASSED``): the worst outcome wins, whatever order the sections come in. A test with any
+    failing subtest is failed, even when pytest lists the test itself as passed."""
     out: dict[str, str] = {}
-    for status, tid in _PYTEST_OUTCOME_RE.findall(output):
+    found = _PYTEST_OUTCOME_RE.findall(output) + [("FAILED", t) for t in _PYTEST_SUBFAIL_RE.findall(output)]
+    for status, tid in found:
         if "::" not in tid:
             continue
         new = {"PASSED": "passed", "FAILED": "failed", "ERROR": "error", "XPASS": "passed"}.get(status, "skipped")
