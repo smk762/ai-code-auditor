@@ -16,14 +16,18 @@ the ecosystem doc or the topology sidecar changes.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import threading
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
 from auditor.brand import STAGES, has_mark, stage_of
+
+logger = logging.getLogger(__name__)
 
 ECOSYSTEM_DOC = Path(__file__).resolve().parents[1] / "ecosystem" / "ecosystem.md"
 MIN_FILES = 2  # a service mentioned in a single file is shown in details, not drawn
@@ -256,6 +260,42 @@ _build_lock = threading.Lock()  # one rebuild at a time; requests that arrive me
 BUILD_TIMEOUT_S = 300
 
 
+def _reap(ex: Any, deadline_s: float = 10.0) -> None:
+    """Stop every worker of *ex* and make sure it's gone. SIGTERM first, SIGKILL for one that
+    ignores it, and keep looking until none is alive: the pool can start a replacement worker
+    while the first one is dying, and one terminate() pass would leave that one running."""
+    seen: dict[int, Any] = {}
+
+    def collect() -> None:
+        for proc in list((getattr(ex, "_processes", None) or {}).values()):
+            seen.setdefault(id(proc), proc)
+
+    collect()  # before shutdown(), which drops the executor's process table
+    stop = time.monotonic() + deadline_s
+    ex.shutdown(wait=False, cancel_futures=True)
+    while True:
+        collect()
+        alive = [p for p in seen.values() if p.is_alive()]
+        if not alive or time.monotonic() > stop:
+            break
+        for proc in alive:
+            proc.terminate()
+        for proc in alive:
+            proc.join(1)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(1)
+    thread = getattr(ex, "_executor_manager_thread", None)
+    if thread is not None:
+        thread.join(2)
+    for proc in seen.values():  # pick up anything the manager thread started on its way out
+        if proc.is_alive():
+            proc.kill()
+            proc.join(1)
+    if any(p.is_alive() for p in seen.values()):
+        logger.warning("topology build: a worker survived SIGKILL")
+
+
 def _build_isolated(out: Path, repos: list[Any], side: Path) -> dict[str, Any]:
     """Run :func:`_build` in a child process. Scanning every mirror is seconds of pure-Python
     CPU; in the API process it holds the GIL and stalls every other request."""
@@ -270,12 +310,7 @@ def _build_isolated(out: Path, repos: list[Any], side: Path) -> dict[str, Any]:
     except FutureTimeout:
         # A running future can't be cancelled and shutdown(wait=True) would wait for it, so the
         # timeout only bounds anything if the hung child is killed.
-        procs = list((getattr(ex, "_processes", None) or {}).values())
-        for proc in procs:
-            proc.terminate()
-        ex.shutdown(wait=False, cancel_futures=True)
-        for proc in procs:
-            proc.join(5)
+        _reap(ex)
         raise
     except BaseException:
         ex.shutdown(wait=False, cancel_futures=True)
