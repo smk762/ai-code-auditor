@@ -340,7 +340,11 @@ class LLMClient:
         if self._anthropic is None:
             import anthropic
 
-            self._anthropic = anthropic.Anthropic(max_retries=4, timeout=float(self.timeout_s or 600))
+            # The key and endpoint health_check vouched for, not the SDK's own env defaults.
+            self._anthropic = anthropic.Anthropic(
+                api_key=self.api_key or None, base_url=_anthropic_base_url(self.endpoint),
+                max_retries=4, timeout=float(self.timeout_s or 600),
+            )
         params: dict[str, Any] = {
             "model": self.model,
             "max_tokens": 8192,
@@ -367,7 +371,9 @@ class LLMClient:
                 message = choices[0].get("message", {})
                 # A null content (reasoning-only or empty completion) is no answer, not "None".
                 return str(message.get("content") or "")
-        return str(body.get("response", body.get("text", "")))
+        answer = body.get("response")
+        # A null "response"/"text" is no answer, not "None".
+        return str((body.get("text") or "") if answer is None else answer)
 
     def health_check(self) -> tuple[bool, str]:
         # Use the short healthcheck timeout — we just want to know if the server responds,
@@ -484,6 +490,12 @@ class LLMClient:
                     unit.id, self.provider, self.model, response,
                 )
         return _heuristic_findings(unit)
+
+
+def _anthropic_base_url(endpoint: str) -> str | None:
+    """The SDK's base URL from the configured endpoint, which names the messages URL itself
+    (``https://api.anthropic.com/v1/messages``); the SDK appends ``/v1/messages``. None: its default."""
+    return (endpoint or "").strip().rstrip("/").removesuffix("/v1/messages") or None
 
 
 def _extract_json_array(raw: str) -> Any:

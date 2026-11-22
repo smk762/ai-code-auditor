@@ -141,7 +141,12 @@ def _draft_pr_in(
     action: str,
     base_branch: str | None,
 ) -> DraftPrResult:
-    """The draft PR flow inside *repo_path*, a scratch clone already at the base."""
+    """The draft PR flow inside *repo_path*, a scratch clone already at the base.
+
+    ``gh`` is checked before anything is pushed, and a pushed branch whose PR could not be
+    opened is deleted again, so a failed run leaves no orphan branch on the remote."""
+    if not _gh_available():
+        return DraftPrResult(draft=None, error="gh CLI not available")
     try:
         br = create_repair_branch(repo_path, slug)
     except GitError as exc:
@@ -165,47 +170,43 @@ def _draft_pr_in(
         return DraftPrResult(draft=None, branch=br.branch, error=f"push skipped: {reason}")
 
     url = ""
-    if _gh_available():
-        try:
-            r = subprocess.run(
-                [
-                    "gh",
-                    "pr",
-                    "create",
-                    "--draft",
-                    "--title",
-                    title[:70],
-                    "--body",
-                    body[:4000],
-                    "--head",
-                    br.branch,
-                    *(["--base", base_branch] if base_branch else []),
-                ],
-                cwd=str(repo_path),
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=GH_TIMEOUT_S,
-                env={**os.environ, "GH_PROMPT_DISABLED": "1"},
-            )
-        except subprocess.TimeoutExpired:
-            return DraftPrResult(draft=None, branch=br.branch,
-                                 error=f"gh pr create timed out after {GH_TIMEOUT_S}s")
-        if r.returncode == 0:
-            lines = (r.stdout or "").strip().splitlines()
-            url = lines[-1].strip() if lines else ""
-            if not url:
-                return DraftPrResult(draft=None, branch=br.branch,
-                                     error="gh pr create printed no PR URL")
-        else:
-            logger.warning("gh pr create failed: %s", (r.stderr or "")[:500])
-            return DraftPrResult(
-                draft=None,
-                branch=br.branch,
-                error=(r.stderr or "gh pr create failed")[:500],
-            )
+    try:
+        r = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "create",
+                "--draft",
+                "--title",
+                title[:70],
+                "--body",
+                body[:4000],
+                "--head",
+                br.branch,
+                *(["--base", base_branch] if base_branch else []),
+            ],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=GH_TIMEOUT_S,
+            env={**os.environ, "GH_PROMPT_DISABLED": "1"},
+        )
+    except subprocess.TimeoutExpired:
+        error = f"gh pr create timed out after {GH_TIMEOUT_S}s"
     else:
-        return DraftPrResult(draft=None, branch=br.branch, error="gh CLI not available")
+        lines = (r.stdout or "").strip().splitlines()
+        url = lines[-1].strip() if lines else ""
+        if r.returncode != 0:
+            logger.warning("gh pr create failed: %s", (r.stderr or "")[:500])
+            error = (r.stderr or "gh pr create failed")[:500]
+        elif not url:
+            error = "gh pr create printed no PR URL"
+        else:
+            error = ""
+    if error:
+        _delete_pushed_branch(repo_path, push.remote, br.branch)
+        return DraftPrResult(draft=None, branch=br.branch, error=error)
 
     return DraftPrResult(
         draft=DraftPr(
@@ -217,6 +218,20 @@ def _draft_pr_in(
         ),
         branch=br.branch,
     )
+
+
+def _delete_pushed_branch(repo_path: Path, remote: str, branch: str) -> None:
+    """Best effort: delete *branch* on *remote* again, only while it still points at the commit
+    this run pushed (``--force-with-lease``), so a branch someone else moved is left alone."""
+    sha = _git_out(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], repo_path)
+    if not sha:
+        return
+    r = subprocess.run(
+        ["git", "push", "--quiet", f"--force-with-lease=refs/heads/{branch}:{sha}", "--", remote,
+         f":refs/heads/{branch}"],
+        cwd=str(repo_path), capture_output=True, text=True, check=False, timeout=GH_TIMEOUT_S)
+    if r.returncode != 0:
+        logger.warning("could not delete orphan branch %s on %s: %s", branch, remote, (r.stderr or "")[:300])
 
 
 def annotate_pr_review(draft: DraftPr, review: CodeReviewSummary) -> DraftPr:

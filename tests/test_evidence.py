@@ -509,8 +509,9 @@ def test_one_validation_resolves_every_listed_pack_with_one_repro_run(mono, monk
     monkeypatch.setattr(evidence, "run_repro", lambda *a, **k: calls.append(1) or real(*a, **k))
     body = _post(patch=FIX + NEW_TEST, pack_id=mono["pack"], pack_ids=[other, mono["pack"], "pack-missing"])
     assert body["passed"] and body["pack"]["id"] == mono["pack"] and body["pack"]["status"] == "resolved"
+    # The raw list, not a dict keyed by id: a dict would collapse a repeated entry and hide it
+    assert [p["id"] for p in body["packs"]] == [mono["pack"], other, "pack-missing"]  # pack_id first, repeats dropped
     by_id = {p["id"]: p for p in body["packs"]}
-    assert list(by_id) == [mono["pack"], other, "pack-missing"]  # pack_id first, repeats dropped
     for pid in (mono["pack"], other):
         assert by_id[pid]["status"] == "resolved" and by_id[pid]["evidence"] == "repro", by_id[pid]
         assert by_id[pid]["evidence_record"]["repro"]["repro"] == ["svc/tests/test_calc.py::test_add"]

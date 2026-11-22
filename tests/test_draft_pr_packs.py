@@ -173,3 +173,53 @@ def test_every_configured_mirror_and_repo_path_is_a_scan_source() -> None:
     assert mirrors and repos
     for item in [*mirrors, *repos]:
         assert Path(item["path"]).resolve() in paths, item["path"]
+
+
+# ── no orphan branches on the remote (gh missing, or the PR could not be opened) ────────────
+
+def _hub_and_mirror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    hub = tmp_path / "hub.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "dev", str(hub))
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "-q", "-b", "dev")
+    _git(seed, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "one")
+    _git(seed, "push", "-q", str(hub), "dev")
+    import auditor.git_ops as go
+    monkeypatch.setattr(go, "_is_local_path_remote", lambda url: False)
+    mirror = tmp_path / "mirror"
+    _git(tmp_path, "clone", "-q", str(hub), str(mirror))
+    _git(mirror, "config", "user.email", "t@example.com")
+    _git(mirror, "config", "user.name", "t")
+    return hub, mirror
+
+
+def test_missing_gh_pushes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hub, mirror = _hub_and_mirror(tmp_path, monkeypatch)
+    before = _git(hub, "for-each-ref")
+    monkeypatch.setattr(dp, "_gh_available", lambda: False)
+    res = dp.create_draft_pr(mirror, repo_name="r", title="Fix it", body="notes", slug="fix it", base_branch="dev")
+    assert res.draft is None and "gh CLI not available" in res.error
+    assert _git(hub, "for-each-ref") == before
+
+
+@pytest.mark.parametrize("gh", [
+    lambda args, **kw: subprocess.CompletedProcess(args, 1, "", "GraphQL: something went wrong"),
+    lambda args, **kw: subprocess.CompletedProcess(args, 0, "", ""),
+])
+def test_a_failed_pr_create_deletes_the_pushed_branch(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gh: Any) -> None:
+    hub, mirror = _hub_and_mirror(tmp_path, monkeypatch)
+    before = _git(hub, "for-each-ref")
+    real_run = subprocess.run
+
+    def fake_run(args: Any, *a: Any, **kw: Any) -> Any:
+        if args and args[0] == "gh":
+            return gh(args, **kw)
+        return real_run(args, *a, **kw)
+
+    monkeypatch.setattr(dp, "_gh_available", lambda: True)
+    monkeypatch.setattr(dp.subprocess, "run", fake_run)
+    res = dp.create_draft_pr(mirror, repo_name="r", title="Fix it", body="notes", slug="fix it", base_branch="dev")
+    assert res.draft is None and res.error and res.branch
+    assert _git(hub, "for-each-ref") == before
