@@ -1,4 +1,9 @@
-FROM python:3.11-slim
+# The interpreter validate_patch runs patches under. The test-env check reads this line to make sure
+# its report describes the same interpreter (auditor/test_env_readiness.py, #136).
+ARG PYTHON_VERSION=3.11
+FROM python:${PYTHON_VERSION}-slim
+ARG PYTHON_VERSION
+ENV AI_AUDIT_VALIDATOR_PYTHON=${PYTHON_VERSION}
 
 # git: ecosystem_audit / extraction metrics (subprocess git). wget: compose healthcheck for audit-api.
 # graphviz: `dot` binary, used by service_topology renderer.

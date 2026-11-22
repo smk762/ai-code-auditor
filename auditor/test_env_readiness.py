@@ -21,9 +21,14 @@ no_checks       npm project with no typecheck, lint, ``*:check`` or test script
 ==============  =============================================================================
 
 It runs in the nightly repo-audit tail and with ``ai-audit test-env``, never in the API process:
-building envs takes minutes. ``reports/test_env_readiness.json`` is what the API serves. Run it in
-the same image as the API (Python version and node are part of each env's cache key) so the result
-is what validate_patch sees.
+building envs takes minutes. ``reports/test_env_readiness.json`` is what the API serves.
+
+It has to run on the interpreter validate_patch uses (#136): which pins install, and each env's cache
+key, depend on the Python version. That's the API image's (``ARG PYTHON_VERSION`` in the Dockerfile,
+``AI_AUDIT_VALIDATOR_PYTHON`` in the image or to override). Run anywhere else, such as the host's
+nightly, the check runs itself in the API image (``docker compose run audit-api ai-audit test-env``),
+and refuses when it can't, rather than report another interpreter's statuses. A report written on
+another interpreter is served with ``stale_interpreter`` set.
 """
 from __future__ import annotations
 
@@ -31,6 +36,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -187,9 +193,70 @@ def _node_version() -> str:
     return validate_node._node_version()
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CONTAINER_TIMEOUT_S = 4 * 3600
+
+
+class InterpreterMismatch(RuntimeError):
+    """This interpreter isn't the validator's, and the check couldn't run in the API image."""
+
+
+def validator_python() -> str:
+    """``major.minor`` of the interpreter validate_patch runs under, or "" when unknown."""
+    v = os.getenv("AI_AUDIT_VALIDATOR_PYTHON", "").strip()
+    if v:
+        return ".".join(v.split(".")[:2])
+    try:
+        text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    m = re.search(r"^ARG\s+PYTHON_VERSION=(\d+\.\d+)", text, re.M) or re.search(r"^FROM\s+python:(\d+\.\d+)", text, re.M)
+    return m.group(1) if m else ""
+
+
+def this_python() -> str:
+    return f"{sys.version_info[0]}.{sys.version_info[1]}"
+
+
+def stale_interpreter(report: dict[str, Any]) -> str:
+    """Why *report* doesn't describe the validator's interpreter, or "" when it does (or can't tell)."""
+    want, had = validator_python(), ".".join(str(report.get("python") or "").split(".")[:2])
+    return f"built on Python {had}, but validate_patch runs on {want}" if want and had and had != want else ""
+
+
+def _in_api_image(out: Path, repos: list[str] | None, workers: int) -> dict[str, Any]:
+    """Run the check in the API's image, where validate_patch runs, and return the report it wrote."""
+    mounted = REPO_ROOT / "reports"  # docker-compose.yml mounts ./reports at the image's output dir
+    if out.resolve() != mounted.resolve():
+        raise InterpreterMismatch(f"the API image writes its report to {mounted}, not {out}: run it there by hand")
+    cmd = ["docker", "compose", "run", "--rm", "--no-deps", "-T", "audit-api", "ai-audit", "test-env",
+           "--workers", str(workers)]
+    for r in repos or []:
+        cmd += ["--repo", r]
+    logger.info("test env: Python %s here, %s in the API image: running the check there", this_python(),
+                validator_python())
+    proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=CONTAINER_TIMEOUT_S,
+                          check=False)
+    report = load_report(out)
+    if proc.returncode != 0 or report is None or stale_interpreter(report):
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
+        raise InterpreterMismatch(f"the check in the API image failed (exit {proc.returncode}): {' | '.join(tail)}"[:600])
+    return report
+
+
 def run(output_dir: str | Path | None = None, *, repos: list[str] | None = None, workers: int = 3,
         timeout_s: int = COLLECT_TIMEOUT_S, write: bool = True) -> dict[str, Any]:
-    """Check every enabled repo in the ecosystem config (or *repos*); write the report."""
+    """Check every enabled repo in the ecosystem config (or *repos*); write the report. On an
+    interpreter other than the validator's, run in the API image instead, or refuse (#136)."""
+    want = validator_python()
+    if want and want != this_python():
+        out = Path(output_dir or os.getenv("AI_AUDIT_OUTPUT_DIR") or "reports")
+        if write and shutil.which("docker") and os.getenv("AI_AUDIT_TEST_ENV_IN_IMAGE", "1").strip().lower() not in (
+                "0", "false", "no", "off"):
+            return _in_api_image(out, repos, workers)
+        raise InterpreterMismatch(f"Python {this_python()} here, but validate_patch runs on {want}: the report would "
+                                  "describe the wrong interpreter. Run it in the API image "
+                                  "(docker compose run --rm --no-deps audit-api ai-audit test-env)")
     from auditor.config import load_ecosystem_config
     from auditor.repo_resolver import resolve_repo_path
 
@@ -221,6 +288,8 @@ def run(output_dir: str | Path | None = None, *, repos: list[str] | None = None,
     if write:
         if repos:  # a partial run updates those repos in the last full report
             prev = load_report(out) or {}
+            if prev.get("stale_interpreter"):  # another interpreter's statuses: don't carry them over
+                prev = {}
             merged = {**(prev.get("repos") or {}), **results}
             report["repos"] = dict(sorted(merged.items()))
             report["summary"] = summarize(report["repos"])
@@ -230,10 +299,14 @@ def run(output_dir: str | Path | None = None, *, repos: list[str] | None = None,
 
 
 def load_report(output_dir: str | Path) -> dict[str, Any] | None:
+    """The last report, with ``stale_interpreter`` set when it describes another interpreter."""
     try:
-        return json.loads((Path(output_dir) / REPORT_NAME).read_text(encoding="utf-8"))
+        report = json.loads((Path(output_dir) / REPORT_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    if isinstance(report, dict):
+        report["stale_interpreter"] = stale_interpreter(report)
+    return report
 
 
 def enabled() -> bool:
@@ -246,6 +319,9 @@ def run_quietly(output_dir: str | Path | None = None, **kw: Any) -> dict[str, An
         return {"skipped": "AI_AUDIT_TEST_ENV_CHECK=0"}
     try:
         return run(output_dir, **kw)["summary"]
+    except InterpreterMismatch as exc:
+        logger.warning("test env check skipped: %s", exc)
+        return {"skipped": str(exc)[:300]}
     except Exception as exc:  # noqa: BLE001
         logger.warning("test env check failed: %s", exc)
         return {"error": str(exc)[:300]}

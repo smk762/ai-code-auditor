@@ -13,6 +13,15 @@ os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(tempfile.mkdtemp(prefix
 
 
 @pytest.fixture(autouse=True)
+def _validator_python_is_this_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests run as if on validate_patch's interpreter, so the test-env check never shells out to
+    docker (#136). Tests about a mismatch set AI_AUDIT_VALIDATOR_PYTHON themselves."""
+    import sys
+
+    monkeypatch.setenv("AI_AUDIT_VALIDATOR_PYTHON", f"{sys.version_info[0]}.{sys.version_info[1]}")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_llm_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep tests from reading or writing the real review cache under index/."""
     monkeypatch.setenv("AI_AUDIT_LLM_CACHE", "0")
