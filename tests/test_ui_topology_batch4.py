@@ -75,3 +75,42 @@ def test_build_timeout_kills_the_hung_child_instead_of_waiting(tmp_path: Path, m
         ui_topology._build_isolated(tmp_path, [], tmp_path / "service_topology.json")
     assert time.monotonic() - t0 < 15  # not the child's 30 s
     assert multiprocessing.active_children() == []  # the hung worker was terminated
+
+
+class _Proc:
+    def __init__(self, ignores_term: bool = False) -> None:
+        self.alive, self.ignores_term, self.signals = True, ignores_term, []
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def terminate(self) -> None:
+        self.signals.append("TERM")
+        self.alive = self.alive and self.ignores_term
+
+    def kill(self) -> None:
+        self.signals.append("KILL")
+        self.alive = False
+
+    def join(self, _t: float | None = None) -> None:
+        pass
+
+
+def test_reap_kills_a_worker_that_ignores_sigterm_and_a_replacement_started_meanwhile() -> None:
+    stubborn, replacement = _Proc(ignores_term=True), _Proc()
+
+    class _Ex:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        @property
+        def _processes(self):
+            self.calls += 1
+            return {1: stubborn} if self.calls == 1 else {1: stubborn, 2: replacement}
+
+        def shutdown(self, **_kw) -> None:
+            pass
+
+    ui_topology._reap(_Ex(), deadline_s=5)
+    assert stubborn.signals[:2] == ["TERM", "KILL"] and not stubborn.alive
+    assert not replacement.alive
