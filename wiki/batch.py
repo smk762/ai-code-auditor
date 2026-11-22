@@ -61,6 +61,16 @@ def _gone(exc: BaseException) -> bool:
     return getattr(exc, "status_code", None) in (403, 404)
 
 
+def _usage_limited(exc: BaseException) -> bool:
+    """The API refused because the workspace hit its spend limit set in the Anthropic Console: a 400
+    that no retry fixes until the limit is raised, so it ends the stage like the local lane budget."""
+    return getattr(exc, "status_code", None) == 400 and "usage limit" in str(exc).lower()
+
+
+def _usage_limit_stop(stage: str, exc: BaseException) -> BudgetExceeded:
+    return BudgetExceeded(f"{LANE} {stage}: the Anthropic workspace usage limit was reached ({exc})"[:500])
+
+
 @dataclass
 class Request:
     custom_id: str
@@ -246,7 +256,7 @@ class Runner:
         stats.submitted = len(todo)
         logger.info("wiki %s: %d requests (~$%.2f), %d reused", stage, len(todo), stats.est_usd, stats.reused)
         if self.mode == "sync":
-            self._run_sync(todo, stats)
+            self._run_sync(stage, todo, stats)
         else:
             self._run_batch(stage, todo, stats)
         for req in requests:
@@ -260,8 +270,13 @@ class Runner:
         notes = {r.custom_id: r.note for r in todo}
         for i in range(0, len(todo), MAX_REQUESTS_PER_BATCH):
             chunk = todo[i:i + MAX_REQUESTS_PER_BATCH]
-            batch = self.client.messages.batches.create(
-                requests=[{"custom_id": r.custom_id, "params": r.params} for r in chunk])
+            try:
+                batch = self.client.messages.batches.create(
+                    requests=[{"custom_id": r.custom_id, "params": r.params} for r in chunk])
+            except Exception as exc:
+                if _usage_limited(exc):  # chunks already submitted are in _batches.json: a rerun harvests them
+                    raise _usage_limit_stop(stage, exc) from exc
+                raise
             state = self._load_state()
             state["batches"][batch.id] = {"stage": stage, "submitted_at": time.time(),
                                           "notes": {r.custom_id: r.note for r in chunk}}
@@ -271,12 +286,14 @@ class Runner:
         for batch_id in stats.batch_ids:
             self._harvest(batch_id, notes, stats)
 
-    def _run_sync(self, todo: list[Request], stats: StageStats) -> None:
+    def _run_sync(self, stage: str, todo: list[Request], stats: StageStats) -> None:
         def one(req: Request) -> Result:
             try:
                 with self.client.messages.stream(**req.params) as stream:
                     msg = stream.get_final_message()
             except Exception as exc:  # noqa: BLE001 — recorded per request, the stage goes on
+                if _usage_limited(exc):  # every later request would be refused too
+                    raise _usage_limit_stop(stage, exc) from exc
                 r = Result(req.custom_id, error=f"{type(exc).__name__}: {exc}"[:500])
                 self._store(r)
                 return r
