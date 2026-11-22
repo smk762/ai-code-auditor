@@ -180,3 +180,26 @@ def test_running_is_cleared_during_the_global_gap(monkeypatch: pytest.MonkeyPatc
         assert status["ready"] == ["two"]
         assert status["running"] is None
         assert sched.wait_idle(timeout=6, poll_s=0.05)
+
+
+def test_a_failed_pre_sync_tip_capture_is_recorded_not_swallowed(
+        refresh_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """pack-ai-code-auditor-64d7ea236b: without the pre-sync tip the range falls back to after~1,
+    narrower than a multi-commit merge. The result has to say so instead of looking normal."""
+    import auditor.repo_resolver as rr
+    import conductor.mirrors as cm
+
+    repo = Path(_git(tmp_path / "r", "rev-parse", "--show-toplevel"))
+    calls = {"n": 0}
+
+    def resolve(_cfg: Any) -> Path:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("mirror path unreadable")
+        return repo
+
+    monkeypatch.setattr(rr, "resolve_repo_path", resolve)
+    monkeypatch.setattr(cm, "sync_one_mirror", lambda name, **kw: SimpleNamespace(
+        ok=True, action="fast-forward", branch="dev", path=str(repo), error=""))
+    out = run_merge_refresh(MergeEvent(repo="r", before="", after=""), sync_mirror=True)
+    assert "mirror path unreadable" in out["sync"].get("pre_sync_tip_error", "")

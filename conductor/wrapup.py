@@ -20,7 +20,7 @@ from conductor.schemas import (
     RestWindowInfo,
     TopFinding,
 )
-from conductor.webhook import notify_mithrandir
+from conductor.webhook import notify_extra_targets, notify_mithrandir
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +91,10 @@ def wrap_up(
     published = publish_status(status, md, output_dir=output_dir)
 
     webhook_result: dict[str, Any] = {"sent": False, "skipped": True}
+    extra_webhooks: list[dict[str, Any]] = []
     if send_webhook:
         webhook_result = notify_mithrandir(status=published.status)
+        extra_webhooks = notify_extra_targets(status=published.status)
 
     rag_result: dict[str, Any] = {"ingested": False, "skipped": True}
     if ingest_rag:
@@ -103,6 +105,7 @@ def wrap_up(
         "md_path": str(published.md_path),
         "status": published.status,
         "webhook": webhook_result,
+        "webhooks": extra_webhooks,
         "rag": rag_result,
         "public_base_url": public_base_url(),
     }

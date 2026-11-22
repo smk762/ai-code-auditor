@@ -160,7 +160,7 @@ def _find_service_calls(
             continue
         try:
             rhs = ast.unparse(node.value).upper()
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 — an expression unparse can't render names no env var to match
             continue
         for frag, svc in env_to_service.items():
             if frag in rhs:

@@ -134,7 +134,8 @@ def _emit_owned(args, cfg, out: Path, base: str) -> set[str]:
         for r in cfg.repos:
             try:
                 repo_paths[r.name] = resolve_repo_path(r)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 — one unresolvable repo must not stop the emit
+                print(f"  skipping {r.name}: can't resolve its path: {exc}")
                 continue
 
         arch = emit_packs_from_violations(

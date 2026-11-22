@@ -128,7 +128,8 @@ def completion(
                     max_tokens=max_tokens,
                     **({"temperature": fb_temperature} if fb_temperature is not None else {}),
                 )
-            except Exception:
+            except Exception as fb_exc:  # noqa: BLE001 — try the next fallback; the primary's error is raised last
+                logger.warning("fallback model %s failed too: %s", fb, fb_exc)
                 continue
             if fb_anthropic:
                 _record_litellm_usage(lane, fb, resp, note)

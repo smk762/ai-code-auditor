@@ -234,6 +234,9 @@ def _build_parser() -> argparse.ArgumentParser:
     packs.add_argument("--commit", default="", help="With --guard: the guard's merge commit on dev")
     packs.add_argument("--proof-test", default="", help="With --guard: test that shows the guard firing on fixtures")
     packs.add_argument("--fixture", action="append", default=[], help="With --guard: a fixture path (repeatable)")
+    packs.add_argument("--rule", default="",
+                       help="With --guard: the static rule the guard enforces, e.g. ruff:B905,S110,S112. Only "
+                            "children that rule fired on before the guard can be closed by it")
     packs.add_argument("--classify", action="store_true",
                        help="Write finding classes onto packs where Haiku, Sonnet and Opus agree on a guardable "
                             "class (Batch API, classes lane; --dry-run prices it)")
@@ -1330,6 +1333,7 @@ def main() -> None:
             "requires_ack": (result.get("status") or {}).get("requires_ack"),
             "latest_url": (result.get("status") or {}).get("latest_url"),
             "webhook": result.get("webhook"),
+            "webhooks": result.get("webhooks"),
             "agent_packs": result.get("agent_packs"),
         }, indent=2))
     elif args.command == "packs":
@@ -1368,7 +1372,7 @@ def main() -> None:
                 raise SystemExit("--guard needs --id <class pack> and --repo")
             rec = class_packs.record_guard(out, args.pack_id, repo=args.repo, commit=args.commit,
                                            proof_test=args.proof_test, fixtures=args.fixture,
-                                           public_base_url=public_base_url())
+                                           public_base_url=public_base_url(), rule=args.rule)
             print(json.dumps(rec, indent=2))
         elif args.classes:
             from auditor import class_packs

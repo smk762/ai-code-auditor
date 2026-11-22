@@ -22,3 +22,8 @@ jobs:
 
       - name: Run ruff (error-focused)
         run: ruff check . --select E9,F63,F7,F82
+
+      # Class guard for silent_failure (pack-class-silent-failure); tests/test_silent_failure_guard.py
+      # is the same rule in stdlib and also requires a reason on each noqa for it.
+      - name: Run ruff (silent-failure guard)
+        run: ruff check . --select B905,S110,S112 --exclude tests/fixtures
