@@ -2,7 +2,7 @@
 
 ## Repos (scanned)
 
-Night conductor scans `dev` on every `smk762/argus-*` repo, plus shared dependencies the suite consumes:
+Night conductor scans `dev` on every `smk762/argus-*` repo except `argus-docs` (the generated docs bundle this tool writes), plus shared dependencies the suite consumes and this repo. Every scanned repo has a row here, a line in the flow below, a `service_roles` entry and (argus repos) a brand stage (`tests/test_repo_sets.py`):
 
 | Area | Repo | Role |
 |------|------|------|
@@ -19,15 +19,22 @@ Night conductor scans `dev` on every `smk762/argus-*` repo, plus shared dependen
 | Eval | [argus-proof](https://github.com/smk762/argus-proof) | Post-training LoRA evaluation and optimisation |
 | Body pose | [argus-puppet](https://github.com/smk762/argus-puppet) | Whole-body keypoints, pose-set diversity and copying metrics, OpenPose control images |
 | Maps | [argus-atlas](https://github.com/smk762/argus-atlas) | Georeferenced fantasy-map tiles from DEM + cartography LoRA |
+| Maps demo | [argus-realms](https://github.com/smk762/argus-realms) | Static demo of atlas's painted maps over a real basemap, plus the Realms territory minigame (work in progress); uses atlas's chunk addressing as a library |
 | Survey | [argus-survey](https://github.com/smk762/argus-survey) | Point-cloud deliverables for land surveyors (PDAL/GDAL/PROJ) |
 | Survey UI | [argus-sightline](https://github.com/smk762/argus-sightline) | Web workspace for survey deliverables |
 | Provenance | [argus-mint](https://github.com/smk762/argus-mint) | Provenance tokens for game assets (IPFS, ERC-721, Merkle anchors) |
 | Review UI | [argus-assay](https://github.com/smk762/argus-assay) | Review UI for mint — approve cards/templates/frames before pin/sign |
 | Speech | [argus-echo](https://github.com/smk762/argus-echo) | Speech servers (Miso, XTTS-v2, Qwen3-TTS) behind one HTTP contract; replacing voluptas |
 | Face / TTS face | [argus-mask](https://github.com/smk762/argus-mask) | Audio → facial animation frames for LAN screens |
+| Detectors | [argus-retina](https://github.com/smk762/argus-retina) | Shared detector servers (NudeNet, EraX-NSFW, watermark, OCR), one image per model behind one HTTP contract; they score, callers decide |
+| GPU broker | [argus-iris](https://github.com/smk762/argus-iris) | GPU lease broker: decides whether a GPU job may start, on which node and what to unload first; never runs the work |
+| Homelab intel | [argus-scout](https://github.com/smk762/argus-scout) | Advisory homelab intelligence: reads Prometheus and status events, briefs and recommends, never acts; speaks through echo and mask |
+| Releases | [argus-herald](https://github.com/smk762/argus-herald) | Release broadcaster: drafts announcements from PyPI, GitHub Releases, feeds and mint's teasers; publishes only after a person approves |
+| Docs | [argus-handbook](https://github.com/smk762/argus-handbook) | The suite's public docs site: external service setup, the moderation stack, each package's docs behind an opsec gate |
 | Infra | [argus-halo](https://github.com/smk762/argus-halo) | Public demo infra (Hetzner, Terraform, Cloudflare) |
 | CI | [argus-ci](https://github.com/smk762/argus-ci) | Reusable GitHub Actions for the suite |
 | Package template | [argus-pkg-template](https://github.com/smk762/argus-pkg-template) | Copier template for Argus Python packages |
+| Night auditor | [ai-code-auditor](https://github.com/smk762/ai-code-auditor) | Nightly scans of the suite, agent coding packs, patch validation, the docs wiki export |
 | Chat / RAG | [agent-composer](https://github.com/smk762/agent-composer) | Ollama chat, rag-ingest, Qdrant — consumed by Argus for AI/RAG |
 | ComfyUI | [voluptas](https://github.com/smk762/voluptas) | ComfyUI inference node — consumed by Argus generation paths |
 
@@ -49,9 +56,14 @@ Night conductor scans `dev` on every `smk762/argus-*` repo, plus shared dependen
                  ▼
               mint / assay
 
-  atlas (maps)     survey / sightline (point clouds)
+  atlas / realms (maps, demo)     survey / sightline (point clouds)
   mask (face)      halo (demo infra)
-  puppet (pose)
+  puppet (pose)    retina (detectors)
+  echo (speech)    iris (GPU leases)
+  herald (releases)
+  scout (homelab) ──► echo / mask
+
+  cortex (shared contracts)     ci / pkg-template (tooling)     handbook (docs)
 
   Shared AI / RAG:  argus-* ──► agent-composer (rag-chat :9150, rag-ingest :9050, Qdrant :6333)
   Night auditor:    ai-code-auditor (Dragon :8765) ──► mithrandir (Jarrah :8400)

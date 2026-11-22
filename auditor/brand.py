@@ -36,13 +36,15 @@ MARKS: dict[str, str] = {
     "quarry": "data", "curator": "data", "lens": "data",
     "forge": "training", "proof": "training",
     "atlas": "apps", "darkroom": "apps", "mint": "apps", "survey": "apps", "mask": "apps",
-    "cortex": "foundation", "studio": "foundation",
+    "cortex": "foundation", "studio": "foundation", "herald": "foundation", "scout": "foundation",
 }
-# argus repos without their own mark, placed by what they serve (demo UIs follow their package)
+# argus repos without their own mark, placed by what they serve (demo UIs follow their package;
+# services every stage calls, such as the GPU broker and the shared detectors, are foundation)
 STAGE_OF_UNMARKED: dict[str, str] = {
     "cull": "data", "lightbox": "data", "puppet": "data",
-    "safelight": "apps", "sightline": "apps", "assay": "apps",
-    "ci": "foundation", "halo": "foundation", "pkg-template": "foundation",
+    "safelight": "apps", "sightline": "apps", "assay": "apps", "realms": "apps", "echo": "apps",
+    "ci": "foundation", "halo": "foundation", "pkg-template": "foundation", "handbook": "foundation",
+    "iris": "foundation", "retina": "foundation",
 }
 
 

@@ -49,6 +49,10 @@ service_roles:
     role: worker
   - name: argus-atlas
     role: worker
+  # imports argus_atlas at runtime (chunk addressing, a declared dependency) and runs its own
+  # server, so it is not a thin HTTP UI
+  - name: argus-realms
+    role: worker
   - name: argus-survey
     role: worker
   - name: argus-sightline
@@ -59,6 +63,19 @@ service_roles:
     role: ui
   - name: argus-mask
     role: worker
+  - name: argus-echo
+    role: worker
+  - name: argus-retina
+    role: worker
+  - name: argus-iris
+    role: worker
+  - name: argus-scout
+    role: worker
+  # the maintainers' release broadcaster (its own loopback UI), not a UI over a worker
+  - name: argus-herald
+    role: tooling
+  - name: argus-handbook
+    role: tooling
   - name: argus-halo
     role: tooling
   - name: argus-ci
@@ -98,6 +115,18 @@ call_graph_rules:
     - from: argus-puppet
       to: argus-curator
       note: "Opt-in age check (curator POST /faces)"
+    - from: argus-herald
+      to: argus-mint
+      note: "Pulls approved teasers (GET /posts/ready) and reports posts back (ARGUS_MINT_URL)"
+    - from: argus-scout
+      to: argus-echo
+      note: "Speech for voice channels (POST /synthesise/stream; services.echo.url)"
+    - from: argus-scout
+      to: argus-mask
+      note: "mask voice channel (GET /health, POST /push; the channel's url)"
+    - from: argus-iris
+      to: voluptas
+      note: "Reads ComfyUI queue and system stats for GPU residency (a configured service)"
     - from: "*"
       to: agent-composer
       note: "Suite consumes chat/RAG via agent-composer"
