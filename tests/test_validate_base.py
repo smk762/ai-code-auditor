@@ -139,6 +139,66 @@ def test_malformed_fetch_env_falls_back_to_defaults(repos, monkeypatch, ttl, tim
     assert seen == [20.0]
 
 
+def _capture_fetch(monkeypatch, stderr: str = "") -> list[dict]:
+    """Record each fetch's url and extra env; the fetch fails with *stderr* (no network)."""
+    seen: list[dict] = []
+    real = validate_base._git
+
+    def fake(*args, **kw):
+        if args and args[0] == "fetch":
+            seen.append({"url": args[4], "env": dict(kw.get("env") or {})})
+            return subprocess.CompletedProcess(args, 128, "", stderr)
+        return real(*args, **kw)
+
+    monkeypatch.setattr(validate_base, "_git", fake)
+    return seen
+
+
+def test_a_private_github_repo_is_fetched_with_the_github_token(repos, monkeypatch) -> None:
+    """The audit-api container has GITHUB_TOKEN but no credential helper, so a private repo's fetch
+    (argus-iris) failed on "could not read Username" and every validation used the stale mirror."""
+    _, mirror, _ = repos
+    _git(mirror, "remote", "set-url", "origin", "https://github.com/smk762/argus-iris.git")
+    for name in ("GH_TOKEN", "AI_AUDIT_GITHUB_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secretvalue123")
+    seen = _capture_fetch(monkeypatch, stderr="fatal: Authentication failed for ghp_secretvalue123 "
+                                              "https://oauth2:ghp_secretvalue123@github.com/x")
+    base = resolve_base(mirror)
+    [fetch] = seen
+    assert fetch["url"] == "https://github.com/smk762/argus-iris.git"  # never a token in the url or args
+    assert fetch["env"]["GIT_TOKEN"] == "ghp_secretvalue123"
+    askpass = Path(fetch["env"]["GIT_ASKPASS"])
+    assert askpass.is_file() and "ghp_secretvalue123" not in askpass.read_text()
+    out = subprocess.run([str(askpass), "Password for 'https://github.com': "], capture_output=True, text=True,
+                         env={"GIT_TOKEN": "ghp_secretvalue123"}, check=True).stdout.strip()
+    assert out == "ghp_secretvalue123"
+    # a failure still falls back to the mirror, and its message never carries the token
+    assert base.source == "mirror" and base.fetch_error and "ghp_secretvalue123" not in base.fetch_error
+
+
+@pytest.mark.parametrize("url", ["https://gitlab.example.com/smk762/argus-iris.git",
+                                 "https://github.com.evil.example/x.git", "http://github.com/smk762/x.git",
+                                 "git@github.com:smk762/argus-iris.git"])
+def test_the_token_goes_only_to_github_over_https(repos, monkeypatch, url) -> None:
+    _, mirror, _ = repos
+    _git(mirror, "remote", "set-url", "origin", url)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secretvalue123")
+    seen = _capture_fetch(monkeypatch)
+    resolve_base(mirror)
+    assert seen and seen[0]["env"] == {}
+
+
+def test_no_token_fetches_anonymously(repos, monkeypatch) -> None:
+    _, mirror, _ = repos
+    _git(mirror, "remote", "set-url", "origin", "https://github.com/smk762/argus-cortex.git")
+    for name in ("GITHUB_TOKEN", "GH_TOKEN", "AI_AUDIT_GITHUB_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    seen = _capture_fetch(monkeypatch)
+    resolve_base(mirror)
+    assert seen and seen[0]["env"] == {}
+
+
 def test_relative_origin_url_is_resolved_against_the_mirror(repos, tmp_path, monkeypatch) -> None:
     _, mirror, pusher = repos
     tip = _merge_upstream(pusher)

@@ -12,6 +12,12 @@ Fetches are bounded by a timeout and skipped when the cache fetched less than
 one fetch. When a fetch fails, the mirror's own ``origin/dev`` (else ``HEAD``) is used and the
 error is reported.
 
+A private repo (argus-iris, voluptas) needs credentials. On the host the mirror sync gets them from
+``gh auth git-credential``, but the audit-api container has no credential helper, only
+``GITHUB_TOKEN`` (or ``GH_TOKEN`` / ``AI_AUDIT_GITHUB_TOKEN``) from ``.env``. So a fetch from an
+``https://github.com/`` URL offers that token through an askpass script (never in the URL or the
+command line), and only to github.com: a mirror's remote pointing elsewhere is fetched without it.
+
 A request may pin an older base (``base_ref``, #91) when its fix has already merged and no longer
 applies to the tip: :func:`pin_base` resolves it and refuses anything that isn't an ancestor of the ``dev`` tip, so evidence can't come
 from an unrelated branch.
@@ -33,6 +39,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -93,14 +100,41 @@ def _fetchable_url(url: str, top: Path) -> str:
 
 
 def _git(*args: str, cwd: Path | None = None, git_dir: Path | None = None,
-         timeout: float | None = 30) -> subprocess.CompletedProcess[str]:
+         timeout: float | None = 30, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     cmd = ["git"]
     if git_dir is not None:
         cmd += ["--git-dir", str(git_dir)]
     elif cwd is not None:
         cmd += ["-C", str(cwd)]
     return subprocess.run([*cmd, *args], capture_output=True, text=True, timeout=timeout,
-                          env={**os.environ, **_GIT_ENV})
+                          env={**os.environ, **_GIT_ENV, **(env or {})})
+
+
+def _is_github_https(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return False
+    return parts.scheme == "https" and host == "github.com"
+
+
+def _sanitize_git_output(text: str, token: str) -> str:
+    from auditor.repo_resolver import _sanitize_git_output as sanitize
+
+    return sanitize(text, token)
+
+
+def _fetch_auth(url: str) -> tuple[dict[str, str], str]:
+    """``(extra env, token)`` for fetching *url*: the GitHub token through an askpass script for an
+    ``https://github.com/`` URL when one is set, else nothing (a public repo needs none)."""
+    from auditor.merge_poll import github_token
+    from auditor.repo_resolver import _askpass_script  # also used by the remote-repo cache clones
+
+    token = github_token()
+    if not token or not _is_github_https(url):
+        return {}, ""
+    return {"GIT_ASKPASS": _askpass_script(), "GIT_TOKEN": token}, token
 
 
 def _verify(ref: str, *, cwd: Path | None = None, git_dir: Path | None = None) -> str:
@@ -178,12 +212,15 @@ def resolve_base(repo_path: Path, *, branch: str = "dev", output_dir: str | Path
             if sha and age < ttl:
                 return BaseRef(git_dir=cache, ref=f"origin/{branch}", sha=sha, prefix=prefix, source="cached")
 
+            fetch_url = _fetchable_url(url, top)
+            auth_env, token = _fetch_auth(fetch_url)
             try:
                 # tags too: tests may `git describe` the tree (attach_head copies those on the base)
-                r = _git("fetch", "--quiet", "--no-tags", "--no-write-fetch-head", _fetchable_url(url, top),
+                r = _git("fetch", "--quiet", "--no-tags", "--no-write-fetch-head", fetch_url,
                          f"+refs/heads/{branch}:{remote_ref}", "+refs/tags/*:refs/tags/*",
-                         git_dir=cache, timeout=timeout)
-                err = "" if r.returncode == 0 else (r.stderr.strip() or f"git fetch exited {r.returncode}")[:300]
+                         git_dir=cache, timeout=timeout, env=auth_env)
+                err = "" if r.returncode == 0 else _sanitize_git_output(
+                    r.stderr.strip() or f"git fetch exited {r.returncode}", token)[:300]
             except subprocess.TimeoutExpired:
                 err = f"git fetch timed out after {timeout:g}s"
             sha = _verify(remote_ref, git_dir=cache) if not err else ""
