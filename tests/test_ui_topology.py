@@ -148,6 +148,7 @@ def test_brand_stages() -> None:
 
     assert brand.stage_of("argus-forge") == "training" and brand.has_mark("argus-forge")
     assert brand.stage_of("argus-cull") == "data" and not brand.has_mark("argus-cull")  # demo follows its package
+    assert brand.stage_of("argus-puppet") == "data" and not brand.has_mark("argus-puppet")  # no mark of its own yet
     assert brand.stage_of("voluptas") is None and brand.stage_of("argus-unknown") is None
 
 

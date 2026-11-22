@@ -45,6 +45,8 @@ service_roles:
     role: worker
   - name: argus-proof
     role: worker
+  - name: argus-puppet
+    role: worker
   - name: argus-atlas
     role: worker
   - name: argus-survey
@@ -93,6 +95,9 @@ call_graph_rules:
       to: argus-curator
     - from: argus-proof
       to: argus-forge
+    - from: argus-puppet
+      to: argus-curator
+      note: "Opt-in age check (curator POST /faces)"
     - from: "*"
       to: agent-composer
       note: "Suite consumes chat/RAG via agent-composer"
