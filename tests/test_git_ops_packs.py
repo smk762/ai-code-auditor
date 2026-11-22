@@ -276,3 +276,20 @@ def test_dangling_symlink_does_not_fail_the_copy(tmp_path: Path) -> None:  # cc3
         assert (copy / "broken").is_symlink()
     finally:
         cleanup()
+
+
+def test_a_path_inside_a_scan_source_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # git acts on the enclosing work tree from any subdirectory, so a nested path is the mirror too.
+    repo = _init(tmp_path / "mirror")
+    sub = repo / "pkg"
+    sub.mkdir()
+    monkeypatch.setattr(git_ops, "scan_source_paths", lambda: {repo.resolve()})
+    (sub / "b.py").write_text("b = 1\n")
+    before = _run(repo, "for-each-ref")
+    for call in (lambda: commit_repair(sub, "m", paths=["b.py"]), lambda: push_repair_branch(sub)):
+        with pytest.raises(git_ops.ScanSourceError):
+            call()
+    with pytest.raises(git_ops.ScanSourceError):
+        git_ops.refuse_scan_source(tmp_path / "mirror" / "pkg" / ".." / "pkg")
+    assert _run(repo, "for-each-ref") == before
+    git_ops.refuse_scan_source(tmp_path / "mirror-other")  # a sibling sharing the prefix is not inside

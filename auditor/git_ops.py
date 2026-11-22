@@ -67,8 +67,10 @@ def scan_source_paths() -> set[Path]:
 
 
 def refuse_scan_source(repo_path: Path) -> None:
-    """Raise ScanSourceError when *repo_path* is a checkout the scans read."""
-    if Path(repo_path).expanduser().resolve() in scan_source_paths():
+    """Raise ScanSourceError when *repo_path* is a checkout the scans read, or a path inside one
+    (git acts on the enclosing work tree from any subdirectory)."""
+    resolved = Path(repo_path).expanduser().resolve()
+    if any(resolved == src or resolved.is_relative_to(src) for src in scan_source_paths()):
         raise ScanSourceError(
             f"{repo_path} is a scan source (mirror or configured repo path); never branch, commit or "
             "push there. Work in a throwaway clone (conductor.draft_pr.scratch_clone).")
