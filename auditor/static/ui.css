@@ -93,6 +93,17 @@ h1 { font-size: 20px; margin: 0; }
 .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
 .card h2 { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
 .card .hint { font-size: 12px; color: var(--text-muted); margin: 0 0 10px; }
+.card[data-panel] { position: relative; }
+.card[data-panel] > .panel-head { padding-right: 28px; cursor: pointer; }
+.card[data-panel] > .panel-toggle {
+  position: absolute; top: 10px; right: 10px; width: 22px; height: 22px; padding: 0; display: grid; place-items: center;
+  background: transparent; color: var(--text-muted); border: 1px solid transparent; border-radius: 6px; cursor: pointer;
+}
+.card[data-panel] > .panel-toggle:hover { color: var(--text-primary); border-color: var(--border); }
+.card[data-panel] > .panel-toggle svg { transition: transform .15s; }
+.card.collapsed > .panel-toggle svg { transform: rotate(-90deg); }
+.card.collapsed > :not(.panel-toggle, .panel-head) { display: none !important; }
+.card.collapsed > .panel-head { margin-bottom: 0; }
 .span-3 { grid-column: span 3; } .span-4 { grid-column: span 4; } .span-5 { grid-column: span 5; }
 .span-6 { grid-column: span 6; } .span-7 { grid-column: span 7; } .span-8 { grid-column: span 8; }
 .span-12 { grid-column: span 12; }
@@ -173,6 +184,19 @@ select, input[type="search"], input[type="text"], input[type="password"], textar
 :where(.page-architecture) .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 :where(.page-architecture) .chips button { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 999px; cursor: pointer; background: var(--surface-1); color: var(--text-secondary); border: 1px solid var(--border); }
 :where(.page-architecture) .chips button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface-1); border-color: var(--text-primary); }
+:where(.page-architecture) td.acts { white-space: nowrap; text-align: right; }
+:where(.page-architecture) td.acts button { padding: 2px 8px; font-size: 12px; }
+:where(.page-architecture) tr.x-form > td { background: var(--surface-2, var(--surface-1)); }
+:where(.page-architecture) tr.x-form fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 0 0 10px; }
+:where(.page-architecture) tr.x-form legend { font-size: 12px; color: var(--text-secondary); padding: 0 4px; }
+:where(.page-architecture) tr.x-form label.unit { display: flex; gap: 8px; align-items: baseline; font-size: 12px; padding: 2px 0; overflow-wrap: anywhere; }
+:where(.page-architecture) tr.x-form .row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 0 0 10px; }
+:where(.page-architecture) tr.x-form .row label, :where(.page-architecture) tr.x-form label.note { font-size: 12px; color: var(--text-secondary); display: inline-flex; gap: 6px; align-items: center; }
+:where(.page-architecture) tr.x-form label.note { display: flex; align-items: flex-start; margin: 0 0 10px; }
+:where(.page-architecture) tr.x-form input[name="target_module"] { min-width: 280px; }
+:where(.page-architecture) tr.x-form textarea { flex: 1; font: inherit; font-size: 12px; }
+:where(.page-architecture) #x-prompt textarea { width: 100%; min-height: 200px; box-sizing: border-box; font: 12px/1.45 var(--font-mono, ui-monospace, monospace); background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--grid); border-radius: 6px; padding: 8px; }
+:where(.page-architecture) #x-flash { display: block; margin-bottom: 8px; }
 /* ── findings.html (body.page-findings) ── */
 :where(.page-findings) #matrix td.cell { text-align: right; cursor: pointer; font-variant-numeric: tabular-nums; }
 :where(.page-findings) #matrix td.cell:hover, :where(.page-findings) #matrix td.cell.on { outline: 2px solid var(--text-primary); outline-offset: -2px; }
@@ -181,6 +205,9 @@ select, input[type="search"], input[type="text"], input[type="password"], textar
 :where(.page-findings) #matrix tr.on th { color: var(--text-primary); }
 :where(.page-findings) #matrix tbody th { font-weight: 500; cursor: pointer; text-align: left; }
 :where(.page-findings) .toolbar input[type="search"] { min-width: 220px; flex: 1; }
+:where(.page-findings) .filter-bar .toolbar { margin-bottom: 6px; }
+:where(.page-findings) .filter-bar .filters { margin: 0; }
+:where(.page-findings) .filter-bar .hint { margin: 0; }
 :where(.page-findings) td.sev-col { white-space: nowrap; }
 :where(.page-findings) .new-tag { font-size: 11px; font-weight: 600; color: var(--critical); margin-left: 6px; }
 :where(.page-findings) td.pack-col { white-space: nowrap; }

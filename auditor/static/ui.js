@@ -124,6 +124,47 @@
     },
   };
 
+  // Collapsible panels: a `.card[data-panel="<name>"]` gets a toggle in its corner, and a click on its
+  // first child (the heading) toggles it too. Collapsed, only that heading shows. The state is kept
+  // per page in localStorage, and each toggle fires `ui:panel` ({name, open}) so a page can redraw a
+  // chart that was laid out while hidden.
+  const PANEL_KEY = (name) => `ai-audit-panel:${location.pathname}:${name}`;
+  function setPanel(card, open, store) {
+    card.classList.toggle("collapsed", !open);
+    const btn = card.querySelector(":scope > .panel-toggle");
+    btn.setAttribute("aria-expanded", String(open));
+    btn.title = open ? "Collapse" : "Expand";
+    if (store) {
+      try { open ? localStorage.removeItem(PANEL_KEY(card.dataset.panel)) : localStorage.setItem(PANEL_KEY(card.dataset.panel), "0"); } catch (_) {}
+      document.dispatchEvent(new CustomEvent("ui:panel", { detail: { name: card.dataset.panel, open } }));
+    }
+  }
+  function initPanels() {
+    document.querySelectorAll(".card[data-panel]").forEach((card) => {
+      if (card.querySelector(":scope > .panel-toggle")) return;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "panel-toggle";
+      btn.setAttribute("aria-label", `Toggle ${card.dataset.panel.replace(/-/g, " ")}`);
+      btn.innerHTML = `<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      card.prepend(btn);
+      const toggle = () => setPanel(card, card.classList.contains("collapsed"), true);
+      btn.addEventListener("click", toggle);
+      const head = btn.nextElementSibling;
+      if (head) {
+        head.classList.add("panel-head");
+        head.addEventListener("click", (e) => { if (!e.target.closest("a, button, input, select, textarea, label, summary")) toggle(); });
+      }
+      let stored = null;
+      try { stored = localStorage.getItem(PANEL_KEY(card.dataset.panel)); } catch (_) {}
+      setPanel(card, stored !== "0" && !card.hasAttribute("data-collapsed"), false);
+    });
+  }
+  UI.initPanels = initPanels;
+  UI.panelOpen = (name) => !document.querySelector(`.card[data-panel="${name}"]`)?.classList.contains("collapsed");
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initPanels);
+  else initPanels();
+
   // Theme button (rendered by the server-side nav partial): auto → light → dark → auto.
   document.addEventListener("DOMContentLoaded", () => {
     const btn = document.getElementById("ui-theme");

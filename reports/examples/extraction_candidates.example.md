@@ -49,6 +49,6 @@
 - Feedback: "Cross-team contract not aligned; revisit after API contract freeze."
 
 ## Suggested Next Actions
-1. Run `ai-audit approve-extraction --candidate-id ext-retry-core-001`.
-2. Generate migration plan and owner map for affected repositories.
+1. Approve it on `/ui/architecture` (or `ai-audit approve-extraction --candidate-id ext-retry-core-001`): that writes its agent pack.
+2. Hand the pack to an agent with the page's "Copy agent prompt" button.
 3. Re-score candidates after one release cycle to measure impact.

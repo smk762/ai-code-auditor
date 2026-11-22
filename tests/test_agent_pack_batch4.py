@@ -5,12 +5,10 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 from auditor import agent_pack
 from auditor.agent_pack import (
     AgentCodingPack,
-    emit_packs_from_extraction_candidates,
     emit_packs_from_findings,
     finding_from_violation,
     index_path,
@@ -128,31 +126,6 @@ def test_emit_decides_dedupe_and_recurrence_under_the_lock(tmp_path: Path, monke
     assert held == {"merge": True, "link": True}
 
 
-# --- 31016e88fa: malformed extraction candidates don't abort the run ----------------------------
-
-def test_malformed_extraction_candidate_fields_are_tolerated(tmp_path: Path) -> None:
-    cands = [
-        {"id": "ex-ok", "title": "fine", "extraction_score": 0.8,
-         "source_units": [{"repo": "r", "path": "a.py"}]},
-        {"id": "ex-odd", "extraction_score": "high", "proposed_library": "libx",
-         "source_units": ["a.py", {"repo": "r", "path": "b.py"}]},
-        {"id": "ex-dict-units", "extraction_score": "n/a", "source_units": {"repo": "r"}},
-    ]
-    packs = emit_packs_from_extraction_candidates(cands, output_dir=tmp_path)
-    assert [p.work_item_id for p in packs] == ["pack-ex-ok", "pack-ex-odd", "pack-ex-dict-units"]
-    odd = packs[1]
-    assert odd.priority["severity"] == "LOW"
-    assert odd.impact["directly_changed"] == ["b.py"]
-    assert sorted(_ids(json.loads(index_path(tmp_path).read_text()))) == sorted(p.work_item_id for p in packs)
-
-
-# --- c12cec457e: limit=0 emits nothing ----------------------------------------------------------
-
-def test_extraction_limit_zero_emits_nothing(tmp_path: Path) -> None:
-    assert emit_packs_from_extraction_candidates([{"id": "ex-1"}], output_dir=tmp_path, limit=0) == []
-    assert not list(packs_dir(tmp_path).glob("*.yaml"))
-
-
 # --- 34c270341b: hashed fallback names can't collide with literal safe ids ----------------------
 
 @pytest.mark.parametrize("lossy", ["a b", "", "x" * 130, "a/b"])
@@ -169,10 +142,3 @@ def test_slash_form_violation_path_splits_the_line(entities: list[str]) -> None:
     f = finding_from_violation(RuleViolation(rule_name="r", violating_path="repo/pkg/file.py:123",
                                              entities=entities, evidence=""))
     assert (f.repo, f.file_path, f.line) == ("repo", "pkg/file.py", 123)
-
-
-def test_extraction_pack_yaml_round_trips(tmp_path: Path) -> None:
-    [pack] = emit_packs_from_extraction_candidates([{"id": "ex-rt", "proposed_library": {"name": "lib"}}],
-                                                   output_dir=tmp_path)
-    data = yaml.safe_load(pack_file_path(tmp_path, pack.work_item_id).read_text())
-    assert "Proposed library: lib" in data["narrative"]["description"]

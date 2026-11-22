@@ -111,7 +111,7 @@ Implemented cross-repo extraction candidate flow:
   - machine-readable YAML report
   - human-readable markdown report
 - Approval flow:
-  - `approve-extraction` appends generated architecture rule to `config/architecture_rules.yaml`
+  - approving (`/ui/architecture` or `approve-extraction`) records a decision in `rules/extraction_decisions.json` and writes one agent pack for the migration (`auditor/extraction.py`)
 - Copilot:
   - responds to extraction-related queries using generated candidate reports
 

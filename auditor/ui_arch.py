@@ -9,16 +9,6 @@ from typing import Any
 
 import yaml
 
-DEFAULT_RULES_PATH = "config/architecture_rules.yaml"
-
-
-def rules_path() -> str:
-    """Where approvals write: ``AI_AUDIT_ARCH_RULES_PATH``, default ``rules/architecture_rules.json``
-    (outside git, mounted in Docker, merged into the rules by ``load_architecture_rules``)."""
-    from auditor.config import approved_rules_path
-
-    return approved_rules_path()
-
 # Markdown section titles (auditor/reporter.py) → rule_name, for reports written before the
 # JSON sidecar existed. graph rules share one section, so they map to the first name.
 _SECTION_RULES = {
@@ -80,45 +70,60 @@ def _proposals(output_dir: Path) -> list[dict[str, Any]] | None:
     return out
 
 
-def _rule_name(candidate: dict[str, Any]) -> str:
-    """The rule approval would add (mirrors patterns.pattern_feedback)."""
-    lib = (candidate.get("proposed_library") or {}).get("name", "shared-lib")
-    return f"use_{lib.replace('-', '_')}"
+def _candidates(output_dir: Path, decisions_path: str | Path) -> dict[str, Any] | None:
+    """Candidates with their copies and decision, plus decided ones the latest run no longer reports."""
+    from auditor.agent_pack import load_pack
+    from auditor.extraction import (
+        load_decisions,
+        pack_id,
+        suggested,
+        unit_key,
+        units_of,
+    )
 
-
-def _existing_rules(rules_path: str | Path) -> set[str]:
-    """Rule names in the checked-in rules file and in *rules_path* (where approvals go)."""
-    names: set[str] = set()
-    for path in {Path(DEFAULT_RULES_PATH), Path(rules_path)}:
-        if path.is_file():
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}  # JSON is YAML too
-            names |= {str(r.get("name")) for r in data.get("rules") or [] if isinstance(r, dict)}
-    return names
-
-
-def _candidates(output_dir: Path, rules_path: str | Path) -> dict[str, Any] | None:
     path = output_dir / "extraction_candidates.yaml"
-    if not path.is_file():
+    try:
+        decisions = load_decisions(decisions_path)
+        decisions_error = ""
+    except (OSError, ValueError) as exc:
+        decisions, decisions_error = {}, str(exc)[:300]
+    data = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.is_file() else {}
+    if not path.is_file() and not decisions:
         return None
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    have = _existing_rules(rules_path)
+
+    def pack_of(cid: str) -> dict[str, Any] | None:
+        pk = load_pack(output_dir, pack_id(cid))
+        if not pk:
+            return None
+        ext = (pk.get("governance") or {}).get("extraction") or {}
+        return {"id": pack_id(cid), "status": pk.get("status") or "open", "left": ext.get("left"),
+                "copies": ext.get("copies") or []}
+
+    def row(cid: str, c: dict[str, Any], d: dict[str, Any] | None, reported: bool) -> dict[str, Any]:
+        units = units_of(c) if c else list((d or {}).get("all_units") or [])
+        chosen = {unit_key(u) for u in (d or {}).get("units") or []}
+        return {
+            "id": cid, "title": c.get("title") or (d or {}).get("title"), "domain": c.get("domain"),
+            "priority": c.get("priority"), "score": c.get("extraction_score", (d or {}).get("score")),
+            "repos": c.get("repos_involved") or (d or {}).get("repos") or [],
+            "units": [{**u, "key": unit_key(u), "suggested": suggested(u), "chosen": unit_key(u) in chosen}
+                      for u in units],
+            "rationale": c.get("rationale"), "risks": c.get("risks"), "reported": reported,
+            "decision": d, "pack": pack_of(cid) if d else None,
+        }
+
     rows = []
     for c in data.get("candidates") or []:
-        if not isinstance(c, dict):
-            continue
-        lib = c.get("proposed_library") or {}
-        rows.append({
-            "id": c.get("id"), "title": c.get("title"), "domain": c.get("domain"), "priority": c.get("priority"),
-            "score": c.get("extraction_score"), "repos": c.get("repos_involved") or [],
-            "library": lib.get("name"), "owner_repo": lib.get("owner_repo"),
-            "units": len(c.get("source_units") or []), "rationale": c.get("rationale"),
-            "risks": c.get("risks"), "rule_name": _rule_name(c), "approved": _rule_name(c) in have,
-        })
-    return {"generated_at": data.get("generated_at"), "candidates": rows}
+        if isinstance(c, dict) and c.get("id"):
+            rows.append(row(str(c["id"]), c, decisions.get(str(c["id"])), True))
+    seen = {r["id"] for r in rows}
+    rows += [row(cid, {}, d, False) for cid, d in decisions.items() if cid not in seen]
+    return {"generated_at": data.get("generated_at"), "candidates": rows, "decisions_path": str(decisions_path),
+            "decisions_error": decisions_error}
 
 
 def architecture_data(output_dir: str | Path, repo_names: list[str],
-                      rules_path: str | Path = DEFAULT_RULES_PATH) -> dict[str, Any]:
+                      decisions_path: str | Path | None = None) -> dict[str, Any]:
     out_dir = Path(output_dir)
     violations = _violations(out_dir, repo_names)
     proposals = _proposals(out_dir)
@@ -130,27 +135,12 @@ def architecture_data(output_dir: str | Path, repo_names: list[str],
         },
         "proposals": proposals,
         "proposal_counts": dict(Counter(p.get("status", "") for p in proposals)) if proposals else {},
-        "extraction": _candidates(out_dir, rules_path),
-        "rules_path": str(rules_path),
+        "extraction": _candidates(out_dir, decisions_path or _decisions_path()),
+        "repos": sorted(repo_names),
     }
 
 
-def approve_extraction(output_dir: str | Path, candidate_id: str,
-                       rules_path: str | Path = DEFAULT_RULES_PATH) -> dict[str, Any] | None:
-    """Same as ``ai-audit approve-extraction``: append the candidate's rule (idempotent).
+def _decisions_path() -> str:
+    from auditor.extraction import decisions_path
 
-    Returns None when the candidate doesn't exist.
-    """
-    from patterns.pattern_feedback import append_architecture_rule_for_extraction
-
-    path = Path(output_dir) / "extraction_candidates.yaml"
-    if not path.is_file():
-        return None
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    target = next((c for c in data.get("candidates") or [] if isinstance(c, dict) and c.get("id") == candidate_id), None)
-    if target is None:
-        return None
-    rule = _rule_name(target)
-    already = rule in _existing_rules(rules_path)
-    append_architecture_rule_for_extraction(target, rules_path=str(rules_path))
-    return {"id": candidate_id, "rule_name": rule, "rules_path": str(rules_path), "already_present": already}
+    return decisions_path()

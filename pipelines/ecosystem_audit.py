@@ -207,6 +207,14 @@ def run() -> None:
                 audit_findings=findings,
                 git_metrics=git_metrics,
             )
+            from auditor.extraction import load_decisions, stabilize_ids
+
+            try:
+                decisions = load_decisions()
+            except (OSError, ValueError) as exc:
+                logger.warning("extraction decisions unreadable, ids matched on the last run only: %s", exc)
+                decisions = {}
+            stabilize_ids(extraction_candidates, cfg.output_dir, decisions)
             write_extraction_candidates_yaml(extraction_candidates, output_dir=cfg.output_dir, ecosystem_name="smk-stack")
             write_extraction_candidates_markdown(extraction_candidates, output_dir=cfg.output_dir)
             meta.mark_stage("pattern_mining", int((time.monotonic() - t2) * 1000))
@@ -240,7 +248,6 @@ def run() -> None:
             try:
                 from auditor.agent_pack import (
                     architecture_findings,
-                    emit_packs_from_extraction_candidates,
                     emit_packs_from_violations,
                     emit_world_model_packs,
                     pack_rag_ingest_enabled,
@@ -276,18 +283,14 @@ def run() -> None:
                     )
                     logger.info("architecture pack gc: %s",
                                 {k: arch_gc[k] for k in ("planned", "closed", "by_rule", "held")})
-                ext = emit_packs_from_extraction_candidates(
-                    extraction_candidates if isinstance(extraction_candidates, list) else None,
-                    output_dir=cfg.output_dir,
-                    run_id=meta.run_id,
-                    public_base_url=base,
-                    ingest_rag=rag_ingest,
-                )
+                from auditor.extraction import sync_packs
+
+                ext = sync_packs(cfg.output_dir, repo_paths, public_base_url=base, run_id=meta.run_id)
                 logger.info(
-                    "agent packs: world_model=%d architecture=%d extraction=%d",
+                    "agent packs: world_model=%d architecture=%d extraction=%s",
                     len(world),
                     len(packs),
-                    len(ext),
+                    {k: ext[k] for k in ("refreshed", "closed")},
                 )
                 from auditor.pack_savings import refresh_quietly
 

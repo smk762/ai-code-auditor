@@ -16,7 +16,7 @@
   </header>
 
   <section class="grid">
-    <div class="card span-12">
+    <div class="card span-12" data-panel="violations">
       <h2>Architecture violations</h2>
       <p class="hint" id="v-hint">From the latest ecosystem run. Rules live in <span class="mono">config/architecture_rules.yaml</span>.</p>
       <div class="chips" id="v-chips" role="group" aria-label="Filter by rule"></div>
@@ -26,17 +26,23 @@
   </section>
 
   <section class="grid">
-    <div class="card span-12">
+    <div class="card span-12" data-panel="extraction">
       <h2>Extraction candidates</h2>
-      <p class="hint">Duplicated logic worth extracting into a shared library. Approving adds a <span class="mono">use_&lt;library&gt;</span> rule to the rules file (same as <span class="mono">ai-audit approve-extraction</span>) and needs the API token or auth code.</p>
+      <p class="hint" id="x-hint">Logic duplicated across repos. A candidate is only a proposal: approving it names where the shared code goes (argus-cortex by default, the library every argus service builds on) and which copies to replace, and writes one agent pack for the work. Dismissing it keeps it out of this list on later runs. Actions need the API token or auth code.</p>
+      <div class="chips" id="x-chips" role="group" aria-label="Decision"></div>
       <span id="x-flash" role="status"></span>
+      <div id="x-prompt" hidden>
+        <p class="hint">Paste this into a coding agent. It points at the pack, so the agent reads the brief, claims it and reports progress there.</p>
+        <textarea readonly aria-label="Agent prompt"></textarea>
+      </div>
       <div class="table-wrap"><table id="extraction">
-        <thead><tr><th>Candidate</th><th class="num">Score</th><th>Library</th><th>Repos</th><th>Rationale</th><th></th></tr></thead><tbody></tbody></table></div>
+        <thead><tr><th>Candidate</th><th class="num">Score</th><th>Repos</th><th>Copies</th><th></th></tr></thead><tbody></tbody></table></div>
+      <datalist id="x-repos"></datalist>
     </div>
   </section>
 
   <section class="grid">
-    <div class="card span-12">
+    <div class="card span-12" data-panel="proposals">
       <h2>Pattern proposals</h2>
       <p class="hint" id="p-hint">Usage patterns seen across repos that could be standardised.</p>
       <div class="table-wrap"><table id="proposals">
@@ -71,19 +77,98 @@ function renderViolations() {
     ` · <a href="/ui/reports/architecture_violations.md">report</a>`;
 }
 
+let view = UI.params().view || "open";
+let reviewing = "";
+const VIEWS = { open: "To decide", approved: "Approved", dismissed: "Dismissed" };
+const viewOf = (c) => c.decision ? c.decision.status : "open";
+const PACK_CLASS = { claimed: "warn", in_progress: "warn", unverified: "warn", resolved: "ok", wontfix: "muted", obsolete: "muted" };
+
+function copiesCell(c) {
+  const pk = c.pack;
+  if (pk && pk.copies.length) {
+    const left = pk.copies.filter((u) => u.state !== "gone").length;
+    return `<b>${int(left)}</b> of ${int(pk.copies.length)} left`;
+  }
+  return `${int(c.units.length)} ${c.units.length === 1 ? "copy" : "copies"}`;
+}
+
+function form(c) {
+  const d = c.decision || {};
+  const chosen = (u) => c.decision ? u.chosen : u.suggested;
+  return `<tr class="x-form"><td colspan="5"><form data-id="${esc(c.id)}">
+    <fieldset><legend>Copies to replace</legend>
+      <p class="hint">Unticked by default: tests, scripts and demos — a helper there is a poor reason to take a dependency.</p>
+      ${c.units.map((u) => `<label class="unit"><input type="checkbox" name="unit" value="${esc(u.key)}"${chosen(u) ? " checked" : ""}>
+        <span class="mono">${esc(u.repo)}/${esc(u.path)}</span> <span class="muted">:: ${esc(u.symbol)}</span></label>`).join("")}
+    </fieldset>
+    <div class="row">
+      <label>Shared code goes in <input name="target_repo" list="x-repos" value="${esc(d.target_repo || "argus-cortex")}" required></label>
+      <label>Module <input name="target_module" class="mono" placeholder="e.g. argus_cortex.hashing (optional)" value="${esc(d.target_module || "")}"></label>
+    </div>
+    <label class="note">Note for the agent <textarea name="note" rows="2" placeholder="Optional: constraints, which copy is canonical, what to leave alone">${esc(d.note || "")}</textarea></label>
+    <div class="row">
+      <button class="primary" name="do" value="approved">${c.decision?.status === "approved" ? "Update approval" : "Approve"}</button>
+      ${c.decision?.status === "dismissed" ? "" : `<button class="secondary" name="do" value="dismissed">Dismiss</button>`}
+      <button class="secondary" type="button" data-cancel>Cancel</button>
+    </div>
+  </form></td></tr>`;
+}
+
+function actions(c) {
+  const st = viewOf(c);
+  if (st === "approved") {
+    const pk = c.pack;
+    return (pk ? `<a class="status ${PACK_CLASS[pk.status] || ""}" href="/ui/packs/${encodeURIComponent(pk.id)}">${esc(pk.status.replace("_", " "))}</a> ` : "") +
+      `<button class="secondary" data-prompt="${esc(c.id)}">Copy agent prompt</button> ` +
+      `<button class="secondary" data-review="${esc(c.id)}">Edit</button> <button class="secondary" data-withdraw="${esc(c.id)}">Withdraw</button>`;
+  }
+  if (st === "dismissed") return `<button class="secondary" data-withdraw="${esc(c.id)}" title="Make it a proposal again">Restore</button>`;
+  return `<button class="primary" data-review="${esc(c.id)}">Review</button>`;
+}
+
 function renderExtraction() {
   const x = data.extraction;
   const tbody = document.querySelector("#extraction tbody");
-  if (!x) { tbody.innerHTML = `<tr><td colspan="6" class="empty">No extraction report yet.</td></tr>`; return; }
-  tbody.innerHTML = x.candidates.length ? x.candidates.map((c) => `<tr>
-      <td><b>${esc(c.title || c.id)}</b><div class="muted mono">${esc(c.id)} · ${esc(c.domain || "")} · ${esc(c.priority || "")} · ${UI.plural(c.units, "unit")}</div></td>
+  document.getElementById("x-repos").innerHTML = (data.repos || []).map((r) => `<option value="${esc(r)}">`).join("");
+  if (!x) { document.getElementById("x-chips").innerHTML = ""; tbody.innerHTML = `<tr><td colspan="5" class="empty">No extraction report yet.</td></tr>`; return; }
+  if (x.decisions_error) document.getElementById("x-flash").innerHTML = `<span class="err">Decisions file unreadable: ${esc(x.decisions_error)}</span>`;
+  const counts = Object.fromEntries(Object.keys(VIEWS).map((k) => [k, x.candidates.filter((c) => viewOf(c) === k).length]));
+  document.getElementById("x-chips").innerHTML = Object.entries(VIEWS)
+    .map(([k, label]) => `<button data-view="${k}" aria-pressed="${k === view}">${label} ${int(counts[k])}</button>`).join("");
+  const rows = x.candidates.filter((c) => viewOf(c) === view);
+  tbody.innerHTML = rows.length ? rows.map((c) => `<tr>
+      <td><b>${esc(c.title || c.id)}</b><div class="muted mono">${esc(c.id)}${c.priority ? ` · ${esc(c.priority)}` : ""}${c.reported ? "" : " · not in the latest run"}</div>
+        ${c.decision?.target_repo ? `<div class="muted">→ <span class="mono">${esc(c.decision.target_module || c.decision.target_repo)}</span></div>` : ""}
+        ${c.decision?.note ? `<div class="muted">${esc(c.decision.note)}</div>` : ""}</td>
       <td class="num">${c.score != null ? Number(c.score).toFixed(2) : "—"}</td>
-      <td class="mono">${esc(c.library || "")}${c.owner_repo ? `<div class="muted">owner: ${esc(c.owner_repo)}</div>` : ""}</td>
-      <td>${esc(c.repos.join(", "))}</td>
-      <td class="ev">${esc(c.rationale || "")}${c.risks ? `<div class="muted">Risks: ${esc(Array.isArray(c.risks) ? c.risks.join("; ") : c.risks)}</div>` : ""}</td>
-      <td>${c.approved ? `<span class="status ok">approved</span><div class="muted mono">${esc(c.rule_name)}</div>`
-        : `<button class="primary" data-approve="${esc(c.id)}" title="Adds rule ${esc(c.rule_name)}">Approve</button>`}</td></tr>`).join("")
-    : `<tr><td colspan="6" class="empty">No extraction candidates exceeded the threshold in the latest run${x.generated_at ? ` (${UI.ago(x.generated_at)})` : ""}.</td></tr>`;
+      <td class="ev">${esc(c.repos.join(", "))}</td>
+      <td>${copiesCell(c)}</td>
+      <td class="acts">${actions(c)}</td></tr>${reviewing === c.id ? form(c) : ""}`).join("")
+    : `<tr><td colspan="5" class="empty">${view === "open" ? "Nothing left to decide." : `Nothing ${VIEWS[view].toLowerCase()} yet.`}</td></tr>`;
+}
+
+function agentPrompt(c) {
+  const base = location.origin, pk = c.pack, auth = `-H "X-API-Token: $AI_AUDIT_API_TOKEN"`;
+  return [
+    `Work this extraction pack from the ai-code-auditor: ${c.title}. Duplicated logic is to move into ${c.decision.target_module || c.decision.target_repo}, and each copy is replaced with an import from there.`,
+    ``,
+    `Audit API: ${base}. Status changes and validate_patch need ${auth}. The token is in your environment (Claude Code sets it from ~/.claude/settings.json); if it is empty or you get a 401, ask the user for it. Don't search .env files for it.`,
+    ``,
+    `1. Read the brief, which lists every copy and the order of work: curl -s ${base}/audit/packs/${pk.id}/brief`,
+    `2. Claim it: curl -s -X POST ${base}/audit/packs/${pk.id}/status -H 'Content-Type: application/json' ${auth} -d '{"status":"claimed"}'. A 409 means another agent holds it: stop.`,
+    `3. Read every copy before writing anything. They are similar, not identical: design one function that covers the callers, and leave a copy that differs on purpose (say why in the pack note).`,
+    `4. ${c.decision.target_repo} first: add the function with tests on a branch from origin/dev, validate (POST ${base}/audit/validate_patch {"repo": "${c.decision.target_repo}", "patch": "<unified diff>", "pack_id": "${pk.id}"}) and open the PR into dev.`,
+    `5. Then one branch and PR per consumer repo, each from origin/dev: import the shared function, delete the local copy, add or bump the ${c.decision.target_repo} dependency, validate the same way.`,
+    `6. Set the pack in_progress with the PR links in the note while they're open, and resolved once no copy is left.`,
+  ].join("\n");
+}
+
+async function showPrompt(c) {
+  const box = document.getElementById("x-prompt"), ta = box.querySelector("textarea");
+  box.hidden = false; ta.value = agentPrompt(c); ta.focus(); ta.select();
+  let ok = false;
+  try { await navigator.clipboard.writeText(ta.value); ok = true; } catch (_) { try { ok = document.execCommand("copy"); } catch (_) { ok = false; } }
+  document.getElementById("x-flash").innerHTML = ok ? `<span class="status ok">Copied a prompt for ${esc(c.pack.id)}</span>` : `<span class="status warn">Select the text below and copy it</span>`;
 }
 
 function renderProposals() {
@@ -99,13 +184,13 @@ function renderProposals() {
 
 function render(d) {
   data = d;
-  UI.setParams({ rule });
+  UI.setParams({ rule, view: view === "open" ? "" : view });
   renderViolations(); renderExtraction(); renderProposals();
   const vc = d.violations ? d.violations.violations.length : null;
-  const xc = d.extraction ? d.extraction.candidates.filter((c) => !c.approved).length : null;
+  const xc = d.extraction ? d.extraction.candidates.filter((c) => !c.decision).length : null;
   document.getElementById("sub").textContent = [
     vc != null ? UI.plural(vc, "violation") : null,
-    xc != null ? `${int(xc)} candidate${xc === 1 ? "" : "s"} awaiting approval` : null,
+    xc != null ? `${int(xc)} extraction candidate${xc === 1 ? "" : "s"} to decide` : null,
     d.proposals ? UI.plural(d.proposals.length, "pattern proposal") : null,
   ].filter(Boolean).join(" · ") || "No reports yet.";
 }
@@ -117,18 +202,48 @@ document.getElementById("v-chips").addEventListener("click", (e) => {
   UI.setParams({ rule });
   renderViolations();
 });
-document.getElementById("extraction").addEventListener("click", async (e) => {
-  const b = e.target.closest("button[data-approve]");
+const reload = () => UI.load("/audit/architecture.json", render, document.getElementById("sub"));
+const flash = (html) => { document.getElementById("x-flash").innerHTML = html; };
+const byId = (id) => data.extraction.candidates.find((c) => c.id === id);
+document.getElementById("x-chips").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-view]");
   if (!b) return;
-  const flash = document.getElementById("x-flash");
-  b.disabled = true;
+  view = b.dataset.view; reviewing = "";
+  UI.setParams({ rule, view: view === "open" ? "" : view });
+  renderExtraction();
+});
+document.getElementById("extraction").addEventListener("click", async (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.review) { reviewing = reviewing === b.dataset.review ? "" : b.dataset.review; renderExtraction(); return; }
+  if (b.hasAttribute("data-cancel")) { reviewing = ""; renderExtraction(); return; }
+  if (b.dataset.prompt) { const c = byId(b.dataset.prompt); if (c?.pack) showPrompt(c); return; }
+  if (b.dataset.withdraw) {
+    b.disabled = true;
+    try {
+      await UI.send("DELETE", `/audit/extraction/${encodeURIComponent(b.dataset.withdraw)}/decision`);
+      flash(`<span class="status ok">${esc(b.dataset.withdraw)} is a proposal again</span>`);
+      reload();
+    } catch (err) { b.disabled = false; flash(`<span class="err">Not changed: ${esc(err.message)}</span>`); }
+  }
+});
+document.getElementById("extraction").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target, btn = e.submitter, status = btn?.value || "approved";
+  const units = [...f.querySelectorAll('input[name="unit"]:checked')].map((i) => i.value);
+  if (status === "approved" && !units.length) { flash(`<span class="err">Tick at least one copy to replace.</span>`); return; }
+  f.querySelectorAll("button").forEach((x) => { x.disabled = true; });
   try {
-    const out = await UI.send("POST", `/audit/extraction/${encodeURIComponent(b.dataset.approve)}/approve`);
-    flash.innerHTML = `<span class="status ok">${out.already_present ? "Rule already present" : "Added rule"} <span class="mono">${esc(out.rule_name)}</span> to ${esc(out.rules_path)}</span>`;
-    UI.load("/audit/architecture.json", render, document.getElementById("sub"));
+    const out = await UI.send("POST", `/audit/extraction/${encodeURIComponent(f.dataset.id)}/decision`, {
+      status, units, target_repo: f.target_repo.value.trim(), target_module: f.target_module.value.trim(), note: f.note.value.trim() });
+    reviewing = "";
+    flash(status === "approved"
+      ? `<span class="status ok">Approved: pack <a href="/ui/packs/${encodeURIComponent(out.pack_id)}">${esc(out.pack_id)}</a> is ${esc(out.status)}, ${int(out.left)} of ${int(out.copies)} copies left</span>`
+      : `<span class="status ok">Dismissed ${esc(f.dataset.id)}</span>`);
+    reload();
   } catch (err) {
-    b.disabled = false;
-    flash.innerHTML = `<span class="err">Not approved: ${esc(err.message)}</span>`;
+    f.querySelectorAll("button").forEach((x) => { x.disabled = false; });
+    flash(`<span class="err">Not saved: ${esc(err.message)}</span>`);
   }
 });
 UI.load("/audit/architecture.json", render, document.getElementById("sub"));

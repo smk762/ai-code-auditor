@@ -66,7 +66,7 @@ def test_a_rule_that_cannot_resolve_or_match_is_a_load_error(tmp_path: Path, dat
 
 def test_an_approved_rule_is_validated_too(tmp_path: Path) -> None:
     approved = tmp_path / "approved.yaml"
-    approved.write_text(yaml.safe_dump({"rules": [_rule(name="use_x", required_imports=["x"],
+    approved.write_text(yaml.safe_dump({"rules": [_rule(name="use_x", forbid=[{"from_roles": ["ui"], "to_roles": ["worker"]}],
                                                          applies_to=["argus-ghost"])]}))
     base = tmp_path / "rules.yaml"
     base.write_text(yaml.safe_dump({"rules": [], "service_roles": ROLES}))

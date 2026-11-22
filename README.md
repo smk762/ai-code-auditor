@@ -180,17 +180,15 @@ Representative output:
 
 ### 6) Approve an extraction candidate
 
+Usually from the Approve button on `/ui/architecture`; the CLI does the same:
+
 ```bash
-ai-audit approve-extraction --candidate-id ext-retry-core-001
+ai-audit approve-extraction --candidate-id ext-b884b05a --target-module argus_cortex.hashing
 ```
 
-Representative output:
-
-```text
-Extraction candidate approved: ext-retry-core-001
-- architecture rule appended: config/architecture_rules.yaml
-- decision audit entry recorded
-```
+Approving writes the candidate's agent pack (one per approved candidate; unapproved candidates have
+none) listing the copies to replace. The nightly run re-reads those copies and resolves the pack once
+every one is gone from `dev`. `--dismiss` keeps a candidate out of the list instead.
 
 ### 7) Run legacy pipeline scripts directly (optional)
 
