@@ -127,6 +127,67 @@ call_graph_rules:
     - from: argus-iris
       to: voluptas
       note: "Reads ComfyUI queue and system stats for GPU residency (a configured service)"
+    # Detectors on argus-retina, reached by URL (POST /infer, NudeNet's shape) through cortex clients
+    # or the caller's own; no caller has a direct httpx.<verb>(url) the analyzer can see, so these
+    # are policy-only edges.
+    - from: argus-curator
+      to: argus-retina
+      note: "NudeNet, EraX and watermark detectors (ARGUS_CURATOR_NUDENET_URL, _ERAX_URL, _WATERMARK_URL)"
+    - from: argus-darkroom
+      to: argus-retina
+      note: "NudeNet 640m output check, cortex NudeNetClient (ARGUS_DARKROOM_NUDENET_URL)"
+    - from: argus-proof
+      to: argus-retina
+      note: "NudeNet safety scorer, cortex NudeNetClient (PROOF_NUDENET_URL)"
+    - from: argus-lens
+      to: argus-retina
+      note: "OCR server for reconcile's text claims, cortex OcrClient (LENS_OCR_URL)"
+    # GPU leases from argus-iris: argus_cortex.gpu's BrokerCoordinator (POST /tenants, /leases,
+    # heartbeat, release) when the repo runs with ARGUS_GPU_COORDINATOR=broker and
+    # ARGUS_GPU_BROKER_URL, as its compose or docs configure, with its gpu-tenant.yaml. The HTTP
+    # client is inside cortex, so these are policy-only edges.
+    - from: agent-composer
+      to: argus-iris
+      note: "Leases around rag-chat / rag-ingest Ollama calls (cortex broker; gpu-tenant.yaml)"
+    - from: argus-atlas
+      to: argus-iris
+      note: "Lease per bake or chunk on comfyui (cortex broker; kind bake)"
+    - from: argus-curator
+      to: argus-iris
+      note: "Leases for faces, scenes, garments, CLIP and speech models (cortex broker)"
+    - from: argus-darkroom
+      to: argus-iris
+      note: "Lease per render and prompt expansion (cortex broker; kinds generate, depth, expand)"
+    - from: argus-forge
+      to: argus-iris
+      note: "One background lease per training run (cortex broker; kind train)"
+    - from: argus-lens
+      to: argus-iris
+      note: "Caption leases (cortex broker; kinds caption, caption-batch)"
+    - from: argus-mask
+      to: argus-iris
+      note: "Leases for a live Audio2Face stream and voice making (cortex broker)"
+    - from: argus-mint
+      to: argus-iris
+      note: "Lease for card bios on the writer's Ollama model (cortex broker; kind bio)"
+    - from: argus-proof
+      to: argus-iris
+      note: "Batch lease per run, interactive for POST /score (cortex broker)"
+    - from: argus-puppet
+      to: argus-iris
+      note: "Pose leases, batch for folder scans, interactive for POST /pose (cortex broker; kind pose)"
+    - from: argus-retina
+      to: argus-iris
+      note: "SingGuard GPU image leases around load and each check (cortex broker; kind guard)"
+    - from: argus-scout
+      to: argus-iris
+      note: "Lease around each local-model briefing call (cortex broker; kind narrative)"
+    - from: ai-code-auditor
+      to: argus-iris
+      note: "ollama:<model> leases for the nightly scan (auditor/gpu_lease.py, cortex broker)"
+    - from: argus-realms
+      to: argus-iris
+      note: "Bake runner checks GET /health and warms comfyui (POST /services/comfyui/warm; IRIS_URL, curl)"
     - from: "*"
       to: agent-composer
       note: "Suite consumes chat/RAG via agent-composer"

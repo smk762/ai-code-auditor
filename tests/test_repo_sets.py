@@ -68,6 +68,18 @@ def test_every_scanned_repo_has_a_service_role() -> None:
     assert [r for r in _scanned() if r not in roles] == []
 
 
+def test_the_flow_draws_exactly_the_allowed_calls_into_retina() -> None:
+    # A "a / b ──► c" line links every member of the group, so the diagram's arrows into retina
+    # must name the repos allowed_calls lets call it: no more (a phantom edge), no fewer.
+    doc = (ROOT / "ecosystem" / "ecosystem.md").read_text(encoding="utf-8")
+    _, flow = parse_ecosystem_doc(doc)
+    drawn = {f"argus-{a}" for a, b in flow if b == "retina"}
+    rules = yaml.safe_load((ROOT / "config" / "architecture_rules.yaml").read_text(encoding="utf-8"))
+    allowed = {c["from"] for c in rules["call_graph_rules"]["allowed_calls"] if c["to"] == "argus-retina"}
+    assert drawn == allowed
+    assert drawn  # the diagram does draw them
+
+
 def test_every_scanned_argus_repo_has_a_brand_stage() -> None:
     scanned = _scanned()
     assert {r for r in scanned if not r.startswith("argus-")} == NOT_ARGUS
