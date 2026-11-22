@@ -21,7 +21,8 @@ dependencies = [
   "markdown-it-py>=3.0.0",
   # argus-iris GPU leases around local-Ollama work (auditor/gpu_lease.py, #51): cortex's broker client.
   # 0.13 speaks lease_version 1.1 (progress) and re-registers gpu-tenant.yaml after a broker restart.
-  "argus-cortex[remote]>=0.13,<0.14",
+  # 0.14: argus_cortex.hashing.sha256_hex (wiki/public.py).
+  "argus-cortex[remote]>=0.14,<0.15",
 ]
 
 [project.optional-dependencies]

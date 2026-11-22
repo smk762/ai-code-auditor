@@ -37,6 +37,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from argus_cortex.hashing import sha256_hex
+
 PUBLIC_PAGES = ("overview", "architecture", "interfaces", "integration")  # never "findings"
 DEFAULT_DENYLIST = Path.home() / ".config" / "ai-code-auditor" / "opsec-denylist.txt"
 OWNER = "smk762"
@@ -224,10 +226,6 @@ def github_visibility(repo: str, token: str = "") -> str | None:
 
 # ── export ───────────────────────────────────────────────────────────────────
 
-def _sha256(data: str) -> str:
-    return hashlib.sha256(data.encode("utf-8")).hexdigest()
-
-
 # Covers content only (not the top-level manifest.json, whose timestamp changes on every export), so an
 # export that changes nothing keeps the same bundle hash and needs no new commit or pin bump.
 # The string is unchanged from when the rule matched any file named manifest.json: the export never
@@ -364,7 +362,7 @@ def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_pa
         for p in r["pages"]:
             rel = f"{name}/{p['slug']}.html"
             (dest / rel).write_text(p["html"], encoding="utf-8")
-            hashes[rel] = _sha256(p["html"])
+            hashes[rel] = sha256_hex(p["html"].encode())
             files.append({"slug": p["slug"], "title": p["title"], "html": rel, "sha256": hashes[rel],
                           "source_sha": p["source_sha"], "generated_at": p["generated_at"]})
         manifest["repos"][name] = {k: r[k] for k in ("sha", "branch", "built_at", "github", "pypi")} | {"pages": files}
@@ -373,7 +371,7 @@ def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_pa
               "published at https://dragonhound.dev. Do not edit: every export replaces this content. "
               "`manifest.json` records the source SHA of each repo and the sha256 of every file.\n")
     (dest / "README.md").write_text(readme, encoding="utf-8")
-    hashes["README.md"] = _sha256(readme)
+    hashes["README.md"] = sha256_hex(readme.encode())
     manifest["bundle_sha256"] = bundle_sha256(hashes)
     manifest["bundle_sha256_algorithm"] = BUNDLE_HASH_ALGORITHM
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
