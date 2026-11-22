@@ -1641,7 +1641,6 @@ def main() -> None:
         _run_eval_classes(args) if args.eval_command == "classes" else _run_eval_trust(args)
     elif args.command == "pr-summary":
         from auditor import trailers
-        from conductor.publish import public_base_url
 
         ids = list(args.pack)
         if args.rev_range:
@@ -1649,7 +1648,7 @@ def main() -> None:
         if args.trailers:
             print(trailers.render(_output_dir_default(), ids, evidence=args.evidence, waiver=args.waiver))
         else:
-            print(trailers.summary_markdown(_output_dir_default(), ids, public_base_url=public_base_url()))
+            print(trailers.summary_markdown(_output_dir_default(), ids))
     elif args.command == "trust":
         _run_trust(as_json=args.json, cached=args.cached, history=args.history, github=args.github)
     elif args.command == "revalidate":

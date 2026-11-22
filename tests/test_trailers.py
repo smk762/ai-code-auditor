@@ -68,10 +68,10 @@ def test_render_trailers_from_the_pack_store(tmp_path: Path) -> None:
 
 def test_summary_table(tmp_path: Path) -> None:
     pack(tmp_path, "pack-l-1", cls="path_traversal", ev={"kind": "repro", "repro": {"repro": ["tests/t.py::a"]}})
-    md = tr.summary_markdown(tmp_path, ["pack-l-1", "pack-gone-9"], public_base_url="http://h:1")
-    assert "| [`pack-l-1`](http://h:1/ui/packs/pack-l-1) Upload name \\| climbs out | path_traversal | " \
+    md = tr.summary_markdown(tmp_path, ["pack-l-1", "pack-gone-9"])
+    assert "| `pack-l-1` Upload name \\| climbs out | path_traversal | " \
            "repro (`tests/t.py::a`) | resolved |" in md
-    assert "| `pack-gone-9` |" not in md and "not found" in md
+    assert "| `pack-gone-9` | | | not found |" in md
     assert "fixes no audit packs" in tr.summary_markdown(tmp_path, [])
 
 
@@ -198,3 +198,26 @@ def test_api_pr_summary(client, tmp_path: Path) -> None:
     assert r.json()["trailers"] == "Pack: pack-l-1\nEvidence: repro\nClass: ssrf"
     assert "| ssrf | tests | resolved |" in r.json()["markdown"]
     assert client.get("/audit/pr-summary", params={"packs": "x;y"}).status_code == 422
+
+
+def test_pr_bound_text_never_carries_the_api_host(tmp_path: Path, monkeypatch) -> None:
+    """#128: PR bodies are public; the audit API's base URL is a private host."""
+    from fastapi.testclient import TestClient
+
+    from auditor.audit_api import app
+    from conductor.draft_pr import finding_to_pr_body
+
+    host = "http://10.9.8.7:8765"
+    monkeypatch.setenv("AI_AUDIT_PUBLIC_BASE_URL", host)
+    monkeypatch.setenv("AI_AUDIT_OUTPUT_DIR", str(tmp_path))
+    pack(tmp_path, "pack-l-1", cls="path_traversal", ev={"kind": "repro", "repro": {"repro": ["tests/t.py::a"]}})
+    body = TestClient(app).get("/audit/pr-summary", params={"packs": "pack-l-1", "evidence": "repro"}).json()
+    assert "pack-l-1" in body["markdown"] and "10.9.8.7" not in body["markdown"] + body["trailers"]
+
+    finding = {"title": "t", "file_path": "/home/someone/mirrors/argus-x/app/up.py", "line": 3,
+               "evidence": "see /home/someone/mirrors/argus-x/app/up.py:3"}
+    pr = finding_to_pr_body(finding, "fixed it", pack_id="pack-l-1", repo_path="/home/someone/mirrors/argus-x")
+    assert "pack-l-1" in pr and "10.9.8.7" not in pr and "http" not in pr.split("### Agent work pack")[1]
+    assert '"file_path": "app/up.py"' in pr and "/home/someone" not in pr.split("### Finding")[1].split('"evidence"')[0]
+    outside = finding_to_pr_body({"file": "/srv/other/x.py"}, "s", pack_id="p")
+    assert '"file": "x.py"' in outside
