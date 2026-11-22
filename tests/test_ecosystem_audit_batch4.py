@@ -35,13 +35,6 @@ def test_resumed_run_keeps_repos_finished_before_the_resume(tmp_path, monkeypatc
 def test_cleanup_failure_neither_masks_the_error_nor_leaks_the_graph(tmp_path, monkeypatch) -> None:
     events: list[str] = []
 
-    class Scheduler:
-        def wait_for_capacity(self, on_wait_update=None):
-            return SimpleNamespace(offload_mode="cpu", num_gpu_layers=0, vram_free_mb=0)
-
-        def release_capacity(self):
-            events.append("release")
-
     class Graph:
         def __init__(self, path):
             pass
@@ -54,11 +47,9 @@ def test_cleanup_failure_neither_masks_the_error_nor_leaks_the_graph(tmp_path, m
 
     cfg = SimpleNamespace(log_level="INFO", log_file_path="", output_dir=str(tmp_path), repos=[],
                           graph_db_path=str(tmp_path / "g.db"), auth_mode=False, auth_code_env="")
-    monkeypatch.setenv("AI_AUDIT_SKIP_GPU_SCHEDULER", "1")
     monkeypatch.setattr(eco, "load_ecosystem_config", lambda: cfg)
     monkeypatch.setattr(eco, "setup_logging", lambda **kw: None)
     monkeypatch.setattr(eco, "load_architecture_rules", dict)
-    monkeypatch.setattr(eco, "GpuScheduler", Scheduler)
     monkeypatch.setattr(eco, "GraphBuilder", Graph)
     monkeypatch.setattr(eco, "record_run_progress", lambda meta: None)
     monkeypatch.setattr(eco, "get_settings", lambda: SimpleNamespace())
@@ -71,4 +62,4 @@ def test_cleanup_failure_neither_masks_the_error_nor_leaks_the_graph(tmp_path, m
     monkeypatch.setattr(eco, "write_run_metadata", lambda meta, output_dir: events.append("metadata"))
     with pytest.raises(PermissionError, match="bad auth code"):  # was ConnectionError
         eco.run()
-    assert events == ["graph.close", "release", "metadata"]
+    assert events == ["graph.close", "metadata"]

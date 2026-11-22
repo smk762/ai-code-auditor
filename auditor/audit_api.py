@@ -2,7 +2,7 @@
 
 Endpoints
 ---------
-GET  /audit/health                    VRAM info + service readiness (gothmog capacity check)
+GET  /audit/health                    Liveness, the active run, slow requests
 POST /audit/run                       Start a new audit run; returns {run_id} immediately
 GET  /audit/runs                      List recent runs from PostgreSQL (newest first)
 GET  /audit/runs/{run_id}             Poll run status and aggregate results (live metadata mid-run)
@@ -83,7 +83,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from auditor.agent_pack import CHARS_PER_TOKEN, DEFAULT_BUNDLE_TOKEN_BUDGET, PACK_DISCOVERY
 from auditor.config import load_ecosystem_config
 from auditor.db import AuditRun, FindingRecord, PipelineCheckpoint, RepoRun, db_session, utcnow
-from auditor.gpu_scheduler import get_vram_info
 from auditor.run_views import SUCCESS_STATUSES, repo_run_to_dict
 from auditor.run_views import run_to_dict as _row_to_dict
 from auditor.ui import STATIC_DIR, STATIC_URL, render_page
@@ -412,18 +411,13 @@ def _run_pipeline(run_id: str) -> None:
 
 @app.get("/audit/health")
 def health() -> JSONResponse:
-    """VRAM availability and service readiness for gothmog's capacity check."""
-    vram = get_vram_info()
+    """Liveness (the compose healthcheck), the active run and slow requests. GPU capacity is argus-iris's."""
     with _active_run_lock:
         active = _active_run_id
 
     body: dict[str, Any] = {
         "status":        "ok",
         "active_run_id": active,
-        "gpu_present":   vram is not None,
-        "vram_free_mb":  vram.free_mb  if vram else 0,
-        "vram_total_mb": vram.total_mb if vram else 0,
-        "vram_used_mb":  vram.used_mb  if vram else 0,
         # Requests over AI_AUDIT_SLOW_REQUEST_MS since start; should stay empty (see _time_requests)
         "slow_requests": slow_requests(),
     }

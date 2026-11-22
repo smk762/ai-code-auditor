@@ -32,6 +32,8 @@ COPY config /app/config
 COPY memory /app/memory
 COPY scripts /app/scripts
 COPY cli.py /app/cli.py
+# argus-iris tenant manifest, the default ARGUS_GPU_TENANT_MANIFEST (auditor/gpu_lease.py)
+COPY gpu-tenant.yaml /app/gpu-tenant.yaml
 
 # ruff: fatal-only lint of patched files in validate_patch (per-project test venvs are built at runtime)
 RUN pip install --no-cache-dir . ruff

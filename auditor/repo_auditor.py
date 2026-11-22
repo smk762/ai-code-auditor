@@ -17,9 +17,12 @@ def run_repo_audit(
     llm: LLMClient | None = None,
     graph=None,
     unreviewed: set[str] | None = None,
+    lease_events: list[dict] | None = None,
 ) -> tuple[list[CodeUnit], list[Finding]]:
     """Units and findings for one repo. Files with a unit the model didn't review are added to
-    *unreviewed*, when given: the scan can't vouch for their silence."""
+    *unreviewed*, when given: the scan can't vouch for their silence. With a local-Ollama
+    provider the model calls hold one GPU lease (argus-iris), whose outcome is appended to
+    *lease_events* when given (nothing when no lease was asked for)."""
     resolved_root = resolve_scan_root(repo)
 
     # Build a repo-scoped briefing and give the client a context-aware copy.
@@ -39,10 +42,17 @@ def run_repo_audit(
     findings: list[Finding] = []
 
     for file_path in files:
-        units = extract_code_units(repo.name, file_path)
-        all_units.extend(units)
-        for unit in units:
-            findings.extend(llm.analyze_code(unit, repo_path=str(resolved_root)))
+        all_units.extend(extract_code_units(repo.name, file_path))
+
+    total = len(all_units)
+    try:
+        with llm.gpu_lease(repo.name):
+            for i, unit in enumerate(all_units, start=1):
+                findings.extend(llm.analyze_code(unit, repo_path=str(resolved_root)))
+                llm.report_gpu_progress(i, total, stage=f"{repo.name}: {i}/{total} units")
+    finally:
+        if lease_events is not None:
+            lease_events.extend(llm.lease_events)
 
     findings.extend(run_static_checks(repo.name, str(resolved_root)))
     if unreviewed is not None:

@@ -33,7 +33,6 @@ architecture_memory_path: {tmp_path / "memory" / "architecture_memory.md"}
     (config_dir / "architecture_rules.yaml").write_text("rules: []\n", encoding="utf-8")
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("AI_AUDIT_SKIP_GPU_SCHEDULER", "1")
     _stub_llm_client(monkeypatch)
     repo_run()
     ecosystem_run()
