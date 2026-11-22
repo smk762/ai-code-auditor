@@ -121,3 +121,17 @@ def memdb(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(ui, "_db_session", session)
     return session
+
+
+@pytest.fixture(autouse=True)
+def _no_gpu_broker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never lease from a real argus-iris broker (a host .env may set ARGUS_GPU_COORDINATOR=broker):
+    with the variables gone, leases are off, as they are by default."""
+    import os as _os
+
+    from auditor import gpu_lease
+
+    for var in [v for v in _os.environ if v.startswith("ARGUS_GPU_")] + ["AI_AUDIT_OLLAMA_NODE_URLS"]:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(gpu_lease, "_coordinator", None)
+    monkeypatch.setattr(gpu_lease, "_coordinator_error", "")

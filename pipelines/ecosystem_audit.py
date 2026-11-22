@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import sys
@@ -15,7 +14,6 @@ from auditor.archive import archive_reports
 from auditor.auth import enforce_role
 from auditor.config import load_architecture_rules, load_ecosystem_config
 from auditor.contracts import CodeUnit
-from auditor.gpu_scheduler import GpuScheduler, get_vram_info
 from auditor.locks import pipeline_lock
 from auditor.persistence import (
     completed_repos_for_run,
@@ -49,45 +47,6 @@ from patterns.pattern_miner import mine_patterns
 from patterns.pattern_proposer import propose_extraction_candidates, propose_patterns
 from patterns.pattern_scorer import score_pattern_prevalence
 from semantic.embedding_index import EmbeddingIndex
-
-# Keys merged into ``run.extra`` only while waiting on GPU / queue (stripped after capacity).
-_WAIT_PROGRESS_EXTRA_KEYS = frozenset({
-    "gpu_vram_required_mb",
-    "vram_required_mb",
-    "required_vram_mb",
-    "gpu_memory_required_mb",
-    "vram_free_mb",
-    "available_vram_mb",
-    "gpu_vram_free_mb",
-    "queue_jobs_ahead",
-    "jobs_ahead",
-    "ahead_in_queue",
-    "queue_position",
-    "position_in_queue",
-    "gpu_wait_reason",
-    "gothmog_last_http_status",
-    "gothmog_capacity_acquire_url",
-})
-
-
-def _apply_gpu_wait_progress(meta: RunMetadata, snap: dict[str, object]) -> None:
-    for k, v in snap.items():
-        if v is not None:
-            meta.extra[k] = v
-    meta.stage_status["awaiting_gpu_capacity"] = json.dumps(
-        {
-            "awaiting": True,
-            "gpu": True,
-            "queue_jobs_ahead": snap.get("queue_jobs_ahead"),
-            "jobs_ahead": snap.get("jobs_ahead"),
-            "vram_required_mb": snap.get("vram_required_mb"),
-            "vram_free_mb": snap.get("vram_free_mb"),
-            "reason": snap.get("gpu_wait_reason"),
-        },
-        separators=(",", ":"),
-    )
-    record_run_progress(meta)
-
 
 def _write_ecosystem_report(
     output_dir: str,
@@ -175,66 +134,16 @@ def run() -> None:
     setup_logging(level=cfg.log_level, log_file_path=cfg.log_file_path, output_dir=cfg.output_dir)
     rules = load_architecture_rules()
 
-    # Night Conductor redesign: ecosystem governance no longer depends on VRAM.
-    # GPU wait is skipped by default; set AI_AUDIT_SKIP_GPU_SCHEDULER=0 to restore.
-    skip_gpu = os.getenv("AI_AUDIT_SKIP_GPU_SCHEDULER", "1").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }
-    scheduler = GpuScheduler()
-
     # AI_AUDIT_RUN_ID lets the audit API pre-assign the run_id so it can
     # insert a DB record and return it to callers before the pipeline starts.
     forced_run_id = os.getenv("AI_AUDIT_RUN_ID", "")
     meta = RunMetadata.start("ecosystem-audit", run_id=forced_run_id)
     meta.repos_total = len(cfg.repos)
 
-    # Everything from the capacity request on runs inside the try, so a failure in setup
-    # (progress write, opening the graph DB, settings) still releases capacity and records
-    # the run as finished.
+    # Everything from setup on runs inside the try, so a failure in setup (opening the graph DB,
+    # settings) still records the run as finished.
     graph: GraphBuilder | None = None
     try:
-        if skip_gpu:
-            os.environ.setdefault("AI_AUDIT_SKIP_GPU_SCHEDULER", "1")
-            gpu = scheduler.wait_for_capacity()
-            logger.info(
-                "Ecosystem run %s — GPU scheduler skipped (cloud/API path). Repos: %d.",
-                meta.run_id,
-                len(cfg.repos),
-            )
-        else:
-            meta.current_stage = "awaiting_gpu_capacity"
-            record_run_progress(meta)
-            _apply_gpu_wait_progress(
-                meta,
-                scheduler.wait_progress_payload(
-                    vram=get_vram_info(),
-                    services=[],
-                    reason="awaiting_gpu_capacity",
-                    queue_ahead=None,
-                ),
-            )
-            gpu = scheduler.wait_for_capacity(
-                on_wait_update=lambda s: _apply_gpu_wait_progress(meta, s),
-            )
-            for k in _WAIT_PROGRESS_EXTRA_KEYS:
-                meta.extra.pop(k, None)
-            meta.stage_status.pop("awaiting_gpu_capacity", None)
-            logger.info(
-                "Ecosystem run %s — GPU offload: %s (vram_free_mb=%s). Repos to scan: %d.",
-                meta.run_id,
-                gpu.offload_mode,
-                gpu.vram_free_mb,
-                len(cfg.repos),
-            )
-
-        meta.extra["gpu_offload_mode"] = gpu.offload_mode
-        meta.extra["gpu_num_layers"] = gpu.num_gpu_layers
-        meta.extra["gpu_vram_free_mb"] = gpu.vram_free_mb
-        record_run_progress(meta)
-
         all_units: list[CodeUnit] = []
         repo_roots: dict[str, str] = {}
         repo_files: dict[str, list] = {}
@@ -416,10 +325,6 @@ def run() -> None:
                 graph.close()
             except Exception:
                 logger.exception("closing the graph DB failed")
-        try:
-            scheduler.release_capacity()
-        except Exception:
-            logger.exception("releasing GPU capacity failed")
         try:
             record_run_finish(meta, "ecosystem-audit")
         except Exception:

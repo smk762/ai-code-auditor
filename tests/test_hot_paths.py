@@ -119,7 +119,6 @@ def test_topology_rebuilds_outside_the_api_process(monkeypatch, tmp_path: Path) 
 def test_slow_requests_are_counted_and_reported(monkeypatch) -> None:
     monkeypatch.setenv("AI_AUDIT_SLOW_REQUEST_MS", "0")
     monkeypatch.setattr(audit_api, "_slow_requests", {})
-    monkeypatch.setattr(audit_api, "get_vram_info", lambda: None)
     client = TestClient(audit_api.app)
     client.get("/audit/health")
     body = client.get("/audit/health").json()

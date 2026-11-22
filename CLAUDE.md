@@ -30,6 +30,7 @@ here and in code. Don't add a rule to remember.
 | A partial RAG send retiring other docs | `test_rag_retire::test_sync_retires_only_what_the_send_replaced`, `::test_failed_delete_is_retried_and_failed_send_retires_nothing` |
 | Remove a GitHub label this tool didn't add, or label an external item | `test_linchpin::test_apply_labels_adds_removes_only_its_own_and_records_ledger` |
 | Keep calling a local LLM backend after it failed 5 times in a row (each unit paying its timeout), or retry a 4xx | `test_llm_client::test_dead_backend_trips_the_breaker_for_every_client`, `::test_only_transient_errors_are_retried`. `AI_AUDIT_LLM_BREAKER_FAILURES` / `_COOLDOWN_S` (5, 600s) |
+| Take a GPU lease for a cloud LLM provider, let a broker that's down or answers 4xx block or fail a run, count a refused or timed-out lease as an LLM-backend failure, or call a broker-supplied node URL that is a cloud metadata address | `test_gpu_lease::test_a_cloud_provider_never_leases`, `::test_unreachable_broker_fails_open_to_the_configured_endpoint`, `::test_broker_4xx_fails_open_and_is_logged`, `::test_a_refused_lease_skips_the_model_without_tripping_the_breaker`, `::test_unsafe_node_urls_are_refused_and_the_lease_released` |
 | Spend past a lane budget | `test_spend_ledger::test_lane_and_total_caps`, `::test_batch_prefetch_trims_to_budget` |
 | Suite-rule findings that disagree with argus-ci's CI (a different catalogue or checker) | `test_suite_rules::test_catalogue_is_read_from_dev_not_the_checkout`; the scanner runs argus-ci's own `check.py` |
 | A patch's tests, installs or checks seeing the host env (API keys, tokens, `DATABASE_URL`, live service URLs such as the RAG ingest URL) | `auditor/proc.py` `child_env` allowlist at every child that runs audited code; `test_validate_child_env` |
@@ -129,6 +130,14 @@ unverified pack through `validate_patch` with `revalidate=true` and only ever re
 Spend comes from the ledger's `conductor` lane, because `cost_usd_est` is not filled in.
 
 **Ollama healthcheck** hits `/api/tags` (no model load), not generate.
+
+**GPU leases** (#51, `auditor/gpu_lease.py`). gothmog and the nvidia-smi/imogen/vidita polling are gone: with a
+local-Ollama provider, each repo's model calls in the nightly pass hold one argus-iris `ollama:<model>` lease (`batch`,
+taken at the first uncached call), and any other Ollama call takes its own. Off unless `ARGUS_GPU_COORDINATOR=broker`
+(cortex's `ARGUS_GPU_*` variables; tenant `ai-code-auditor`, manifest `gpu-tenant.yaml`). The calls go to the grant's
+vetted `base_url`. A broker that's down or answers 4xx fails open to `AI_AUDIT_LLM_ENDPOINT`; a refusal or timeout
+makes no model calls for that repo, so its files are unreviewed (a blind scan). Each lease is in `extra.gpu_leases`.
+Footprints are `config/gpu_lease.yaml`'s geometry; `qwen2.5-coder:32b` (about 22 GB) fits neither 8 GB Ollama node.
 
 **Web UI.** Static pages in `auditor/static/` share `ui.css` and `ui.js`, and put `<!--#nav-->` where the server
 injects the nav. There is no build step, and each page has its own JSON endpoint. Markdown goes through

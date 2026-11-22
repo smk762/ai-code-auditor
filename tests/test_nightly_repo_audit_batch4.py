@@ -57,7 +57,7 @@ def test_a_failure_after_the_scan_does_not_count_the_repo_as_scanned(tmp_path, m
     def boom(*_):
         raise OSError("git unavailable")
 
-    seen = _harness(tmp_path, monkeypatch, lambda repo, llm=None, unreviewed=None: ([], ["finding"]),
+    seen = _harness(tmp_path, monkeypatch, lambda repo, llm=None, unreviewed=None, lease_events=None: ([], ["finding"]),
                     head_commit=boom)
     nightly.run()
     meta = seen["meta"]
@@ -70,7 +70,7 @@ def test_a_failure_after_the_scan_does_not_count_the_repo_as_scanned(tmp_path, m
 def test_attempts_count_every_retry(tmp_path, monkeypatch) -> None:
     calls = []
 
-    def flaky(repo, llm=None, unreviewed=None):
+    def flaky(repo, llm=None, unreviewed=None, lease_events=None):
         calls.append(1)
         if len(calls) < 3:
             raise RuntimeError("transient")
@@ -84,7 +84,7 @@ def test_attempts_count_every_retry(tmp_path, monkeypatch) -> None:
 
 
 def test_attempts_on_failure_count_every_retry(tmp_path, monkeypatch) -> None:
-    def dead(repo, llm=None, unreviewed=None):
+    def dead(repo, llm=None, unreviewed=None, lease_events=None):
         raise RuntimeError("down")
 
     seen = _harness(tmp_path, monkeypatch, dead)

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import re
+from collections import Counter
+from collections.abc import Iterator
 from typing import Any
 
 import requests
@@ -16,6 +19,7 @@ from auditor.config import (
 )
 from auditor.contracts import CodeUnit, Finding
 from auditor.ecosystem_briefing import build_ecosystem_overview, build_file_briefing
+from auditor.gpu_lease import KIND_CALL, KIND_REPO, GpuLeaseUnavailable, LeaseGrant, ollama_lease
 from auditor.llm_cache import ReviewCache, legacy_review_key, review_key
 from auditor.retry import breaker_for, with_retries
 from auditor.spend_ledger import get_ledger
@@ -154,12 +158,19 @@ class LLMClient:
         # Shared per endpoint across clients (one is built per repo), so a dead or hung local
         # model is given up on once per run, not once per repo. Anthropic is left to its SDK's
         # retries: its failures include refusals, which say nothing about the backend.
-        self.breaker = breaker_for(
-            f"{self.provider}:{self.endpoint}",
-            threshold=int(os.getenv("AI_AUDIT_LLM_BREAKER_FAILURES", "5")),
-            cooldown_s=float(os.getenv("AI_AUDIT_LLM_BREAKER_COOLDOWN_S", "600")),
-        )
+        self.breaker = self._breaker_for(self.endpoint)
         self.breaker_skips = 0
+        # argus-iris GPU leases (auditor/gpu_lease.py): local Ollama only, never a cloud provider. The lease's
+        # node may move the endpoint (and with it the breaker) for its scope; _configured_endpoint is home.
+        self._local_ollama = self.provider.startswith("ollama")
+        self._configured_endpoint = self.endpoint
+        self._lease_scope: tuple[str, str, contextlib.ExitStack] | None = None  # caller, kind, stack
+        self._lease_taken = False
+        self._grant: LeaseGrant | None = None
+        self._lease_blocked = ""  # why the scope's lease was refused: no model calls in it
+        # Every lease that wasn't "off" (a cloud provider or no coordinator records nothing). Capped.
+        self.lease_events: list[dict[str, Any]] = []
+        self.lease_counts: Counter[str] = Counter()
         # Effort only applies to Claude; it is part of the cache key so changing it re-reviews.
         self.effort = os.getenv("AI_AUDIT_LLM_EFFORT", "low") if self.provider == "anthropic" else ""
         self.instructions = PROMPTS.get(os.getenv("AI_AUDIT_LLM_PROMPT", "v2"), AUDIT_INSTRUCTIONS_V2)
@@ -178,12 +189,95 @@ class LLMClient:
         self._repo_briefing = repo_briefing
         self._anthropic: Any = None  # SDK client, built on first Anthropic call
 
+    def _breaker_for(self, endpoint: str):
+        return breaker_for(
+            f"{self.provider}:{endpoint}",
+            threshold=int(os.getenv("AI_AUDIT_LLM_BREAKER_FAILURES", "5")),
+            cooldown_s=float(os.getenv("AI_AUDIT_LLM_BREAKER_COOLDOWN_S", "600")),
+        )
+
+    @contextlib.contextmanager
+    def gpu_lease(self, caller: str, *, kind: str = KIND_REPO) -> Iterator[None]:
+        """Hold one GPU lease for the scope's model calls, taken at its first one, so a scope served from the
+        cache never waits for the GPU. Released on exit, exceptions included. A no-op for a cloud provider, and
+        nested scopes share the outer lease. Model calls outside any scope take a lease each."""
+        if not self._local_ollama or self._lease_scope is not None:
+            yield
+            return
+        stack = contextlib.ExitStack()
+        self._lease_scope = (caller, kind, stack)
+        try:
+            with stack:
+                yield
+        finally:
+            self._lease_scope = None
+            self._lease_taken = False
+            self._end_lease()
+
+    def report_gpu_progress(self, done: float, total: float | None = None, *, stage: str | None = None) -> None:
+        """Progress of the held lease's work for iris's dashboard; no-op without a lease."""
+        if self._grant is not None:
+            self._grant.report_progress(done, total, stage=stage)
+
+    def _take_lease(self, stack: contextlib.ExitStack, caller: str, kind: str) -> None:
+        """Enter a lease into *stack* and point this client at the grant's endpoint. A refusal is recorded and
+        blocks model calls until the lease's scope ends; it is not an LLM-backend failure."""
+        try:
+            grant = stack.enter_context(ollama_lease(self.model, kind=kind, caller=caller,
+                                                     endpoint=self._configured_endpoint))
+        except GpuLeaseUnavailable as exc:
+            logger.warning("%s: no model calls for %s (its files stay unreviewed)", exc.detail, caller)
+            self._lease_blocked = exc.detail
+            self._note_lease(caller, kind, "unavailable", exc.detail)
+            return
+        self._grant = grant
+        if grant.state != "off":
+            self._note_lease(caller, kind, grant.state, grant.detail, grant.node)
+        if grant.endpoint != self.endpoint:
+            self.endpoint = grant.endpoint
+            self.breaker = self._breaker_for(grant.endpoint)
+
+    def _end_lease(self) -> None:
+        self._grant = None
+        self._lease_blocked = ""
+        if self.endpoint != self._configured_endpoint:
+            self.endpoint = self._configured_endpoint
+            self.breaker = self._breaker_for(self.endpoint)
+
+    def _note_lease(self, caller: str, kind: str, state: str, detail: str = "", node: str | None = None) -> None:
+        self.lease_counts[state] += 1
+        if len(self.lease_events) < 200:
+            event: dict[str, Any] = {"caller": caller, "kind": kind, "state": state}
+            if node:
+                event["node"] = node
+            if detail:
+                event["detail"] = detail[:500]
+            self.lease_events.append(event)
+
     def generate(self, prompt: str | list[dict[str, Any]]) -> str:
         """Return the model's text, or "" on failure (logged — callers fall back to heuristics).
 
         *prompt* may be Anthropic text blocks (build_prompt_blocks); other providers get the
-        blocks joined into one string.
+        blocks joined into one string. Local Ollama calls run under a GPU lease (gpu_lease).
         """
+        if not self._local_ollama:
+            return self._generate(prompt)
+        if self._lease_scope is not None:
+            caller, kind, stack = self._lease_scope
+            if not self._lease_taken:
+                self._lease_taken = True
+                self._take_lease(stack, caller, kind)
+            return self._generate(prompt)
+        with contextlib.ExitStack() as stack:
+            try:
+                self._take_lease(stack, self._note or "llm-call", KIND_CALL)
+                return self._generate(prompt)
+            finally:
+                self._end_lease()
+
+    def _generate(self, prompt: str | list[dict[str, Any]]) -> str:
+        if self._lease_blocked:
+            return ""  # the GPU lease was refused: no call, and no breaker failure
         try:
             if self.provider == "anthropic":
                 return self._anthropic_generate(prompt)

@@ -37,7 +37,7 @@ def test_batch_mode_restores_cache_only_after_the_repo_pass(tmp_path: Path, monk
     )
     seen: dict[str, str | None] = {}
 
-    def audit(repo, llm=None, unreviewed=None):
+    def audit(repo, llm=None, unreviewed=None, lease_events=None):
         seen["repo_pass"] = os.environ.get("AI_AUDIT_LLM_CACHE_ONLY")
         if unreviewed is not None:
             unreviewed.add(f"/m/{repo.name}/src/missed.py")

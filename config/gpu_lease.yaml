@@ -1,0 +1,15 @@
+# Footprints for argus-iris GPU leases around local-Ollama work (auditor/gpu_lease.py, #51).
+#
+# A lease sends vram_mb, the whole footprint (num_layers x layer_size_mb + overhead_mb), and
+# model_mb, the weights (num_layers x layer_size_mb), which iris doesn't ask for again while the
+# model is loaded. gpu-tenant.yaml's kinds carry the same figures (tests/test_gpu_lease.py checks
+# they agree). A model is looked up by its exact name, then without its tag; an unlisted model asks
+# for default_vram_mb, all of it working set. Adjust when you switch models.
+
+default_vram_mb: 6000
+
+models:
+  qwen2.5-coder:32b:      # Q4_K_M
+    num_layers: 64        # transformer layers
+    layer_size_mb: 310    # VRAM per layer at Q4_K_M
+    overhead_mb: 2500     # non-layer footprint (embeddings, KV cache base, etc.)

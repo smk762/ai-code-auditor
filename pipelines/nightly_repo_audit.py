@@ -58,13 +58,14 @@ def run() -> None:
                 t0 = time.monotonic()
                 for repo in cfg.repos:
                     tries = [0]  # every call with_retries makes, not just the first
+                    leases: list[dict] = []
                     try:
                         unreviewed: set[str] = set()
 
-                        def audit(repo=repo, unreviewed=unreviewed, tries=tries):
+                        def audit(repo=repo, unreviewed=unreviewed, tries=tries, leases=leases):
                             tries[0] += 1
                             unreviewed.clear()  # a retry starts over
-                            return run_repo_audit(repo, llm=llm, unreviewed=unreviewed)
+                            return run_repo_audit(repo, llm=llm, unreviewed=unreviewed, lease_events=leases)
                         units, findings = with_retries(audit, retries=3, base_delay_s=1.0)
                         # Everything that can still fail runs before the repo counts as scanned:
                         # a repo in scanned_repos whose findings never reach store_findings would
@@ -94,6 +95,11 @@ def run() -> None:
                         upsert_repo_run(meta.run_id, repo.name, "failed", attempts=attempts, error_message=str(repo_exc))
                         write_checkpoint("repo-audit", meta.run_id, repo.name, "failed", {"error": str(repo_exc)})
                         meta.add_error(f"{repo.name}: {repo_exc}")
+                    finally:
+                        # The repo's GPU lease (argus-iris): granted and on which node, or why not (broker
+                        # down, a 4xx, a refusal). Only a local-Ollama provider with a coordinator has one.
+                        if leases:
+                            meta.extra.setdefault("gpu_leases", {})[repo.name] = leases
             finally:
                 # Cache-only covers the per-repo pass alone: post-run steps (pack classes)
                 # need live calls, and a long-lived caller's next run must not inherit it.

@@ -1,0 +1,33 @@
+# argus-iris GPU tenant manifest for ai-code-auditor (#51). Validated by argus-cortex's
+# TenantManifest (argus_cortex.gpu_wire, schema gpu-tenant-schema.json); unknown fields are
+# refused. tests/test_gpu_lease.py checks it validates and matches the code.
+# See argus-iris DESIGN.md, "Tenant manifests".
+#
+# With ARGUS_GPU_COORDINATOR=broker and a local-Ollama LLM provider, the auditor takes an
+# ollama:<model> lease (auditor/gpu_lease.py) and registers this manifest (the default for
+# ARGUS_GPU_TENANT_MANIFEST). A cloud provider (Anthropic, the nightly default) never leases.
+# Each kind's target names the default model (config/generator.yaml); a lease names the model
+# actually called. iris's nightly-audit window sets the class of the overnight run.
+#
+# vram_mb is the whole footprint and model_mb the weights, from config/gpu_lease.yaml's
+# geometry, which every lease sends; vram_mb - model_mb is the working set. No residents: the
+# auditor keeps nothing loaded of its own.
+tenant_version: "1.0"
+tenant: ai-code-auditor
+description: Nightly multi-repo code audit; reviews code units on a local Ollama model when the LLM provider is ollama.
+repo: smk762/ai-code-auditor
+kinds:
+  # The nightly repo pass: one lease per repo, taken at its first uncached model call.
+  - kind: repo-audit
+    description: Reviewing one repo's code units in the nightly audit.
+    target: "ollama:qwen2.5-coder:32b"
+    vram_mb: 22340                # 64 layers x 310 MiB + 2500 MiB overhead (Q4_K_M)
+    model_mb: 19840               # 64 layers x 310 MiB
+    priority: batch
+  # Any other Ollama call (diff audits, equivalence checks, wiki ask): one lease per call.
+  - kind: review
+    description: One model call outside the nightly repo pass.
+    target: "ollama:qwen2.5-coder:32b"
+    vram_mb: 22340
+    model_mb: 19840
+    priority: batch
