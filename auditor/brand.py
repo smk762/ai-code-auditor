@@ -40,7 +40,7 @@ MARKS: dict[str, str] = {
 }
 # argus repos without their own mark, placed by what they serve (demo UIs follow their package)
 STAGE_OF_UNMARKED: dict[str, str] = {
-    "cull": "data", "lightbox": "data",
+    "cull": "data", "lightbox": "data", "puppet": "data",
     "safelight": "apps", "sightline": "apps", "assay": "apps",
     "ci": "foundation", "halo": "foundation", "pkg-template": "foundation",
 }

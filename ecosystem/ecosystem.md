@@ -17,6 +17,7 @@ Night conductor scans `dev` on every `smk762/argus-*` repo, plus shared dependen
 | Gen demo | [argus-safelight](https://github.com/smk762/argus-safelight) | Demo UI for darkroom with verdicts on show |
 | Training bridge | [argus-forge](https://github.com/smk762/argus-forge) | Curated exports → kohya / OneTrainer / diffusers LoRA configs |
 | Eval | [argus-proof](https://github.com/smk762/argus-proof) | Post-training LoRA evaluation and optimisation |
+| Body pose | [argus-puppet](https://github.com/smk762/argus-puppet) | Whole-body keypoints, pose-set diversity and copying metrics, OpenPose control images |
 | Maps | [argus-atlas](https://github.com/smk762/argus-atlas) | Georeferenced fantasy-map tiles from DEM + cartography LoRA |
 | Survey | [argus-survey](https://github.com/smk762/argus-survey) | Point-cloud deliverables for land surveyors (PDAL/GDAL/PROJ) |
 | Survey UI | [argus-sightline](https://github.com/smk762/argus-sightline) | Web workspace for survey deliverables |
@@ -50,6 +51,7 @@ Night conductor scans `dev` on every `smk762/argus-*` repo, plus shared dependen
 
   atlas (maps)     survey / sightline (point clouds)
   mask (face)      halo (demo infra)
+  puppet (pose)
 
   Shared AI / RAG:  argus-* ──► agent-composer (rag-chat :9150, rag-ingest :9050, Qdrant :6333)
   Night auditor:    ai-code-auditor (Dragon :8765) ──► mithrandir (Jarrah :8400)

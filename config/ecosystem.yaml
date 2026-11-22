@@ -138,6 +138,13 @@ repos:
     provider: local
     subpath: ""
 
+  - name: argus-puppet
+    path: /home/smk/mirrors/argus-puppet
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
   - name: argus-quarry
     path: /home/smk/mirrors/argus-quarry
     branch: dev

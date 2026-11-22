@@ -69,6 +69,9 @@ mirrors:
   - name: argus-proof
     url: https://github.com/smk762/argus-proof.git
     path: /home/smk/mirrors/argus-proof
+  - name: argus-puppet
+    url: https://github.com/smk762/argus-puppet.git
+    path: /home/smk/mirrors/argus-puppet
   - name: argus-quarry
     url: https://github.com/smk762/argus-quarry.git
     path: /home/smk/mirrors/argus-quarry
