@@ -39,9 +39,18 @@ def seeded(fix=(True,) * 5, control=(False,) * 5, age_days=1) -> dict:
 
 # ── gates ────────────────────────────────────────────────────────────────────
 
+def guard_seeded(per_guard=((True, True),), age_days=1, proof="proven") -> dict:
+    """A guard_seeded.json with one guard per entry; each bool is one valid seed (caught or missed)."""
+    at = (NOW - timedelta(days=age_days)).isoformat()
+    return {"at": at, "guards": [
+        {"pack": f"pack-class-g{i}", "repo": "r", "proof_status": proof, "status": "ok",
+         "seeds": [{"seed": f"s{j}", "status": "caught" if c else "missed"} for j, c in enumerate(seeds)]}
+        for i, seeds in enumerate(per_guard)]}
+
+
 def test_all_built_gates_pass_on_good_numbers() -> None:
     g = by_id(build_gates(trust(), seeded(), None, {"n": 12, "held": 12, "rate": 1.0}, {"n": 6, "ok": 6, "rate": 1.0},
-                          {"n": 2, "fired": 2, "rate": 1.0, "rules": []}))
+                          {"n": 2, "fired": 2, "rate": 1.0, "rules": []}, guard_seeded()))
     live = {k: v.status for k, v in g.items() if v.status != "pending" and not k.startswith("classes.")}
     assert set(live.values()) == {"pass"}, live
     assert g["evidence.lint_only"].value == pytest.approx(1 / 24)
@@ -131,11 +140,18 @@ def test_evaluate_writes_report_and_history(tmp_path: Path) -> None:
 def test_evaluate_quietly_refreshes_a_week_old_seeded_eval(tmp_path: Path, monkeypatch) -> None:
     calls = []
     (tmp_path / trust_eval.SEEDED_NAME).write_text(json.dumps(seeded(age_days=1)))
-    trust_eval.evaluate_quietly(tmp_path, seeded_runner=lambda out: calls.append(out))
-    assert calls == []
+    (tmp_path / trust_eval.GUARD_SEEDED_NAME).write_text(json.dumps(guard_seeded(age_days=1)))
+    guard_calls = []
+    quietly = lambda: trust_eval.evaluate_quietly(tmp_path, seeded_runner=lambda out: calls.append(out),
+                                                  guard_runner=lambda out: guard_calls.append(out))
+    quietly()
+    assert calls == [] and guard_calls == []
     (tmp_path / trust_eval.SEEDED_NAME).write_text(json.dumps(seeded(age_days=9)))
-    trust_eval.evaluate_quietly(tmp_path, seeded_runner=lambda out: calls.append(out))
-    assert len(calls) == 1
+    quietly()
+    assert len(calls) == 1 and guard_calls == []
+    (tmp_path / trust_eval.GUARD_SEEDED_NAME).write_text(json.dumps(guard_seeded(age_days=9)))
+    quietly()
+    assert len(guard_calls) == 1
     monkeypatch.setenv("AI_AUDIT_TRUST_EVAL", "0")
     assert "skipped" in trust_eval.evaluate_quietly(tmp_path)
 
