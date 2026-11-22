@@ -166,6 +166,11 @@ class AgentCodingPack:
             "detected_at": (self.provenance or {}).get("detected_at", ""),
             "status_updated_at": self.status_updated_at or "",
             "draft_pr_url": (self.repair or {}).get("draft_pr_url") or "",
+            # an extraction's directories ("repo/dir"), one per copy: the areas it consolidates (#60)
+            **({"areas": sorted({f"{c.get('repo')}/{os.path.dirname(str(c.get('path') or ''))}"
+                                 for c in ((self.governance or {}).get("extraction") or {}).get("copies") or []
+                                 if isinstance(c, dict) and c.get("state") != "gone"})}
+               if self.kind == "extraction" else {}),
         }
 
     def to_brief_md(self) -> str:
@@ -996,6 +1001,44 @@ def _specialist_rank(entry: dict[str, Any], *, repo: str, q: str) -> float | Non
     return score
 
 
+# Titles auditor/workaround.py gives its findings, for packs the class step hasn't reached yet.
+_WORKAROUND_TITLES = ("Workaround comment: ", "Timer or retry papering over a race: ")
+
+
+def _consolidates(entry: dict[str, Any]) -> bool:
+    """Deletion or consolidation work: an approved extraction, or a workaround to remove (#60)."""
+    return (entry.get("kind") == "extraction" or entry.get("finding_class") == "workaround"
+            or str(entry.get("title") or "").startswith(_WORKAROUND_TITLES))
+
+
+def _areas(entry: dict[str, Any]) -> set[str]:
+    """The ``repo/dir`` areas a pack works in."""
+    if entry.get("areas"):
+        return set(entry["areas"])
+    repo, fp = str(entry.get("repo") or ""), str(entry.get("file_path") or "")
+    if not fp:
+        return set()
+    from auditor.trust_metrics import rel_path
+
+    return {f"{repo}/{os.path.dirname(rel_path(repo, fp))}"}
+
+
+def consolidation_first(ranked: list[tuple[float, dict[str, Any]]]) -> list[tuple[float, dict[str, Any]]]:
+    """Move each consolidation pack ahead of the first higher-ranked fix in one of its areas (#60):
+    delete the copy or the workaround before fixing another instance of it, so the fix isn't made
+    in a place about to go, or copied from one. Everything else keeps its order."""
+    out = list(ranked)
+    for item in [t for t in ranked if _consolidates(t[1])]:
+        areas = _areas(item[1])
+        if not areas:
+            continue
+        i = next(k for k, t in enumerate(out) if t is item)
+        j = next((k for k, (_, e) in enumerate(out[:i]) if not _consolidates(e) and _areas(e) & areas), None)
+        if j is not None:
+            out.insert(j, out.pop(i))
+    return out
+
+
 def build_pack_bundle(
     output_dir: str | Path,
     *,
@@ -1024,6 +1067,7 @@ def build_pack_bundle(
         ),
         key=lambda t: (-t[0], str(t[1].get("id", ""))),
     )
+    ranked = consolidation_first(ranked)
     candidates = len(ranked)
     ranked = ranked[: max(0, limit_specialists)]
 

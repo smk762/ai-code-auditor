@@ -15,6 +15,13 @@
 # Leave a finding unclassified rather than guess.
 
 classes:
+  - id: workaround
+    description: A comment admits the code around it works around a problem (or a timer papers over a race); agents copy it (#60).
+    guard: none  # auditor/workaround.py flags each one in the nightly and diff audits; no CI rule yet
+    title:
+      - '^Workaround comment: '
+      - '^Timer or retry papering over a race: '
+
   - id: test_quality
     description: A test cannot detect the regression it claims to guard, or passes vacuously.
     guard: none
@@ -281,6 +288,10 @@ static_rules:
     request-url-outbound: ssrf
     token-compare: secret_exposure
     agpl-import: licence_violation
+  # auditor/workaround.py (#60): workaround:<kind>:<path>:<line>
+  workaround:
+    marker: workaround
+    race_timer: workaround
   bandit:
     B113: missing_timeout
     B108: path_traversal

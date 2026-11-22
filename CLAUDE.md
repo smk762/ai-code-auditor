@@ -208,7 +208,9 @@ themselves; [AGENTS.md](AGENTS.md) has the bundle → claim → fix → `validat
 finding packs and their status alone. Extraction candidates are proposals: only one approved on `/ui/architecture`
 (a decision in `rules/extraction_decisions.json`, outside git) has a pack, and that pack is several PRs, so
 `validate_patch` moves it to `in_progress` and the nightly sync resolves it once every copy is gone from `dev`
-(`auditor/extraction.py`). Candidate ids follow their units across runs, not their rank. `bash scripts/install_agent_pack_awareness.sh` writes the flow into every ecosystem repo on disk
+(`auditor/extraction.py`). Candidate ids follow their units across runs, not their rank. Each candidate carries a `copy_risk` (non-test copies,
+churn, agent PRs touching the copies), which orders "To decide". In a bundle, a consolidation pack (an approved
+extraction, or a `workaround` finding from `auditor/workaround.py`) goes ahead of fixes in the same directory (#60). `bash scripts/install_agent_pack_awareness.sh` writes the flow into every ecosystem repo on disk
 (local files only, never git). Re-run it after changing the API base or the flow text.
 
 ## Branches

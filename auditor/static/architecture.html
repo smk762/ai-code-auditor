@@ -36,7 +36,7 @@
         <textarea readonly aria-label="Agent prompt"></textarea>
       </div>
       <div class="table-wrap"><table id="extraction">
-        <thead><tr><th>Candidate</th><th class="num">Score</th><th>Repos</th><th>Copies</th><th></th></tr></thead><tbody></tbody></table></div>
+        <thead><tr><th>Candidate</th><th class="num" title="How likely agents are to copy it again: non-test copies, churn, agent PRs touching the copies (#60)">Copy risk</th><th>Repos</th><th>Copies</th><th></th></tr></thead><tbody></tbody></table></div>
       <datalist id="x-repos"></datalist>
     </div>
   </section>
@@ -135,12 +135,15 @@ function renderExtraction() {
   const counts = Object.fromEntries(Object.keys(VIEWS).map((k) => [k, x.candidates.filter((c) => viewOf(c) === k).length]));
   document.getElementById("x-chips").innerHTML = Object.entries(VIEWS)
     .map(([k, label]) => `<button data-view="${k}" aria-pressed="${k === view}">${label} ${int(counts[k])}</button>`).join("");
-  const rows = x.candidates.filter((c) => viewOf(c) === view);
+  // Copy risk first (#60): what agents are most likely to copy again goes to the top.
+  const risk = (c) => c.copy_risk ? c.copy_risk.score : -1;
+  const rows = x.candidates.filter((c) => viewOf(c) === view)
+    .sort((a, b) => risk(b) - risk(a) || (b.score ?? 0) - (a.score ?? 0));
   tbody.innerHTML = rows.length ? rows.map((c) => `<tr>
       <td><b>${esc(c.title || c.id)}</b><div class="muted mono">${esc(c.id)}${c.priority ? ` · ${esc(c.priority)}` : ""}${c.reported ? "" : " · not in the latest run"}</div>
         ${c.decision?.target_repo ? `<div class="muted">→ <span class="mono">${esc(c.decision.target_module || c.decision.target_repo)}</span></div>` : ""}
         ${c.decision?.note ? `<div class="muted">${esc(c.decision.note)}</div>` : ""}</td>
-      <td class="num">${c.score != null ? Number(c.score).toFixed(2) : "—"}</td>
+      <td class="num">${c.copy_risk ? `<span title="${int(c.copy_risk.copies)} non-test copies · churn ${Number(c.copy_risk.churn).toFixed(2)} · ${int(c.copy_risk.agent_prs)} agent PRs touched them in 90 days · similarity ${c.score != null ? Number(c.score).toFixed(2) : "—"}">${Number(c.copy_risk.score).toFixed(2)}</span>` : `<span class="muted" title="similarity score; copy risk comes with the next ecosystem run">${c.score != null ? Number(c.score).toFixed(2) : "—"}</span>`}</td>
       <td class="ev">${esc(c.repos.join(", "))}</td>
       <td>${copiesCell(c)}</td>
       <td class="acts">${actions(c)}</td></tr>${reviewing === c.id ? form(c) : ""}`).join("")
