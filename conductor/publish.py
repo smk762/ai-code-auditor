@@ -27,8 +27,23 @@ _PATH_RE = re.compile(
 )
 
 
+PUBLIC_BASE_URL_ENV = "AI_AUDIT_PUBLIC_BASE_URL"
+_warned_unset = False
+
+
 def public_base_url() -> str:
-    return os.getenv("AI_AUDIT_PUBLIC_BASE_URL", "http://192.168.1.198:8765").rstrip("/")
+    """The audit API's public base from ``AI_AUDIT_PUBLIC_BASE_URL``, or ``""`` when it is unset.
+
+    There is no built-in host. Unset, links come out relative to the API (``/audit/packs/<id>``,
+    ``/reports/mithrandir/LATEST.json``), which still resolve on the API's own pages; callers that must reach the
+    API over the network (revalidation) refuse to run without it. Logged once per process.
+    """
+    global _warned_unset
+    base = os.getenv(PUBLIC_BASE_URL_ENV, "").strip().rstrip("/")
+    if not base and not _warned_unset:
+        _warned_unset = True
+        logger.warning("%s is unset: links are relative to the audit API", PUBLIC_BASE_URL_ENV)
+    return base
 
 
 def mithrandir_dir(output_dir: str | Path = "reports") -> Path:

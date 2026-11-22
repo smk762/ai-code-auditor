@@ -124,7 +124,7 @@ def _cached_pr_brief(output_dir: str | Path) -> str:
 def ingest_latest_to_rag(status: dict[str, Any], body_md: str) -> dict[str, Any]:
     """Ingest LATEST.md + short JSON summary only — not full SARIF.
 
-    Embeddings should use Jarrah Ollama (http://192.168.1.109:11434) via rag-ingest config.
+    Embeddings use the Ollama that rag-ingest's ``OLLAMA_BASE_URL`` names (see ``.env.example``).
     """
     import json
 

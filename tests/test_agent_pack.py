@@ -112,7 +112,7 @@ def test_emit_from_worker_and_api(tmp_path: Path, monkeypatch):
         run_id="rest-test",
         tasks=[task],
         results_by_id={task.id: result},
-        public_base_url="http://192.168.1.198:8765",
+        public_base_url="http://audit.example.test:8765",
         ingest_rag=False,
     )
     assert len(packs) == 1

@@ -137,15 +137,15 @@ def test_disallowed_audit_base_explains_the_422(monkeypatch) -> None:
         status_code = 422
 
         def json(self):
-            return {"detail": "audit_api_base host 192.168.1.198:8765 is not allowed: use the configured "
+            return {"detail": "audit_api_base host 192.0.2.10:8765 is not allowed: use the configured "
                               "audit API or add it to AUDIT_API_ALLOWED_HOSTS on rag-chat"}
 
     monkeypatch.setattr(requests, "post", lambda *a, **k: _Refused())
     with pytest.raises(SystemExit) as exc:
         cli._run_repair(repo_name="", repair_api_url="http://rag.test", pack_id="ext-1",
-                        audit_api_base="http://192.168.1.198:8765")
+                        audit_api_base="http://192.0.2.10:8765")
     msg = str(exc.value)
-    assert "422" in msg and "192.168.1.198:8765" in msg and "AUDIT_API_ALLOWED_HOSTS" in msg
+    assert "422" in msg and "192.0.2.10:8765" in msg and "AUDIT_API_ALLOWED_HOSTS" in msg
 
 
 def test_write_run_without_jwt_is_refused_when_auth_is_on(monkeypatch) -> None:

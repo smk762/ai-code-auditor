@@ -4,6 +4,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 from auditor import revalidate as rv
@@ -166,3 +167,10 @@ def test_an_error_is_not_an_attempt(tmp_path) -> None:
     kw = {"post": post, "git_dirs": {"r": repo / ".git"}, "retry_days": 7}
     assert rv.run(out, **kw)["counts"] == {"error": 1}
     assert rv.run(out, **kw)["skipped_recent"] == 0  # retried on the next run
+
+
+def test_api_poster_refuses_without_an_audit_api_base(monkeypatch) -> None:
+    monkeypatch.delenv("AI_AUDIT_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setattr(rv.urllib.request, "urlopen", lambda *a, **k: pytest.fail("no request without a base"))
+    with pytest.raises(ValueError, match="AI_AUDIT_PUBLIC_BASE_URL"):
+        rv.api_poster(busy_wait_s=0)({})

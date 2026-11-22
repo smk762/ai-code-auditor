@@ -1,6 +1,6 @@
 """Optional status webhooks at wrap-up: mithrandir's companion inbox, plus any extra targets.
 
-The primary target is mithrandir (``AI_AUDIT_MITHRANDIR_WEBHOOK_URL``, unchanged). Extra targets, such as an
+The primary target is mithrandir (``AI_AUDIT_MITHRANDIR_WEBHOOK_URL``; unset or empty sends nothing). Extra targets, such as an
 argus-scout webhook source, come from ``AI_AUDIT_STATUS_WEBHOOKS``: a JSON list of objects
 
     [{"name": "scout", "url": "http://<HOST>:<PORT>/api/events/ai-code-auditor",
@@ -28,16 +28,16 @@ logger = logging.getLogger(__name__)
 STATUS_WEBHOOKS_ENV = "AI_AUDIT_STATUS_WEBHOOKS"
 
 
-def default_webhook_url() -> str:
-    """Jarrah mithrandir companion inbox (wired/live)."""
-    return "http://192.168.1.109:8400/api/companion/events"
+MITHRANDIR_WEBHOOK_ENV = "AI_AUDIT_MITHRANDIR_WEBHOOK_URL"
 
 
 def mithrandir_webhook_url() -> str:
-    """Empty AI_AUDIT_MITHRANDIR_WEBHOOK_URL disables; unset uses Jarrah default."""
-    if "AI_AUDIT_MITHRANDIR_WEBHOOK_URL" in os.environ:
-        return os.environ.get("AI_AUDIT_MITHRANDIR_WEBHOOK_URL", "").strip()
-    return default_webhook_url()
+    """The companion inbox URL from ``AI_AUDIT_MITHRANDIR_WEBHOOK_URL``; unset or empty means no webhook.
+
+    There is no built-in default: a deployment that wants the push sets the variable in its ``.env``. Without it,
+    mithrandir still picks the run up by polling ``LATEST.json``.
+    """
+    return os.environ.get(MITHRANDIR_WEBHOOK_ENV, "").strip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +128,7 @@ def notify_mithrandir(
     """
     url = (webhook_url if webhook_url is not None else mithrandir_webhook_url()).strip()
     if not url:
+        logger.info("mithrandir webhook not sent: %s is unset", MITHRANDIR_WEBHOOK_ENV)
         return {"sent": False, "skipped": True, "reason": "webhook_unset"}
     return _post(url, build_payload(status, artifact_url), headers=None, timeout_s=timeout_s)
 

@@ -14,6 +14,7 @@ from auditor.env_loader import load_env_file
 
 load_env_file()
 
+from conductor.publish import latest_urls
 from conductor.schemas import FindingsSummary, MithrandirStatus, RestWindowInfo
 from conductor.wrapup import wrap_up
 
@@ -25,14 +26,15 @@ def main() -> None:
     p.add_argument("--no-rag", action="store_true")
     args = p.parse_args()
 
+    latest_url, latest_md_url = latest_urls()  # from AI_AUDIT_PUBLIC_BASE_URL in the local .env
     status = MithrandirStatus(
         run_id=args.run_id,
         generated_at=datetime.now(timezone.utc).isoformat(),
         ended_reason="completed",
         summary_one_liner="Sample rest publish: clean completed, no decisions.",
         speakable=True,
-        latest_url="http://192.168.1.198:8765/reports/mithrandir/LATEST.json",
-        latest_md_url="http://192.168.1.198:8765/reports/mithrandir/LATEST.md",
+        latest_url=latest_url,
+        latest_md_url=latest_md_url,
         window=RestWindowInfo(start="00:30", end="06:00"),
         repos=["argus-lens", "argus-cull"],
         scanner_counts={"semgrep": 0, "gitleaks": 0, "osv": 0},

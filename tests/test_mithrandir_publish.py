@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from conductor.briefing import build_briefing
-from conductor.publish import md_passes_tts_rules, publish_status
+from conductor.publish import latest_urls, md_passes_tts_rules, public_base_url, publish_status
 from conductor.schemas import (
     DecisionNeeded,
     DraftPr,
@@ -24,7 +24,7 @@ def _sample_status(
     *,
     ended_reason: str = "completed",
     decisions: list[DecisionNeeded] | None = None,
-    base: str = "http://192.168.1.198:8765",
+    base: str = "http://audit.example.test:8765",
 ) -> MithrandirStatus:
     return MithrandirStatus(
         run_id="rest-test-001",
@@ -168,3 +168,11 @@ def test_two_publishes_in_one_minute_keep_both_archives(tmp_path: Path, monkeypa
     assert first.archive_md != second.archive_md
     assert first.archive_md.read_text(encoding="utf-8") != second.archive_md.read_text(encoding="utf-8")
     assert len(list((tmp_path / "mithrandir" / "archive").glob("*.json"))) == 2
+
+
+def test_unset_public_base_url_gives_relative_links_not_a_built_in_host(monkeypatch) -> None:
+    monkeypatch.delenv("AI_AUDIT_PUBLIC_BASE_URL", raising=False)
+    assert public_base_url() == ""
+    assert latest_urls() == ("/reports/mithrandir/LATEST.json", "/reports/mithrandir/LATEST.md")
+    monkeypatch.setenv("AI_AUDIT_PUBLIC_BASE_URL", "http://audit.example.test:8765/")
+    assert public_base_url() == "http://audit.example.test:8765"

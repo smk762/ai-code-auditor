@@ -13,8 +13,8 @@ DENY = ["Jarrah", "holly"]
 
 
 @pytest.mark.parametrize("text,reason", [
-    ("db at 192.168.1.109:5432", "private or link-local IP"),
-    ("Postgres lives at 192.168.1.109.", "private or link-local IP"),  # end of a sentence
+    ("db at 192.168.200.109:5432", "private or link-local IP"),
+    ("Postgres lives at 192.168.200.109.", "private or link-local IP"),  # end of a sentence
     ("talks to 10.0.0.4", "private or link-local IP"),
     ("link-local 169.254.1.1", "private or link-local IP"),
     ("ipv6 fe80::1ff:fe23", "private or link-local IP"),
@@ -68,7 +68,7 @@ def wiki(tmp_path: Path, monkeypatch) -> Path:
                          page("argus-good", "interfaces", "# Interfaces\n\nCLI.\n"),
                          page("argus-good", "findings", "# Notable findings\n\nsecret stuff\n")])
     index("argus-leaky", [page("argus-leaky", "overview", "# Fine\n"),
-                          page("argus-leaky", "integration", "# Integration\n\nPostgres at 192.168.1.109.\n")])
+                          page("argus-leaky", "integration", "# Integration\n\nPostgres at 192.168.200.109.\n")])
     index("argus-private", [page("argus-private", "overview", "# Hidden\n")])
     index("agent-composer", [page("agent-composer", "overview", "# Not argus\n")])
 
@@ -107,7 +107,7 @@ def test_export_bundle(wiki: Path) -> None:
     manifest = json.loads((b / "manifest.json").read_text())
     assert manifest["bundle_sha256"] == public.bundle_hash_of(b) == rep.bundle_sha256
     report = json.loads((wiki / "wiki_public_report.json").read_text())  # outside the bundle
-    assert report["refused"][0]["match"] == "192.168.1.109"
+    assert report["refused"][0]["match"] == "192.168.200.109"
     assert "192.168" not in "".join(f.read_text() for f in b.rglob("*") if f.is_file())
 
 
@@ -151,7 +151,7 @@ def test_public_ecosystem_doc_and_scrubber() -> None:
     assert "Deployment notes" not in doc and "Jarrah" not in doc and "Not scanned" not in doc
     assert "[voluptas]" not in doc and "argus-good" in doc  # private table row dropped
     scrub = public.scrubber_for(["Jarrah", "holly"], ["voluptas", "mithrandir"], ECO)
-    out = scrub(doc + "\nuses VOLUPTAS and mithrandir on jarrah via holly, at 192.168.1.9:9000 or /home/u/x or nas.lan.")
+    out = scrub(doc + "\nuses VOLUPTAS and mithrandir on jarrah via holly, at 192.168.200.9:9000 or /home/u/x or nas.lan.")
     assert "an external ComfyUI service (ComfyUI :8188)" in out and "an external service" in out
     for leak in ("voluptas", "mithrandir", "jarrah", "holly", "192.168", "/home/", "nas.lan"):
         assert leak not in out.lower()
@@ -166,7 +166,7 @@ def test_public_build_scrubs_every_model_input(tmp_path: Path, monkeypatch, memd
 
     good = tmp_path / "m" / "argus-good"
     good.mkdir(parents=True)
-    (good / "app.py").write_text(APP + "\nVOLUPTAS_URL = 'http://192.168.1.198:8188'  # on Jarrah\n")
+    (good / "app.py").write_text(APP + "\nVOLUPTAS_URL = 'http://192.168.200.198:8188'  # on Jarrah\n")
     (good / "README.md").write_text("# good\nRenders via voluptas.\n")
 
     class _Cfg:
@@ -193,7 +193,7 @@ def test_public_build_scrubs_every_model_input(tmp_path: Path, monkeypatch, memd
     # internal notes the internal wiki uses (their text is scrubbed where it enters a page's context)
     public_reqs = [r for batch in fake.batches_created for r in batch if not r["custom_id"].startswith("n-")]
     sent = json.dumps(public_reqs)
-    for leak in ("voluptas", "Jarrah", "192.168.1.198"):
+    for leak in ("voluptas", "Jarrah", "192.168.200.198"):
         assert leak.lower() not in sent.lower(), leak
     d = out / "wiki" / "_public" / "argus-good"
     idx = json.loads((d / "INDEX.json").read_text())

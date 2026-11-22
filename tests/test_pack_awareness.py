@@ -36,7 +36,7 @@ def test_appends_to_existing_agents_and_preserves_content(tmp_path):
     out = (tmp_path / "AGENTS.md").read_text()
     assert out.count(pa.MARKER_START) == 1
     assert "http://example:1/audit/packs/bundle?repo=argus-x" in out
-    assert "192.168.1.198" not in out
+    assert "192.168." not in out  # no LAN address baked in
     assert "## Trailing\nstay" in out and out.startswith("# Mine")
 
 

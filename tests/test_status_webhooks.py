@@ -57,6 +57,18 @@ def test_mithrandir_still_gets_the_envelope_without_auth(posts, monkeypatch):
     assert call["json"]["summary_one_liner"] == STATUS["summary_one_liner"]
 
 
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_no_mithrandir_webhook_is_sent_unless_its_url_is_set(posts, monkeypatch, value):
+    calls, _ = posts
+    if value is None:
+        monkeypatch.delenv(webhook.MITHRANDIR_WEBHOOK_ENV, raising=False)
+    else:
+        monkeypatch.setenv(webhook.MITHRANDIR_WEBHOOK_ENV, value)
+    assert webhook.mithrandir_webhook_url() == ""
+    out = webhook.notify_mithrandir(status=STATUS)
+    assert out == {"sent": False, "skipped": True, "reason": "webhook_unset"} and calls == []
+
+
 def test_payload_carries_the_argus_summary_and_link():
     payload = webhook.build_payload(STATUS)
     assert payload["summary"] == STATUS["summary_one_liner"]
