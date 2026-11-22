@@ -637,3 +637,39 @@ def test_pack_tests_names_a_packs_evidence_and_refuses_strangers(mono) -> None:
     resp = TestClient(app).post("/audit/validate_patch", json={
         "repo": "mono", "patch": FIX, "pack_ids": [mono["pack"]], "pack_tests": {"pack-typo": ["t.py"]}})
     assert resp.status_code == 422 and "pack-typo" in resp.text
+
+
+def test_pack_tests_name_parametrized_cases_and_class_tests(tmp_path: Path) -> None:
+    ids = ["tests/test_x.py::test_y[case1]", "tests/test_x.py::test_y[a::b]", "tests/test_x.py::test_y2",
+           "tests/test_x.py::TestC::test_m[1]", "tests/test_x.py::TestC::test_n", "tests/test_z.py::test_y"]
+    repro = evidence.ReproResult(tool="pytest", patched=dict.fromkeys(ids, "passed"), base=dict.fromkeys(ids, "failed"))
+    pack = _pack_at("app/x.py")
+
+    def kept(*named: str) -> list[str]:
+        return evidence.for_pack(repro, pack, tmp_path, named=list(named)).repro
+
+    assert kept("tests/test_x.py::test_y") == ["tests/test_x.py::test_y[a::b]", "tests/test_x.py::test_y[case1]"]
+    assert kept("tests/test_x.py::test_y[case1]") == ["tests/test_x.py::test_y[case1]"]  # exact ids still work
+    assert kept("tests/test_x.py::TestC") == ["tests/test_x.py::TestC::test_m[1]", "tests/test_x.py::TestC::test_n"]
+    assert kept("tests/test_x.py::TestC::test_m") == ["tests/test_x.py::TestC::test_m[1]"]
+    assert kept("tests/test_x.py::test_y2") == ["tests/test_x.py::test_y2"]
+    assert kept("tests/test_z.py") == ["tests/test_z.py::test_y"]
+    # never a partial name, a bare test name, or a prefix of the file path
+    assert kept("tests/test_x.py::test", "test_y", "tests/test_x", "tests") == []
+
+
+TWO_TESTS = ("--- /dev/null\n+++ b/svc/tests/test_calc.py\n@@ -0,0 +1,10 @@\n+import pytest\n+from app.calc import add\n"
+             "+\n+\n+@pytest.mark.parametrize('a', [2, 3])\n+def test_add(a):\n+    assert add(a, 3) == a + 3\n"
+             "+\n+def test_other():\n+    assert add(1, 1) == 2\n")
+
+
+def test_pack_tests_narrow_a_lone_packs_evidence(mono) -> None:
+    body = _post(patch=FIX + TWO_TESTS, pack_id=mono["pack"],
+                 pack_tests={mono["pack"]: ["svc/tests/test_calc.py::test_add"]})
+    assert body["pack"]["status"] == "resolved" and body["pack"]["evidence"] == "repro", body["pack"]
+    rec = body["evidence"]["repro"]
+    assert rec["repro"] == ["svc/tests/test_calc.py::test_add[2]", "svc/tests/test_calc.py::test_add[3]"]
+    assert rec["scoped_out"] == ["svc/tests/test_calc.py::test_other"]
+    # naming only a test that isn't the repro leaves the lone pack unverified, as for a listed one
+    body = _post(patch=FIX + TWO_TESTS, pack_id=mono["pack"], pack_tests={mono["pack"]: ["svc/tests/test_x.py"]})
+    assert body["pack"]["status"] == "unverified" and "pack_tests" in body["pack"]["reason"], body["pack"]

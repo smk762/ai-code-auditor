@@ -42,7 +42,8 @@ Optional: `q=<keyword>` boosts matches, `status=open,claimed,in_progress` (defau
    One patch that fixes several packs: add `"pack_ids": ["<id>", ...]` (up to 25). The suite runs once, each pack
    is judged on its own evidence, and `packs` in the response lists every result. A pack's evidence is only the
    tests whose file names its cited module; another pack's test never resolves it. If your test lives elsewhere,
-   name it: `"pack_tests": {"<id>": ["tests/test_x.py::test_y"]}`.
+   name it: `"pack_tests": {"<id>": ["tests/test_x.py::test_y"]}`. An id without `[case]` covers every
+   parametrized case, and a file covers its tests. With one pack, `pack_tests` narrows its evidence the same way.
    If the fix has already merged (the patch no longer applies to `dev`), send `"base_ref": "<sha>"`, the
    `dev` commit your diff was built on. The patch and the "fails on `dev`" run then both use that commit.
    It must be an ancestor of the `dev` tip (else 400), and the pack records it.

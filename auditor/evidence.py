@@ -440,11 +440,22 @@ def _module_pattern(pack: dict[str, Any]) -> re.Pattern[str] | None:
     return re.compile(rf"\b{re.escape(stem)}\b")
 
 
+def names_test(wanted: set[str], test_id: str) -> bool:
+    """Whether a ``pack_tests`` entry names *test_id*: the exact id, its file, or an id it extends.
+    ``t.py::test_y`` names each parametrized case ``t.py::test_y[case1]``, and ``t.py::TestC`` each
+    of the class's tests; the match is on whole id parts, so ``t.py::test_y`` never names ``t.py::test_y2``."""
+    if test_id in wanted or test_id.split("::", 1)[0] in wanted:
+        return True
+    base = test_id.split("[", 1)[0]
+    parts = base.split("::")
+    return any("::".join(parts[:i]) in wanted for i in range(2, len(parts) + 1))
+
+
 def for_pack(repro: ReproResult, pack: dict[str, Any], tree: Path, *, named: list[str] | None = None) -> ReproResult:
     """The part of one multi-pack repro run that is *pack*'s own evidence (#127).
 
-    A test belongs to the pack when the caller named it for that pack (``pack_tests``: a test id or
-    its file), or, with nothing named, when its test file names the module the pack cites. A test
+    A test belongs to the pack when the caller named it for that pack (``pack_tests``: a test id, a
+    prefix of one such as a parametrized test without its ``[case]``, or its file), or, with nothing named, when its test file names the module the pack cites. A test
     that fails on dev and passes patched but belongs to another pack is listed in ``scoped_out`` and
     never resolves this one: one patch fixing two things must not let either fix vouch for the other."""
     root = tree.resolve()
@@ -462,7 +473,7 @@ def for_pack(repro: ReproResult, pack: dict[str, Any], tree: Path, *, named: lis
 
     if named:
         wanted = {str(n).strip() for n in named if str(n).strip()}
-        keep = {t for t in repro.patched if t in wanted or t.split("::", 1)[0] in wanted}
+        keep = {t for t in repro.patched if names_test(wanted, t)}
     else:
         pat = _module_pattern(pack)
         keep = {t for t in repro.patched if pat is not None and pat.search(source(t))}
@@ -505,8 +516,9 @@ def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproR
                         "with the fix, or pass evidence_waiver")
         if repro is not None and repro.scoped_out:
             return done("unverified", "none", f"{len(repro.scoped_out)} test(s) fail on dev and pass with the fix, "
-                        "but none is this pack's own: they belong to other packs in the request. Name this "
-                        "pack's tests in pack_tests, or validate it alone")
+                        "but none is this pack's own: they belong to other packs in the request, or aren't "
+                        "among the tests pack_tests names for it. Name this pack's tests in pack_tests, or "
+                        "validate it alone")
         if repro is None or not repro.ran:
             why = "; ".join(repro.notes) if repro and repro.notes else "the patch's tests didn't run"
             return done("unverified", "none", f"couldn't run the patch's tests on both trees: {why}")

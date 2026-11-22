@@ -1606,8 +1606,9 @@ class _ValidatePatchRequest(BaseModel):
     pack_id: str | None = None  # when set and validation passes with evidence, the pack is marked resolved
     # more packs one patch fixes: the suite runs once and each pack is judged on its own evidence
     pack_ids: list[str] = Field(default_factory=list, max_length=MAX_PACKS_PER_VALIDATION)
-    # with several packs: which of the patch's tests are each pack's evidence ({pack id: [test id or
-    # test file]}). Unnamed packs get the tests whose file names their cited module (#127).
+    # which of the patch's tests are each pack's evidence ({pack id: [test id or test file]}); a test id
+    # without its [case] names every parametrized case. With several packs, unnamed packs get the tests
+    # whose file names their cited module (#127); a lone unnamed pack is judged on all of them.
     pack_tests: dict[str, list[str]] = Field(default_factory=dict, max_length=MAX_PACKS_PER_VALIDATION)
     # classify changes as equivalent / behaviour change / "trust me" (None: AI_AUDIT_VALIDATE_SEMANTIC)
     semantic_check: bool | None = None
@@ -1684,7 +1685,8 @@ def _judge_evidence(
     """Run the evidence bar (#58) for a passing patch and set the pack resolved or unverified.
     *repro_cache* shares one repro run between the packs of a multi-pack request: the patch's
     tests on the dev tree give the same answer whichever pack asks. With *multi*, each pack is
-    judged only on the tests that are its own (``evidence.for_pack``, #127)."""
+    judged only on the tests that are its own (``evidence.for_pack``, #127); so is a lone pack whose
+    tests ``pack_tests`` names."""
     from auditor import evidence
 
     pid = request.pack_id or "" if pack_id is None else pack_id
@@ -1699,8 +1701,9 @@ def _judge_evidence(
             cache["repro"] = evidence.run_repro(tree, fresh_base, ch["tests"], venv_cache=venv_cache,
                                                 node_cache=node_cache, timeout_s=timeout_s)
         repro = cache["repro"]
-        if multi:
-            repro = evidence.for_pack(repro, pack, tree, named=request.pack_tests.get(pid))
+        named = request.pack_tests.get(pid)
+        if multi or named:  # a lone pack is judged on the whole patch unless pack_tests names its tests
+            repro = evidence.for_pack(repro, pack, tree, named=named)
     d = evidence.decide(pack, tool=tool, changed=changed, repro=repro, waiver=request.evidence_waiver or "",
                         base_sha=base_sha)
     if request.base_ref:
