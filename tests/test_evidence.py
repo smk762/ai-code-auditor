@@ -234,6 +234,23 @@ def test_test_importing_new_code_proves_nothing(tmp_path: Path, host_python) -> 
     assert any("couldn't be collected on dev" in n for n in res.notes)
 
 
+def test_a_helper_changed_inside_a_test_file_never_manufactures_a_repro(tmp_path: Path, host_python) -> None:
+    """The dev run takes the patched test file whole, its helpers too. Mixing dev's helper into it
+    would let this patch's test-side change (the helper now raises on dev's signature) pass for
+    proof that the code change, which no test exercises, fixed anything. Documented: needs a waiver."""
+    base_files = {**BASE_FILES, "svc/tests/test_check.py": "def _check(v):\n    return v\n\n"
+                                                          "def test_old():\n    assert _check(1)\n"}
+    base, patched = tmp_path / "base", tmp_path / "patched"
+    _write(base, base_files)
+    _write(patched, {**base_files, "svc/app/calc.py": "def add(a, b):\n    return a + b\n",
+                     "svc/tests/test_check.py": "def _check(v, strict=False):\n    return v\n\n"
+                                                "def test_old():\n    assert _check(1)\n\n"
+                                                "def test_new():\n    assert _check(1, strict=True)\n"})
+    res = evidence.python_repro(patched, _fresh(base, tmp_path), ["svc/tests/test_check.py"],
+                                cache_dir=tmp_path / "c")
+    assert res.base["svc/tests/test_check.py::test_new"] == "passed" and res.repro == []
+
+
 def test_node_repro_copies_material_and_compares(tmp_path: Path, monkeypatch) -> None:
     """Orchestration only: vitest itself is faked (installing it needs the network)."""
     pkg = json.dumps({"name": "w", "version": "1.0.0", "scripts": {"test": "vitest run"}})

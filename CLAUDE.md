@@ -100,7 +100,12 @@ module gets a stub. The response names its base (`base_source`, `base_stale`, `b
 
 **Evidence bar** (`auditor/evidence.py`, #58). A pass resolves a pack only with evidence, else it becomes
 `unverified`, which is still open work. Bug, security and untyped finding packs need a test from the patch that fails
-on `dev` and passes patched. Other code changes need tests or npm checks to have run. Docs/config-only patches pass.
+on `dev` and passes patched. The "fails on `dev`" run copies every test-side file the patch changes (test files, and
+anything under a `tests/` dir) onto the dev tree whole, so a helper *defined inside* a test file runs its patched
+version there too: a bug in such a helper can't show repro. That is deliberate (mixing dev helpers into a patched test
+file would let a test-helper change manufacture the failure the code change is meant to earn), so a patch that only
+touches test files resolves as `test_only`, and a mixed patch whose proof needs the old helper takes a waiver.
+Other code changes need tests or npm checks to have run. Docs/config-only patches pass.
 `evidence_waiver` (≥ 20 chars) resolves anyway and is recorded. Fix commits carry `Pack:` / `Evidence:` trailers
 (`auditor/trailers.py`), which the trust metrics read from `git log`.
 

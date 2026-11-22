@@ -13,6 +13,10 @@ Evidence kind      Resolves when
                    and run there (pytest; vitest for TS/JS projects whose test script uses it).
                    A test that can't even be collected on dev (it imports something the patch
                    adds) doesn't count, because it shows a new API, not a fixed bug.
+                   The files are copied whole, so a helper defined inside a test file runs patched
+                   on dev too and can't show the bug. Taking dev's helpers into the patched test file
+                   would let a test-side change manufacture the dev failure, so that case needs a
+                   waiver (a test-only patch resolves as ``test_only`` without this run).
 ``tests``          Other packs that change code: the project's tests (or npm checks) ran and
                    passed. Lint alone is not enough.
 ``test_only``      The patch changes only tests (the fix *is* the test): those tests ran.

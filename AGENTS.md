@@ -35,6 +35,10 @@ Optional: `q=<keyword>` boosts matches, `status=open,claimed,in_progress` (defau
    evidence (see "Done means" in the brief): for bug and security packs, a test in the patch that **fails on `dev` and
    passes with the fix**. Otherwise the pack becomes `unverified` and `pack.reason` says what's missing;
    `"evidence_waiver": "<why no test can exercise it>"` resolves it anyway, recorded on the pack.
+   The "fails on `dev`" run uses your patched test files whole (anything under `tests/` too), so a helper defined
+   inside a test file runs its fixed version on `dev` as well and can't show the failure. A patch that changes only
+   test files resolves as `test_only` without that run; if it also changes code and the proof needs the old helper,
+   move the helper out of the test file into code, or send a waiver that says so.
    One patch that fixes several packs: add `"pack_ids": ["<id>", ...]` (up to 25). The suite runs once, each pack
    is judged on its own evidence, and `packs` in the response lists every result. A pack's evidence is only the
    tests whose file names its cited module; another pack's test never resolves it. If your test lives elsewhere,
