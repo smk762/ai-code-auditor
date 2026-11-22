@@ -41,6 +41,8 @@ COPY cli.py /app/cli.py
 COPY gpu-tenant.yaml /app/gpu-tenant.yaml
 
 # ruff: fatal-only lint of patched files in validate_patch (per-project test venvs are built at runtime)
-RUN pip install --no-cache-dir . ruff
+# uv: builds a test env on the interpreter a project's requires-python asks for when the image's
+# doesn't satisfy it (validator.test_python, #141); its interpreters live in the venv cache.
+RUN pip install --no-cache-dir . ruff uv==0.11.9
 
 CMD ["python", "pipelines/nightly_repo_audit.py"]

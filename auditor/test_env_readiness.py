@@ -108,11 +108,19 @@ def parse_collect(output: str, returncode: int) -> dict[str, Any]:
 
 def check_python(root: Path, cache: Path, timeout_s: int = COLLECT_TIMEOUT_S) -> dict[str, Any]:
     """Build *root*'s test venv as validate_patch does, then collect its tests."""
-    from auditor.validator import ensure_test_venv, stub_version_files
+    from auditor.validator import ensure_test_venv, requires_python, venv_python_version
 
     python, err = ensure_test_venv(root, cache)
     if python is None:
-        return {"status": "env_failed", "error": err[-1200:]}
+        return {"status": "env_failed", "error": err[-1200:], "requires_python": requires_python(root)}
+    res = _collect(root, python, timeout_s)
+    res["python"] = venv_python_version(python)  # per project: requires-python may pick another (#141)
+    return res
+
+
+def _collect(root: Path, python: Path, timeout_s: int) -> dict[str, Any]:
+    from auditor.validator import stub_version_files
+
     stub_version_files(root)
     # Same interpreter, PYTHONPATH and cwd as validator._run_project_tests.
     paths = [str(root / "src")] if (root / "src").is_dir() else []
