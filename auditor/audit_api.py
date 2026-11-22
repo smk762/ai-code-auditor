@@ -1606,6 +1606,9 @@ class _ValidatePatchRequest(BaseModel):
     pack_id: str | None = None  # when set and validation passes with evidence, the pack is marked resolved
     # more packs one patch fixes: the suite runs once and each pack is judged on its own evidence
     pack_ids: list[str] = Field(default_factory=list, max_length=MAX_PACKS_PER_VALIDATION)
+    # with several packs: which of the patch's tests are each pack's evidence ({pack id: [test id or
+    # test file]}). Unnamed packs get the tests whose file names their cited module (#127).
+    pack_tests: dict[str, list[str]] = Field(default_factory=dict, max_length=MAX_PACKS_PER_VALIDATION)
     # classify changes as equivalent / behaviour change / "trust me" (None: AI_AUDIT_VALIDATE_SEMANTIC)
     semantic_check: bool | None = None
     # why this fix can't carry a failing-then-passing test (≥ 20 chars); recorded on the pack (#58)
@@ -1676,11 +1679,12 @@ def _resolve_pack_after_validation(
 def _judge_evidence(
     request: "_ValidatePatchRequest", *, tool: str, changed: list[str], tree: Path, fresh_base: Any,
     base_sha: str, venv_cache: Path, node_cache: Path, timeout_s: int,
-    pack_id: str | None = None, repro_cache: dict[str, Any] | None = None,
+    pack_id: str | None = None, repro_cache: dict[str, Any] | None = None, multi: bool = False,
 ) -> dict[str, Any]:
     """Run the evidence bar (#58) for a passing patch and set the pack resolved or unverified.
     *repro_cache* shares one repro run between the packs of a multi-pack request: the patch's
-    tests on the dev tree give the same answer whichever pack asks."""
+    tests on the dev tree give the same answer whichever pack asks. With *multi*, each pack is
+    judged only on the tests that are its own (``evidence.for_pack``, #127)."""
     from auditor import evidence
 
     pid = request.pack_id or "" if pack_id is None else pack_id
@@ -1695,6 +1699,8 @@ def _judge_evidence(
             cache["repro"] = evidence.run_repro(tree, fresh_base, ch["tests"], venv_cache=venv_cache,
                                                 node_cache=node_cache, timeout_s=timeout_s)
         repro = cache["repro"]
+        if multi:
+            repro = evidence.for_pack(repro, pack, tree, named=request.pack_tests.get(pid))
     d = evidence.decide(pack, tool=tool, changed=changed, repro=repro, waiver=request.evidence_waiver or "",
                         base_sha=base_sha)
     if request.base_ref:
@@ -1789,6 +1795,9 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
     from auditor.validator import extract_failure_summary, validate_patch_tree
     from auditor.repo_resolver import resolve_repo_path
 
+    stray = sorted(set(request.pack_tests) - set(_request_pack_ids(request)))
+    if stray:  # before any work: a typo here would otherwise cost a whole validation run
+        raise HTTPException(status_code=422, detail=f"pack_tests names packs not in this request: {stray[:5]}")
     cfg = load_ecosystem_config()
     repo_cfg = next((r for r in cfg.repos if r.name == request.repo), None)
     if repo_cfg is None:
@@ -1945,7 +1954,7 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
                 res = _judge_evidence(
                     request, tool=val_result.tool, changed=changed, tree=repo_copy, fresh_base=_fresh_base,
                     base_sha=str(base_info.get("base_sha") or ""), venv_cache=venv_cache, node_cache=node_cache,
-                    timeout_s=timeout_s, pack_id=pid, repro_cache=repro_cache,
+                    timeout_s=timeout_s, pack_id=pid, repro_cache=repro_cache, multi=len(pack_ids) > 1,
                 )
             results.append(res)
         if results:
@@ -2435,7 +2444,6 @@ def get_pr_summary(
 ) -> JSONResponse:
     """Commit trailers and the visible PR-body table for a fix (#73). Read-only, no auth."""
     from auditor import trailers
-    from conductor.publish import public_base_url
 
     ids = [p.strip() for p in packs.split(",") if p.strip()][:100]
     try:
@@ -2443,7 +2451,7 @@ def get_pr_summary(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return JSONResponse({"packs": ids, "trailers": block,
-                         "markdown": trailers.summary_markdown(_output_dir(), ids, public_base_url=public_base_url())})
+                         "markdown": trailers.summary_markdown(_output_dir(), ids)})
 
 
 @app.get("/audit/packs/bundle")

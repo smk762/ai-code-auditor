@@ -103,16 +103,16 @@ def render(output_dir: str | Path, ids: list[str], *, evidence: str = "", waiver
     return "\n".join(lines)
 
 
-def summary_markdown(output_dir: str | Path, ids: list[str], *, public_base_url: str = "") -> str:
-    """The visible PR-body section: one row per pack, looked up in the pack store."""
+def summary_markdown(output_dir: str | Path, ids: list[str]) -> str:
+    """The visible PR-body section: one row per pack, looked up in the pack store. Packs are named by
+    id, never linked: a PR body is public, and the audit API's base URL is a private host (#128)."""
     ids = list(dict.fromkeys(ids))
     if not ids:
         return "### Audit packs\n\nThis PR fixes no audit packs."
-    base = public_base_url.rstrip("/")
     rows = ["### Audit packs", "", "| Pack | Class | Evidence | Status |", "|---|---|---|---|"]
     for i in ids:
         f = _pack_facts(output_dir, i)
-        name = f"[`{i}`]({base}/ui/packs/{i})" if base else f"`{i}`"
+        name = f"`{i}`"
         if not f["found"]:
             rows.append(f"| {name} | | | not found |")
             continue

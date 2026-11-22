@@ -11,9 +11,10 @@ here and in code. Don't add a rule to remember.
 
 | Never | Enforced by |
 |---|---|
-| Write to a repo mirror or a configured scan path (validation, scans and the API only read them; draft PRs are built in a throwaway clone) | `:ro` mounts in `docker-compose.yml`; `test_validate_base::test_fetches_code_merged_after_the_nightly_sync_without_touching_the_mirror`; `git_ops.refuse_scan_source` in every branch/commit/push helper (`test_draft_pr_packs::test_git_writes_refuse_a_scan_source`, `::test_every_configured_mirror_and_repo_path_is_a_scan_source`, `::test_draft_pr_never_writes_the_source_checkout`) |
+| Write to a repo mirror or a configured scan path (validation, scans and the API only read them; draft PRs are built in a throwaway clone) | `:ro` mounts in `docker-compose.yml`; `test_validate_base::test_fetches_code_merged_after_the_nightly_sync_without_touching_the_mirror`; `git_ops.refuse_scan_source` in every branch/commit/push helper (`test_draft_pr_packs::test_git_writes_refuse_a_scan_source`, `::test_every_configured_mirror_and_repo_path_is_a_scan_source`, `::test_draft_pr_never_writes_the_source_checkout`); `test_guard_seeded::test_the_mirror_is_never_written` |
 | Mirror sync discarding a unique local commit | `test_mirror_sync::test_unique_local_commit_is_never_reset` |
 | Resolve a pack without evidence (lint-only, or a bug/security fix with no test that fails on `dev` and passes patched) | `test_evidence::test_decide`; the seeded-defect eval's control gate (`auditor/eval_seeded.py`) |
+| A pack resolved on another pack's test in a multi-pack `validate_patch` | `test_evidence::test_a_pack_never_resolves_on_another_packs_test`, `::test_for_pack_keeps_only_the_tests_naming_the_packs_module` |
 | Report a TS/JS change as passed when no check ran on it | `test_validate_node::test_missing_npm_skips_instead_of_passing`, `::test_failed_install_skips_instead_of_passing` |
 | Publish a wiki page that failed the opsec gate, redact one instead of refusing it, or export without the deny-list | `test_wiki_public::test_gate_refuses`, `::test_export_refuses_to_run_without_denylist`, `::test_publish_refuses_tampered_or_leaky_bundles` |
 | "Notable findings" or internal INDEX data in the public bundle | `test_wiki_public::test_export_bundle` |
@@ -27,7 +28,8 @@ here and in code. Don't add a rule to remember.
 | Record a class guard by a sha prefix (a mistyped one waits as `pending` forever, like an unsynced mirror) | `test_class_packs::test_record_guard_validates` |
 | A class guard closing a child its rule never fired on, a noqa-waived hit counting as gone, or a silence-only closure counting toward `class_packs.lifecycle` | `test_class_packs::test_child_closes_only_when_its_rule_hit_is_gone`, `::test_a_waived_hit_is_not_a_closure`, `::test_rule_hits_ignores_noqa_and_never_reads_a_failure_as_clean`, `::test_lifecycle_gate_counts_rule_attributed_closures_only` |
 | Write a finding class onto a pack without all three models agreeing, or with an unmeasured prompt | `test_pack_classes::test_consensus_needs_every_model`, `::test_no_frozen_prompt_skips` |
-| A gate passing below its minimum sample | `test_trust_eval::test_failing_and_insufficient`, `::test_stale_or_missing_seeded_eval_is_insufficient` |
+| A gate passing below its minimum sample | `test_trust_eval::test_failing_and_insufficient`, `::test_stale_or_missing_seeded_eval_is_insufficient`, `test_guard_seeded::test_min_sample_scales_with_proven_guards`, `::test_stale_or_missing_results_are_insufficient` |
+| Count a guard seed as caught or missed when the guard's check already fails on the unplanted export, or count an unproven guard toward `guards.seeded_recall` | `test_guard_seeded::test_a_check_that_already_fails_unplanted_is_invalid_not_a_miss`, `::test_no_proven_guards_is_insufficient`, `::test_a_rule_that_cannot_run_makes_the_seed_invalid` |
 | Overwrite `trust_history.jsonl`, `trust_eval_history.jsonl` or `pack_savings_history.jsonl` | `test_trust_metrics::test_refresh_writes_report_and_appends_history`, `test_trust_eval::test_evaluate_writes_report_and_history`, `test_pack_savings::test_refresh_writes_report_and_appends_history` |
 | A partial RAG send retiring other docs | `test_rag_retire::test_sync_retires_only_what_the_send_replaced`, `::test_failed_delete_is_retried_and_failed_send_retires_nothing` |
 | Remove a GitHub label this tool didn't add, or label an external item | `test_linchpin::test_apply_labels_adds_removes_only_its_own_and_records_ledger` |
@@ -104,7 +106,9 @@ change is judged against it. `auditor/trust_eval.py` defines the gates: below it
 `insufficient`, never a pass. The exit criteria are every gate that isn't pending or informational (`INFORMATIONAL`: today
 `class_packs.lifecycle`, so guards are judged by `guards.seeded_recall`) passing in each of the last two ISO weeks,
 with headline metrics not worse over 4 weekly snapshots. `auditor/eval_seeded.py` tests the evidence bar against
-planted bugs in real mirrors. These run nightly after the repo audit, in this order: pack GC, pack classes, class
+planted bugs in real mirrors, and `auditor/guard_seeded.py` plants each guarded class's seeds (`config/guard_seeds.yaml`)
+in a scratch export to measure every proven class guard's recall (`guards.seeded_recall`); both refresh weekly inside
+the gates step. Never tune a seed to make a guard pass: a miss is a finding about the guard. These run nightly after the repo audit, in this order: pack GC, pack classes, class
 packs, test-env readiness, revalidation, trust metrics, gates. The evidence gates judge the last 14 days of resolutions
 (`GATE_WINDOW_DAYS`).
 

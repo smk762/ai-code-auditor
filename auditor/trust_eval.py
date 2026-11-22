@@ -11,9 +11,10 @@ like any other but kept out of the exit criteria. ``evaluate()`` writes ``report
 - the headline trust metrics are stable or improving over the last 4 weekly snapshots of
   ``trust_history.jsonl``.
 
-Gates read the latest trust report (#52) and the seeded-defect eval (``eval_seeded``), so
-evaluating is cheap and runs after every nightly repo audit. The seeded eval is slow (it runs
-real test suites) and refreshes weekly.
+Gates read the latest trust report (#52), the seeded-defect eval of the evidence bar
+(``eval_seeded``) and the seeded recall of class guards (``guard_seeded``), so evaluating is cheap
+and runs after every nightly repo audit. Both seeded evals are slow (they run real test suites)
+and refresh weekly.
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 REPORT_NAME = "trust_eval.json"
 HISTORY_NAME = "trust_eval_history.jsonl"
 SEEDED_NAME = "eval_seeded.json"
+GUARD_SEEDED_NAME = "guard_seeded.json"
 SEEDED_MAX_AGE = timedelta(days=8)  # a weekly refresh plus slack; older results don't count
 
 
@@ -85,7 +87,8 @@ def _since_bar(report: dict[str, Any]) -> tuple[int, int, int, str]:
 def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
                 classes: dict[str, Any] | None = None, class_lifecycle: dict[str, Any] | None = None,
                 rules_fixtures: dict[str, Any] | None = None,
-                arch_contracts: dict[str, Any] | None = None) -> list[Gate]:
+                arch_contracts: dict[str, Any] | None = None,
+                guard_seeded: dict[str, Any] | None = None) -> list[Gate]:
     t = trust or {}
     gates: list[Gate] = []
 
@@ -164,6 +167,19 @@ def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
                       "Every architecture rule fires once on its seeded violation and never on a clean graph",
                       ">=", 1.0, 1)
                  .judge(ac.get("rate"), int(ac.get("n") or 0), note))
+
+    # ── #63 seeded recall of proven class guards ──
+    from auditor.guard_seeded import recall_metric
+
+    gs = guard_seeded or {}
+    gs_fresh = bool(gs) and _age(gs.get("at")) <= SEEDED_MAX_AGE
+    rm = recall_metric(gs if gs_fresh else None)
+    gs_note = ("no guard seeded eval (guard_seeded.json)" if not gs else
+               f"guard seeded eval is {_age(gs.get('at')).days} days old" if not gs_fresh else rm["note"])
+    gates.append(Gate("guards.seeded_recall", "class packs", 63,
+                      "Seeded instances of a guarded class that its proven guard's rule or proof test catches",
+                      ">=", 1.0, max(2, 2 * rm["guards"]))
+                 .judge(rm["rate"], rm["n"], gs_note))
     return gates
 
 
@@ -316,7 +332,8 @@ def evaluate(output_dir: str | Path | None = None, *, record: bool = True,
     from auditor.suite_rules import fixtures as rules_fixtures
 
     gates = build_gates(_read_json(out / TRUST_REPORT), _read_json(out / SEEDED_NAME), classes_eval(out),
-                        class_lifecycle_eval(out), rules_fixtures(out), arch_contracts_eval())
+                        class_lifecycle_eval(out), rules_fixtures(out), arch_contracts_eval(),
+                        _read_json(out / GUARD_SEEDED_NAME))
     for g in gates:
         if g.id in INFORMATIONAL:
             g.informational = True
@@ -345,8 +362,8 @@ def evaluate(output_dir: str | Path | None = None, *, record: bool = True,
 
 
 def evaluate_quietly(output_dir: str | Path | None = None, *, seeded_runner: Callable[..., Any] | None = None,
-                     ) -> dict[str, Any]:
-    """Pipeline tail: refresh the seeded eval when it's a week old, then evaluate. Never raises."""
+                     guard_runner: Callable[..., Any] | None = None) -> dict[str, Any]:
+    """Pipeline tail: refresh each seeded eval when it's a week old, then evaluate. Never raises."""
     if os.getenv("AI_AUDIT_TRUST_EVAL", "1").strip().lower() in {"0", "false", "no", "off"}:
         return {"skipped": "AI_AUDIT_TRUST_EVAL=0"}
     out = Path(output_dir or os.getenv("AI_AUDIT_OUTPUT_DIR") or "reports")
@@ -358,6 +375,14 @@ def evaluate_quietly(output_dir: str | Path | None = None, *, seeded_runner: Cal
             (seeded_runner or eval_seeded.run)(out)
     except Exception as exc:  # noqa: BLE001 — the gates report a stale seeded eval as insufficient
         logger.warning("seeded eval failed: %s", exc)
+    try:
+        gs = _read_json(out / GUARD_SEEDED_NAME)
+        if gs is None or _age(gs.get("at")) > timedelta(days=7):
+            from auditor import guard_seeded
+
+            (guard_runner or guard_seeded.run)(out)
+    except Exception as exc:  # noqa: BLE001 — the gate reports stale guard results as insufficient
+        logger.warning("guard seeded eval failed: %s", exc)
     try:
         return evaluate(out)["summary"]
     except Exception as exc:  # noqa: BLE001

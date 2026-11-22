@@ -1,0 +1,114 @@
+# Seeded-defect templates for class guards (#63, auditor/guard_seeded.py).
+#
+# Each seed is a small, realistic instance of a guardable finding class. The weekly guard
+# seeded-recall eval plants every seed for a guard's class, one at a time, into a file the guard
+# covers in a scratch export of the repo's dev, then runs the guard's check (its static rule, if it
+# has one, and its proof test). A seed the check doesn't catch is a recall miss: a finding about the
+# guard. Don't edit a seed to make a guard pass; a seed belongs here when the pattern is the class,
+# whatever any one guard happens to look for.
+#
+#   id       unique; the planted function must be named `_seeded_<id>` (it marks the seed's lines)
+#   why      the shape of real findings this stands for
+#   imports  module-level lines the seed needs, inserted after the file's last top-level import
+#   code     the seed itself, appended at the end of the file as top-level code
+#
+# Where to plant is not configured here: it comes from the guard's own scope (the files its proof
+# test reads while it runs, else, for a static rule, any non-test .py in the repo).
+
+silent_failure:
+  - id: silent_except_pass
+    why: a broad except whose body is pass, so a failed write disappears
+    code: |
+      def _seeded_silent_except_pass(path, data: bytes) -> None:
+          try:
+              with open(path, "wb") as fh:
+                  fh.write(data)
+          except Exception:
+              pass
+  - id: silent_except_continue
+    why: records that fail to parse are dropped from a batch without a trace
+    imports: [import json]
+    code: |
+      def _seeded_silent_except_continue(lines: list[str]) -> list[dict]:
+          out = []
+          for line in lines:
+              try:
+                  out.append(json.loads(line))
+              except Exception:
+                  continue
+          return out
+  - id: silent_zip_truncate
+    why: zip() of two lists that must line up silently drops the tail of the longer one
+    code: |
+      def _seeded_silent_zip_truncate(names: list[str], vectors: list[list[float]]) -> dict[str, list[float]]:
+          return {name: vec for name, vec in zip(names, vectors)}
+  - id: silent_reset_to_empty
+    why: an unreadable or corrupt state file is turned into a plausible empty state
+    imports: [import json]
+    code: |
+      def _seeded_silent_reset_to_empty(path) -> dict:
+          try:
+              with open(path, encoding="utf-8") as fh:
+                  return json.load(fh)
+          except Exception:
+              return {}
+
+ssrf:
+  - id: ssrf_httpx_get
+    why: a URL from the request body is fetched by the server
+    imports: [import httpx]
+    code: |
+      def _seeded_ssrf_httpx_get(payload: dict) -> int:
+          resp = httpx.get(payload["callback_url"], timeout=10)
+          return resp.status_code
+  - id: ssrf_async_client
+    why: a caller-supplied target is POSTed to from a fresh client
+    imports: [import httpx]
+    code: |
+      async def _seeded_ssrf_async_client(target_url: str, manifest: dict) -> int:
+          async with httpx.AsyncClient(timeout=10) as client:
+              resp = await client.post(target_url, json=manifest)
+          return resp.status_code
+  - id: ssrf_urlopen
+    why: the same fetch through the standard library instead of httpx
+    imports: [import urllib.request]
+    code: |
+      def _seeded_ssrf_urlopen(payload: dict) -> bytes:
+          with urllib.request.urlopen(payload["url"], timeout=10) as resp:
+              return resp.read()
+
+info_leak:
+  - id: leak_exc_text_500
+    why: an exception's text returned to the client in a 500
+    imports: [from fastapi import HTTPException]
+    code: |
+      def _seeded_leak_exc_text_500(raw: str) -> int:
+          try:
+              return int(raw)
+          except Exception as exc:
+              raise HTTPException(status_code=500, detail=f"conversion failed: {exc}") from exc
+  - id: leak_exc_json_502
+    why: an exception's text in a JSON error body with a 5xx status
+    imports: [from fastapi.responses import JSONResponse]
+    code: |
+      def _seeded_leak_exc_json_502(raw: str):
+          try:
+              return {"value": int(raw)}
+          except ValueError as exc:
+              return JSONResponse({"error": str(exc)}, status_code=502)
+  - id: leak_upstream_body
+    why: an upstream service's error body relayed verbatim
+    imports: [from fastapi import HTTPException]
+    code: |
+      def _seeded_leak_upstream_body(resp) -> None:
+          if resp.status_code >= 400:
+              raise HTTPException(status_code=502, detail=resp.text)
+  - id: leak_traceback_500
+    why: a stack trace returned to the client in a 500
+    imports: [import traceback, from fastapi import HTTPException]
+    code: |
+      def _seeded_leak_traceback_500(raw: str) -> int:
+          try:
+              return int(raw)
+          except Exception:
+              raise HTTPException(status_code=500, detail=traceback.format_exc()) from None

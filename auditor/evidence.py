@@ -37,7 +37,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from auditor.proc import child_env, run as proc_run
 
@@ -107,6 +107,8 @@ class ReproResult:
     base: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     output: str = ""
+    # repro tests of a shared multi-pack run that belong to other packs, not this one (for_pack)
+    scoped_out: list[str] = field(default_factory=list)
 
     @property
     def repro(self) -> list[str]:
@@ -402,6 +404,62 @@ def tests_ran(tool: str) -> bool:
     return bool(parts & {"pytest", "npm_checks", "npm_test", "go_test", "cargo_test"})
 
 
+# File stems too common to tie a test to a pack on their own: ``tests`` importing ``main`` could be
+# any project's main. For these the parent directory has to come with it (``repair.models``).
+GENERIC_STEMS = frozenset({"main", "app", "server", "utils", "util", "core", "models", "model", "config", "cli",
+                           "api", "base", "common", "helpers", "types", "routes", "views", "index", "settings"})
+
+
+def _module_pattern(pack: dict[str, Any]) -> re.Pattern[str] | None:
+    """How a test file names the module the pack cites, or None when the pack cites no file."""
+    fp = str((pack.get("location") or {}).get("file_path") or "").replace("\\", "/")
+    if not fp:
+        return None
+    p = PurePosixPath(fp)
+    stem, parent = p.stem, p.parent.name
+    if stem == "__init__":
+        stem, parent = parent, p.parent.parent.name
+    if not stem:
+        return None
+    if stem.lower() in GENERIC_STEMS or len(stem) < 4:
+        if not parent:
+            return None
+        par, st = re.escape(parent), re.escape(stem)  # repair.models, repair/models, from x.repair import models
+        return re.compile(rf"\b{par}[./]{st}\b|^\s*from\s+[\w.]*\b{par}\s+import\s+[^\n#]*\b{st}\b", re.M)
+    return re.compile(rf"\b{re.escape(stem)}\b")
+
+
+def for_pack(repro: ReproResult, pack: dict[str, Any], tree: Path, *, named: list[str] | None = None) -> ReproResult:
+    """The part of one multi-pack repro run that is *pack*'s own evidence (#127).
+
+    A test belongs to the pack when the caller named it for that pack (``pack_tests``: a test id or
+    its file), or, with nothing named, when its test file names the module the pack cites. A test
+    that fails on dev and passes patched but belongs to another pack is listed in ``scoped_out`` and
+    never resolves this one: one patch fixing two things must not let either fix vouch for the other."""
+    root = tree.resolve()
+    sources: dict[str, str] = {}
+
+    def source(test_id: str) -> str:
+        f = test_id.split("::", 1)[0]
+        if f not in sources:
+            path = (tree / f).resolve()
+            try:
+                sources[f] = path.read_text(encoding="utf-8", errors="replace") if path.is_relative_to(root) else ""
+            except OSError:
+                sources[f] = ""
+        return sources[f]
+
+    if named:
+        wanted = {str(n).strip() for n in named if str(n).strip()}
+        keep = {t for t in repro.patched if t in wanted or t.split("::", 1)[0] in wanted}
+    else:
+        pat = _module_pattern(pack)
+        keep = {t for t in repro.patched if pat is not None and pat.search(source(t))}
+    return ReproResult(tool=repro.tool, patched={t: s for t, s in repro.patched.items() if t in keep},
+                       base={t: s for t, s in repro.base.items() if t in keep}, notes=list(repro.notes),
+                       output=repro.output, scoped_out=sorted(set(repro.repro) - keep))
+
+
 def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproResult | None,
            waiver: str = "", base_sha: str = "") -> Decision:
     """Resolved or unverified, for a validate_patch run that passed."""
@@ -434,6 +492,10 @@ def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproR
         if not ch["tests"]:
             return done("unverified", "none", "no test added or changed: add one that fails on dev and passes "
                         "with the fix, or pass evidence_waiver")
+        if repro is not None and repro.scoped_out:
+            return done("unverified", "none", f"{len(repro.scoped_out)} test(s) fail on dev and pass with the fix, "
+                        "but none is this pack's own: they belong to other packs in the request. Name this "
+                        "pack's tests in pack_tests, or validate it alone")
         if repro is None or not repro.ran:
             why = "; ".join(repro.notes) if repro and repro.notes else "the patch's tests didn't run"
             return done("unverified", "none", f"couldn't run the patch's tests on both trees: {why}")

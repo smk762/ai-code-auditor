@@ -166,6 +166,13 @@ repos:
     provider: local
     subpath: ""
 
+  - name: argus-scout
+    path: /home/smk/mirrors/argus-scout
+    branch: dev
+    enabled: true
+    provider: local
+    subpath: ""
+
   - name: argus-sightline
     path: /home/smk/mirrors/argus-sightline
     branch: dev

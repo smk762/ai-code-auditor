@@ -338,6 +338,9 @@ def _build_parser() -> argparse.ArgumentParser:
     evt.add_argument("--seeded", action="store_true",
                      help="Re-run the seeded-defect eval first (plants bugs in real repos; minutes, no API spend)")
     evt.add_argument("--repos", default="", help="With --seeded: comma-separated repos (default: a weekly sample)")
+    evt.add_argument("--guards", action="store_true",
+                     help="Re-run seeded recall of proven class guards first (seeds planted in scratch exports; "
+                          "minutes, no API spend)")
     evt.add_argument("--json", action="store_true", help="Print the full report as JSON")
     evt.add_argument("--no-record", action="store_true", help="Don't write trust_eval.json or append the history")
 
@@ -674,10 +677,21 @@ def _run_eval_trust(args) -> None:
               f"{r['control']['wrongly_accepted']}/{r['control']['n']} non-fixes wrongly accepted, "
               f"repos {', '.join(r['repos_with_scenarios']) or 'none'} ({r['seconds']}s)",
               file=sys.stderr if args.json else sys.stdout)
+    guards = getattr(args, "guards", False)
+    if guards:
+        from auditor import guard_seeded
+
+        gr = guard_seeded.run(out)
+        gs = gr["summary"]
+        print(f"guard seeded recall: {gs['caught']}/{gs['caught'] + gs['missed']} seeds caught, "
+              f"{gs['invalid']} invalid, {gs['guards']} guard(s) ({gr['seconds']}s)",
+              file=sys.stderr if args.json else sys.stdout)
     rep = trust_eval.evaluate(out, record=not args.no_record)
     if args.json:
         if args.seeded:
             rep = {**rep, "seeded": r}
+        if guards:
+            rep = {**rep, "guard_seeded": gr}
         print(json.dumps(rep, indent=2, default=str))
         return
     mark = {"pass": "PASS", "fail": "FAIL", "insufficient": "  ..", "pending": "  --"}
@@ -1643,7 +1657,6 @@ def main() -> None:
         _run_eval_classes(args) if args.eval_command == "classes" else _run_eval_trust(args)
     elif args.command == "pr-summary":
         from auditor import trailers
-        from conductor.publish import public_base_url
 
         ids = list(args.pack)
         if args.rev_range:
@@ -1651,7 +1664,7 @@ def main() -> None:
         if args.trailers:
             print(trailers.render(_output_dir_default(), ids, evidence=args.evidence, waiver=args.waiver))
         else:
-            print(trailers.summary_markdown(_output_dir_default(), ids, public_base_url=public_base_url()))
+            print(trailers.summary_markdown(_output_dir_default(), ids))
     elif args.command == "trust":
         _run_trust(as_json=args.json, cached=args.cached, history=args.history, github=args.github)
     elif args.command == "revalidate":
