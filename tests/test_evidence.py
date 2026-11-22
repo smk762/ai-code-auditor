@@ -548,3 +548,74 @@ def test_pack_ids_are_capped(monkeypatch) -> None:
     resp = TestClient(app).post("/audit/validate_patch", json={
         "repo": "mono", "patch": "", "pack_ids": [f"p{i}" for i in range(MAX_PACKS_PER_VALIDATION + 1)]})
     assert resp.status_code == 422
+
+
+# ── #127: in a multi-pack request each pack is judged on its own tests ───────
+
+def _pack_at(path: str) -> dict:
+    return {"location": {"file_path": path}, "narrative": {"finding_type": "bug"}, "kind": "nightly"}
+
+
+def test_for_pack_keeps_only_the_tests_naming_the_packs_module(tmp_path: Path) -> None:
+    _write(tmp_path, {
+        "tests/test_multi.py": "from app.repair.multi_model import validate\n\ndef test_a():\n    pass\n",
+        "tests/test_lease.py": "from app import gpu_lease\n\ndef test_b():\n    pass\n",
+        "tests/test_models.py": "from app.repair import models\n\ndef test_c():\n    pass\n",
+    })
+    ids = ["tests/test_multi.py::test_a", "tests/test_lease.py::test_b", "tests/test_models.py::test_c"]
+    repro = evidence.ReproResult(tool="pytest", patched=dict.fromkeys(ids, "passed"), base=dict.fromkeys(ids, "failed"))
+    multi = evidence.for_pack(repro, _pack_at("/m/rag-chat/app/repair/multi_model.py"), tmp_path)
+    assert multi.repro == ["tests/test_multi.py::test_a"]
+    assert multi.scoped_out == ["tests/test_lease.py::test_b", "tests/test_models.py::test_c"]
+    assert evidence.for_pack(repro, _pack_at("rag-chat/app/gpu_lease.py"), tmp_path).repro == ["tests/test_lease.py::test_b"]
+    # a generic stem ties only with its parent directory: "models" alone would match anything
+    assert evidence.for_pack(repro, _pack_at("app/repair/models.py"), tmp_path).repro == ["tests/test_models.py::test_c"]
+    assert evidence.for_pack(repro, _pack_at("other/models.py"), tmp_path).repro == []
+    # the caller can name a pack's tests, by id or file, and that's all it gets
+    named = evidence.for_pack(repro, _pack_at("app/repair/multi_model.py"), tmp_path, named=["tests/test_lease.py"])
+    assert named.repro == ["tests/test_lease.py::test_b"] and "tests/test_multi.py::test_a" in named.scoped_out
+    # a test id pointing outside the tree is never read
+    out = evidence.ReproResult(patched={"../../etc/passwd::t": "passed"}, base={"../../etc/passwd::t": "failed"})
+    assert evidence.for_pack(out, _pack_at("app/passwd.py"), tmp_path).repro == []
+
+
+def test_decide_names_tests_that_belong_to_other_packs() -> None:
+    scoped = evidence.ReproResult(tool="pytest", scoped_out=["tests/test_lease.py::test_b"])
+    d = evidence.decide(_pack_at("app/x.py"), tool="pytest", changed=["app/x.py", "tests/test_lease.py"], repro=scoped)
+    assert d.status == "unverified" and "belong to other packs" in d.reason
+
+
+def _bug_pack_in(mono, rel: str, title: str) -> str:
+    from auditor.agent_pack import emit_packs_from_findings
+    from auditor.contracts import Finding
+
+    repo = Path(mono["out"]).parent / "mono"
+    f = Finding(id=f"llm:{rel}", type="bug", severity="MEDIUM", repo="mono", file_path=str(repo / rel),
+                line=1, title=title, description="d", evidence="e", recommendation="r", source="llm")
+    [pack] = emit_packs_from_findings([f], output_dir=mono["out"], kind="nightly", run_id="run-3")
+    return pack.work_item_id
+
+
+def test_a_pack_never_resolves_on_another_packs_test(mono) -> None:
+    from auditor.agent_pack import load_pack
+
+    other = _bug_pack_in(mono, "svc/app/lease_vetting.py", "lease_vetting lets a metadata address through")
+    body = _post(patch=FIX + NEW_TEST, pack_ids=[mono["pack"], other])
+    by_id = {p["id"]: p for p in body["packs"]}
+    assert by_id[mono["pack"]]["status"] == "resolved" and by_id[mono["pack"]]["evidence"] == "repro"
+    assert by_id[other]["status"] == "unverified" and "belong to other packs" in by_id[other]["reason"], by_id[other]
+    assert by_id[other]["evidence_record"]["repro"]["scoped_out"] == ["svc/tests/test_calc.py::test_add"]
+    assert load_pack(mono["out"], other)["status"] == "unverified"
+    # a lone pack is still judged on the whole patch, as before
+    alone = _post(patch=FIX + NEW_TEST, pack_id=other)
+    assert alone["pack"]["status"] == "resolved"
+
+
+def test_pack_tests_names_a_packs_evidence_and_refuses_strangers(mono) -> None:
+    other = _bug_pack_in(mono, "svc/app/lease_vetting.py", "lease_vetting lets a metadata address through")
+    body = _post(patch=FIX + NEW_TEST, pack_ids=[mono["pack"], other],
+                 pack_tests={other: ["svc/tests/test_calc.py::test_add"]})
+    assert [p["status"] for p in body["packs"]] == ["resolved", "resolved"]
+    resp = TestClient(app).post("/audit/validate_patch", json={
+        "repo": "mono", "patch": FIX, "pack_ids": [mono["pack"]], "pack_tests": {"pack-typo": ["t.py"]}})
+    assert resp.status_code == 422 and "pack-typo" in resp.text
