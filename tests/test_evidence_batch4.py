@@ -34,3 +34,43 @@ def test_option_like_test_file_runs_as_a_file(tmp_path: Path) -> None:  # ced9ef
     (tmp_path / "-k_test.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
     outcomes, out = evidence._pytest(tmp_path, Path(sys.executable), ["-k_test.py"], 60)
     assert outcomes == {"-k_test.py::test_ok": "passed"}, out
+
+
+# ── unittest subTest failures (pytest >= 9 lists the test itself as PASSED) ──
+
+def test_a_failing_subtest_fails_its_test() -> None:
+    out = ("PASSED tests/test_a.py::T::test_sub\n"
+           "PASSED tests/test_a.py::T::test_ok\n"
+           "SUBFAILED[case with spaces] (i=1) tests/test_a.py::T::test_sub - AssertionError: 1 == 1\n"
+           "SUBFAILED(i=2) tests/test_a.py::test_native[p1] - assert 2 == 0\n"
+           "FAILED tests/test_a.py::test_native[p1] - contains 1 failed subtest\n"
+           "SUBFAIL tests/test_a.py::test_old_plugin - assert 0\n")
+    assert evidence.parse_pytest_outcomes(out) == {
+        "tests/test_a.py::T::test_sub": "failed", "tests/test_a.py::T::test_ok": "passed",
+        "tests/test_a.py::test_native[p1]": "failed", "tests/test_a.py::test_old_plugin": "failed"}
+
+
+_SUBTEST_FILE = '''import unittest
+
+LIMIT = {limit}
+
+
+class T(unittest.TestCase):
+    def test_sub(self):
+        for i in range(3):
+            with self.subTest("each value", i=i):
+                self.assertLess(i, LIMIT)
+'''
+
+
+def test_subtest_failure_is_failed_end_to_end_and_shows_repro(tmp_path: Path) -> None:
+    # the validator's own pytest, whatever its version or plugins: a failing subtest must read as failed
+    base, patched = tmp_path / "base", tmp_path / "patched"
+    for tree, limit in ((base, 2), (patched, 3)):
+        tree.mkdir()
+        (tree / "test_sub.py").write_text(_SUBTEST_FILE.format(limit=limit), encoding="utf-8")
+    on_dev, out = evidence._pytest(base, Path(sys.executable), ["test_sub.py"], 60)
+    assert on_dev == {"test_sub.py::T::test_sub": "failed"}, out
+    with_fix, out = evidence._pytest(patched, Path(sys.executable), ["test_sub.py"], 60)
+    assert with_fix == {"test_sub.py::T::test_sub": "passed"}, out
+    assert evidence.ReproResult(patched=with_fix, base=on_dev).repro == ["test_sub.py::T::test_sub"]

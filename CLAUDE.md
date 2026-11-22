@@ -75,7 +75,7 @@ Config lives in `config/*.yaml`. Every key in `auditor/config.py` can be overrid
 `voluptas` and this repo (from its own mirror, never the working checkout), under `/home/smk/<name>` or
 `/home/smk/mirrors/<name>` (`config/repo_mirrors.yaml`). `ai-audit rest-run` syncs them to `dev` first, and
 `scripts/sync_repo_mirrors.sh` does it by hand. A mirror is fast-forwarded, or reset with a backup branch after an
-upstream rewrite, and a mirror with a unique local commit is never touched (`conductor/mirrors.py`). Mirrors only sync nightly, so `validate_patch` fetches `dev` itself (`auditor/validate_base.py`). SSHFS mounts
+upstream rewrite, and a mirror with a unique local commit is never touched (`conductor/mirrors.py`). Mirrors only sync nightly, so `validate_patch` fetches `dev` itself (`auditor/validate_base.py`); the container has no git credential helper, so private repos (argus-iris, voluptas) fetch with `GITHUB_TOKEN`, offered only to `https://github.com`. SSHFS mounts
 are deprecated. `../argus-core` is a symlink alias for the cortex mirror: suite repos import `@../argus-core/SUITE.md`
 on purpose. Topology: [`ecosystem/ecosystem.md`](ecosystem/ecosystem.md).
 
@@ -100,7 +100,12 @@ module gets a stub. The response names its base (`base_source`, `base_stale`, `b
 
 **Evidence bar** (`auditor/evidence.py`, #58). A pass resolves a pack only with evidence, else it becomes
 `unverified`, which is still open work. Bug, security and untyped finding packs need a test from the patch that fails
-on `dev` and passes patched. Other code changes need tests or npm checks to have run. Docs/config-only patches pass.
+on `dev` and passes patched. The "fails on `dev`" run copies every test-side file the patch changes (test files, and
+anything under a `tests/` dir) onto the dev tree whole, so a helper *defined inside* a test file runs its patched
+version there too: a bug in such a helper can't show repro. That is deliberate (mixing dev helpers into a patched test
+file would let a test-helper change manufacture the failure the code change is meant to earn), so a patch that only
+touches test files resolves as `test_only`, and a mixed patch whose proof needs the old helper takes a waiver.
+Other code changes need tests or npm checks to have run. Docs/config-only patches pass.
 `evidence_waiver` (≥ 20 chars) resolves anyway and is recorded. Fix commits carry `Pack:` / `Evidence:` trailers
 (`auditor/trailers.py`), which the trust metrics read from `git log`.
 

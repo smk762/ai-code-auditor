@@ -13,6 +13,10 @@ Evidence kind      Resolves when
                    and run there (pytest; vitest for TS/JS projects whose test script uses it).
                    A test that can't even be collected on dev (it imports something the patch
                    adds) doesn't count, because it shows a new API, not a fixed bug.
+                   The files are copied whole, so a helper defined inside a test file runs patched
+                   on dev too and can't show the bug. Taking dev's helpers into the patched test file
+                   would let a test-side change manufacture the dev failure, so that case needs a
+                   waiver (a test-only patch resolves as ``test_only`` without this run).
 ``tests``          Other packs that change code: the project's tests (or npm checks) ran and
                    passed. Lint alone is not enough.
 ``test_only``      The patch changes only tests (the fix *is* the test): those tests ran.
@@ -56,6 +60,11 @@ _NON_CODE_RE = re.compile(
     re.IGNORECASE,
 )
 _PYTEST_OUTCOME_RE = re.compile(r"^(PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED)\s+(\S+?)(?:\s+-\s+.*)?$", re.MULTILINE)
+# A failing subtest (pytest >= 9 built in, or pytest-subtests) gets its own summary line, with the
+# subtest's message and params before the test id: ``SUBFAILED[msg] (i=1) tests/t.py::T::test_a - ...``.
+# pytest 9 still lists a unittest-style test whose subtests failed as ``PASSED``, so this line is the
+# only sign it failed.
+_PYTEST_SUBFAIL_RE = re.compile(r"^SUBFAIL(?:ED)?\b.*?\s(\S+?\.py::\S+)", re.MULTILINE)
 
 
 def enabled() -> bool:
@@ -165,9 +174,11 @@ def parse_pytest_outcomes(output: str) -> dict[str, str]:
     file, not a test, so it carries no test id and is reported separately.
 
     A test can be listed twice (a passing call whose teardown errors shows as ``ERROR`` and
-    ``PASSED``): the worst outcome wins, whatever order the sections come in."""
+    ``PASSED``): the worst outcome wins, whatever order the sections come in. A test with any
+    failing subtest is failed, even when pytest lists the test itself as passed."""
     out: dict[str, str] = {}
-    for status, tid in _PYTEST_OUTCOME_RE.findall(output):
+    found = _PYTEST_OUTCOME_RE.findall(output) + [("FAILED", t) for t in _PYTEST_SUBFAIL_RE.findall(output)]
+    for status, tid in found:
         if "::" not in tid:
             continue
         new = {"PASSED": "passed", "FAILED": "failed", "ERROR": "error", "XPASS": "passed"}.get(status, "skipped")
@@ -429,11 +440,22 @@ def _module_pattern(pack: dict[str, Any]) -> re.Pattern[str] | None:
     return re.compile(rf"\b{re.escape(stem)}\b")
 
 
+def names_test(wanted: set[str], test_id: str) -> bool:
+    """Whether a ``pack_tests`` entry names *test_id*: the exact id, its file, or an id it extends.
+    ``t.py::test_y`` names each parametrized case ``t.py::test_y[case1]``, and ``t.py::TestC`` each
+    of the class's tests; the match is on whole id parts, so ``t.py::test_y`` never names ``t.py::test_y2``."""
+    if test_id in wanted or test_id.split("::", 1)[0] in wanted:
+        return True
+    base = test_id.split("[", 1)[0]
+    parts = base.split("::")
+    return any("::".join(parts[:i]) in wanted for i in range(2, len(parts) + 1))
+
+
 def for_pack(repro: ReproResult, pack: dict[str, Any], tree: Path, *, named: list[str] | None = None) -> ReproResult:
     """The part of one multi-pack repro run that is *pack*'s own evidence (#127).
 
-    A test belongs to the pack when the caller named it for that pack (``pack_tests``: a test id or
-    its file), or, with nothing named, when its test file names the module the pack cites. A test
+    A test belongs to the pack when the caller named it for that pack (``pack_tests``: a test id, a
+    prefix of one such as a parametrized test without its ``[case]``, or its file), or, with nothing named, when its test file names the module the pack cites. A test
     that fails on dev and passes patched but belongs to another pack is listed in ``scoped_out`` and
     never resolves this one: one patch fixing two things must not let either fix vouch for the other."""
     root = tree.resolve()
@@ -451,7 +473,7 @@ def for_pack(repro: ReproResult, pack: dict[str, Any], tree: Path, *, named: lis
 
     if named:
         wanted = {str(n).strip() for n in named if str(n).strip()}
-        keep = {t for t in repro.patched if t in wanted or t.split("::", 1)[0] in wanted}
+        keep = {t for t in repro.patched if names_test(wanted, t)}
     else:
         pat = _module_pattern(pack)
         keep = {t for t in repro.patched if pat is not None and pat.search(source(t))}
@@ -494,8 +516,9 @@ def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproR
                         "with the fix, or pass evidence_waiver")
         if repro is not None and repro.scoped_out:
             return done("unverified", "none", f"{len(repro.scoped_out)} test(s) fail on dev and pass with the fix, "
-                        "but none is this pack's own: they belong to other packs in the request. Name this "
-                        "pack's tests in pack_tests, or validate it alone")
+                        "but none is this pack's own: they belong to other packs in the request, or aren't "
+                        "among the tests pack_tests names for it. Name this pack's tests in pack_tests, or "
+                        "validate it alone")
         if repro is None or not repro.ran:
             why = "; ".join(repro.notes) if repro and repro.notes else "the patch's tests didn't run"
             return done("unverified", "none", f"couldn't run the patch's tests on both trees: {why}")

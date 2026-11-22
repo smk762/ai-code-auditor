@@ -435,7 +435,9 @@ _RUFF_SELECT = "E9,F63,F7,F82"
 VENV_BUILD_TIMEOUT_S = 900
 _ENV_GAP_RE = re.compile(r"\b(ModuleNotFoundError|ImportError)\b")
 _RESULT_COUNTS_RE = re.compile(r"\b\d+ (passed|failed)\b")
-_FAILED_ID_RE = re.compile(r"^(?:FAILED|ERROR) (\S+)", re.M)
+# A failing subtest's line puts its message and params before the id (``SUBFAILED[msg] (i=1) t.py::T::a``);
+# pytest 9 lists a unittest test whose subtests failed only there, the test itself shows as passed.
+_FAILED_ID_RE = re.compile(r"^(?:(?:FAILED|ERROR) (\S+)|SUBFAIL(?:ED)?\b.*?\s(\S+?\.py::\S+))", re.M)
 _ERRORED_ID_RE = re.compile(r"^ERROR (\S+)", re.MULTILINE)
 
 
@@ -899,8 +901,13 @@ def stub_version_files(root: Path) -> list[str]:
     return written
 
 
+def _failure_lines(output: str) -> list[str]:
+    """The test id of each failure or error line in pytest's short summary, one entry per line."""
+    return [a or b for a, b in _FAILED_ID_RE.findall(output)]
+
+
 def _failed_ids(output: str) -> set[str]:
-    return set(_FAILED_ID_RE.findall(output))
+    return set(_failure_lines(output))
 
 
 _SUMMARY_COUNT_RE = re.compile(r"\b(\d+) (failed|errors?)\b")
@@ -1080,9 +1087,10 @@ def _against_base(
     passes is a flake, not the patch's (#97). Tests that *error* on both trees are reported apart
     from ones that fail on both: an error at setup usually means the test env, not the repo."""
     patched = _failed_ids(res.raw_output)
-    if not patched or _reported_failures(res.raw_output) > len(patched):
-        # the stored output is a tail: when pytest counts more failures than it shows ids for, the
-        # cut-off ones can't be compared, so the failure stands
+    if not patched or _reported_failures(res.raw_output) > len(_failure_lines(res.raw_output)):
+        # the stored output is a tail: when pytest counts more failures than it shows lines for, the
+        # cut-off ones can't be compared, so the failure stands. Lines, not ids: one test can count
+        # more than once (each failing subtest, or a call failure plus a teardown error)
         return res
     try:
         rel = root.resolve().relative_to(tree.resolve())
