@@ -223,11 +223,7 @@ def run_rest_session(
                 run_id=run_id,
                 finding_id=str(top.get("id") or ""),
             )
-            base = public_base_url()
-            pack_url = f"{base}/audit/packs/{pack_id}"
-            body = finding_to_pr_body(
-                top, result.summary, pack_id=pack_id, pack_url=pack_url
-            )
+            body = finding_to_pr_body(top, result.summary, pack_id=pack_id, repo_path=str(task.repo_path))
             pr_res = create_draft_pr(
                 Path(task.repo_path),
                 repo_name=task.repo,

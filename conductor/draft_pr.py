@@ -230,21 +230,36 @@ def annotate_pr_review(draft: DraftPr, review: CodeReviewSummary) -> DraftPr:
     return draft
 
 
+def _public_finding(finding: dict[str, Any], repo_path: str = "") -> dict[str, Any]:
+    """*finding* fit for a public PR body: host paths made repo-relative, so the body names files the
+    way the repo does and says nothing about the machine that scanned it (#128)."""
+    root = repo_path.rstrip("/") + "/" if repo_path else ""
+    out: dict[str, Any] = {}
+    for k, v in finding.items():
+        if isinstance(v, str) and root and v.startswith(root):
+            v = v[len(root):]
+        elif isinstance(v, str) and v.startswith("/") and k in ("file", "file_path", "path"):
+            v = Path(v).name  # an absolute path outside the repo: keep only the file name
+        out[k] = v
+    return out
+
+
 def finding_to_pr_body(
     finding: dict[str, Any],
     worker_summary: str,
     *,
     pack_id: str = "",
-    pack_url: str = "",
+    repo_path: str = "",
 ) -> str:
+    """The draft PR body. It is public: packs are named by id and never linked, because the audit
+    API's base URL is a private host (#128)."""
     pack_lines = ""
-    if pack_url or pack_id:
+    if pack_id:
         pack_lines = (
             "\n### Agent work pack\n"
-            + (f"- URL: {pack_url}\n" if pack_url else "")
-            + (f"- id: `{pack_id}`\n" if pack_id else "")
-            + "- Discover: `GET /audit/packs?q=<repo-or-title>`\n"
+            f"- id: `{pack_id}` (look it up in the audit API's pack list)\n"
         )
+    finding = _public_finding(finding, repo_path)
     return (
         "## Night conductor remediation\n\n"
         f"{worker_summary}\n\n"
