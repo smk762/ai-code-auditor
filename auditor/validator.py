@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from packaging.utils import canonicalize_name
+
 from auditor.config import RepoConfig
 from auditor.contracts import ValidationResult
 from auditor.repo_resolver import resolve_repo_path
@@ -565,7 +567,7 @@ def loose_test_deps(root: Path, tests: list[str]) -> list[str]:
 
 def _dist_name(spec: str) -> str:
     m = _REQ_NAME.match(spec)
-    return _norm_name(m.group(1)) if m else spec
+    return canonicalize_name(m.group(1)) if m else spec
 
 
 def _declared_deps(root: Path) -> tuple[list[Path], list[str]]:
@@ -582,7 +584,7 @@ def _declared_deps(root: Path) -> tuple[list[Path], list[str]]:
         except (OSError, ValueError):
             project = {}
         extras = project.get("optional-dependencies") or {}
-        own = _norm_name(str(project.get("name") or ""))
+        own = canonicalize_name(str(project.get("name") or ""))
         specs += _expand_self_refs([str(s) for s in project.get("dependencies") or []], own, extras)
         names = [*_PYPROJECT_EXTRAS, *ci_test_extras(root)]
         if ALL_EXTRAS in names:
@@ -595,10 +597,6 @@ def _declared_deps(root: Path) -> tuple[list[Path], list[str]]:
 _REQ_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[([^\]]*)\])?")
 
 
-def _norm_name(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
 def _expand_self_refs(specs: list[str], own: str, extras: dict, seen: frozenset[str] = frozenset()) -> list[str]:
     """Replace ``<this project>[a,b]`` with extras a and b's own specs, recursively.
 
@@ -608,7 +606,7 @@ def _expand_self_refs(specs: list[str], own: str, extras: dict, seen: frozenset[
     out: list[str] = []
     for spec in specs:
         m = _REQ_NAME.match(spec)
-        if not own or not m or _norm_name(m.group(1)) != own:
+        if not own or not m or canonicalize_name(m.group(1)) != own:
             out.append(spec)
             continue
         for extra in (e.strip() for e in (m.group(2) or "").split(",") if e.strip()):
