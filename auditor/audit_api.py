@@ -191,10 +191,6 @@ _active_run_lock = threading.Lock()
 _cancel_event = threading.Event()
 
 
-def _utcnow_str() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _output_dir() -> str:
     try:
         return load_ecosystem_config().output_dir

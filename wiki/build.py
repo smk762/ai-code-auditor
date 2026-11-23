@@ -12,9 +12,10 @@ import json
 import logging
 import subprocess
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from argus_cortex.timestamps import utc_now_iso
 
 from auditor.fsutil import atomic_write_text
 from auditor.repo_resolver import resolve_scan_root
@@ -35,10 +36,6 @@ FINDINGS_SLUG = "findings"
 
 def wiki_dir(output_dir: str | Path) -> Path:
     return Path(output_dir) / "wiki"
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _git(path: Path, *args: str) -> str | None:
@@ -108,7 +105,7 @@ def _write_top_index(output_dir: str | Path) -> None:
             continue  # an older-format or foreign file must not stop every other repo's entry
         repos[idx["repo"]] = {"built_at": idx.get("built_at"), "source_sha": idx.get("source_sha"),
                               "branch": idx.get("branch"), "pages": len(idx.get("pages") or [])}
-    atomic_write_text(root / "INDEX.json", json.dumps({"updated_at": _now(), "repos": repos}, indent=2))
+    atomic_write_text(root / "INDEX.json", json.dumps({"updated_at": utc_now_iso(), "repos": repos}, indent=2))
 
 
 def build(repo_names: list[str] | None, output_dir: str | Path, *, mode: str = "batch",
@@ -302,7 +299,7 @@ def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport
         written.append(page)
         res.pages_written.append(page)
         res.dropped_claims += len(dropped)
-        entries[page] = {"slug": page, "title": title, "file": f"{page}.md", "generated_at": _now(),
+        entries[page] = {"slug": page, "title": title, "file": f"{page}.md", "generated_at": utc_now_iso(),
                          "source_sha": sha, "words": len(md.split()), "citations": rep.to_dict(),
                          "dropped_claims": dropped[:30], "cited_files": citations.cited_files(md, root),
                          "cited_ranges": citations.cited_ranges(md, root),
@@ -312,11 +309,11 @@ def _write_repo(name: str, c: dict[str, Any], checked: dict, report: BuildReport
         fmd = build_findings_page(name, out)
         (d / f"{FINDINGS_SLUG}.md").write_text(fmd, encoding="utf-8")
         entries[FINDINGS_SLUG] = {"slug": FINDINGS_SLUG, "title": "Notable findings", "file": f"{FINDINGS_SLUG}.md",
-                                  "generated_at": _now(), "source_sha": sha, "generator": "data",
+                                  "generated_at": utc_now_iso(), "source_sha": sha, "generator": "data",
                                   "citations": citations.check(fmd, root).to_dict(), "cited_files": {}}
     order = list(pages_mod.PAGES) + [FINDINGS_SLUG]
     index = {
-        "repo": name, "branch": branch, "source_sha": sha, "built_at": _now(), "variant": "public" if public else "internal",
+        "repo": name, "branch": branch, "source_sha": sha, "built_at": utc_now_iso(), "variant": "public" if public else "internal",
         "models": {"notes": notes_mod.NOTES_MODEL, "pages": pages_mod.PAGE_MODEL, "effort": pages_mod.PAGE_EFFORT},
         "notes": {"cached": res.notes_cached, "written": res.notes_written, "failed": res.notes_failed,
                   "oversize_skipped": res.oversize},
