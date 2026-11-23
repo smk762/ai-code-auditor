@@ -5,9 +5,10 @@ import math
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 import re
+
+from argus_cortex.timestamps import utc_now_iso
 
 
 def _estimate_tokens(text: str) -> int:
@@ -73,10 +74,6 @@ def _trim_notes(path: Path) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(tail, encoding="utf-8")
     tmp.replace(path)
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass(slots=True)
@@ -302,7 +299,7 @@ class ContextOrchestrator:
         path.parent.mkdir(parents=True, exist_ok=True)
         citations = [c.get("citation", "") for c in selected_chunks[:5] if c.get("citation")]
         note = [
-            f"## {_now_iso()}",
+            f"## {utc_now_iso('auto')}",
             f"- query: {_note_field(query)}",
             f"- compact_summary: {_note_field(compact_summary.replace(chr(10), ' | '), 1000)}",
             f"- citations: {_note_field(', '.join(citations)) if citations else 'none'}",
