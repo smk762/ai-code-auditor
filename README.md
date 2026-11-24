@@ -12,6 +12,7 @@ real output from that scan ([script](scripts/build_example_reports.py)):
 | Report | What it shows |
 |---|---|
 | [Patch validation](reports/examples/patch_validation.example.md) | Three patches: one resolved its pack with a failing-then-passing test, one stayed unverified for lack of a test, one was rejected for breaking a test |
+| [Agent brief](reports/examples/agent_brief.example.md) | What an agent gets for one finding: the rule's fix, the file, the code and what counts as done |
 | [Nightly findings](reports/examples/nightly_repo_report.example.md) | 8 findings: 2 high, 2 medium, 4 low, with file and line |
 | [Security findings](reports/examples/security_report.example.md) | The 7 of those that are security findings, 2 of them only `assert` in tests |
 | [Architecture violations](reports/examples/architecture_violations.example.md) | A UI importing its worker's package, and an HTTP call the rules don't allow |
@@ -205,6 +206,10 @@ published). 12 gates passed and one lacked data.
 | Seeded instances a class guard catches | 100% | 100% | 15 (8) | pass |
 
 The exit criteria were **not** met: neither of the last two weeks was fully green, and there were 2 of 4 weekly snapshots.
+
+Why some resolutions ran no tests: all 60 were waivers, for 42 bugs, 17 security findings and one contract finding. In 58
+the validator's environment lacked the project's dependencies (mostly machine-learning packages), and in two the defect was
+in a test. (Read from the 60 packs' waivers, 2026-11-24.)
 
 What each kind of check does not prove:
 

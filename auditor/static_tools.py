@@ -5,6 +5,7 @@ import logging
 import shutil
 import subprocess
 
+from auditor import rule_fixes
 from auditor.contracts import Finding
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ def _run_bandit(repo_name: str, target_args: list[str]) -> list[Finding]:
             title=issue.get("test_name", "Bandit issue"),
             description=issue.get("issue_text", ""),
             evidence=issue.get("code", ""),
-            recommendation="Review and remediate this security finding.",
+            recommendation=rule_fixes.GENERIC,  # the brief shows the rule's own fix
             source="bandit",
         )
         for issue in payload.get("results", [])

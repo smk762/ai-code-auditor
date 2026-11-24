@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import threading
 import time
 from collections import defaultdict
@@ -27,6 +28,7 @@ try:  # libyaml's C loader parses packs several times faster than the pure-Pytho
 except ImportError:  # pragma: no cover — PyYAML built without libyaml
     from yaml import SafeLoader as _YamlLoader
 
+from auditor import rule_fixes
 from auditor.contracts import Finding, RuleViolation, utc_now_iso
 from auditor.fsutil import atomic_write_text
 from auditor.finding_match import reworded_score
@@ -189,7 +191,33 @@ class AgentCodingPack:
                if self.kind == "extraction" else {}),
         }
 
+    def shown_path(self) -> str:
+        """The cited file as a brief shows it: relative to the checkout it was found in."""
+        path = str((self.location or {}).get("file_path") or "")
+        root = str((self.repo or {}).get("path") or "").rstrip("/")
+        if root and path.startswith(f"{root}/"):
+            return path[len(root) + 1:]
+        name = str((self.repo or {}).get("name") or "")
+        return rel_path(name, path) if name and path.startswith("/") and f"/{name}/" in path else path
+
+    def _brief_text(self) -> tuple[str, list[str], list[str]]:
+        """Recommendation, acceptance criteria and commands as a brief shows them."""
+        stored = str((self.narrative or {}).get("recommendation") or "")
+        prov = self.provenance or {}
+        shown = rule_fixes.recommendation(stored, str(prov.get("source") or ""), str(prov.get("finding_id") or ""))
+        full, rel = str((self.location or {}).get("file_path") or ""), self.shown_path()
+
+        def local(text: str) -> str:
+            return text.replace(full, rel) if full.startswith("/") else text
+
+        criteria = [shown if c == stored else local(str(c)) for c in (self.narrative or {}).get("acceptance_criteria") or []]
+        cmds = [local(str(c)) for c in (self.verification or {}).get("suggested_test_commands") or []]
+        if not re.search(r"(^|/)(test_[^/]*|[^/]*_test)\.py$", rel):  # pytest on a source file collects nothing
+            cmds = [c for c in cmds if not c.startswith(f"pytest {shlex.quote(rel)} ")]
+        return shown, criteria, cmds
+
     def to_brief_md(self) -> str:
+        recommendation, criteria, cmds = self._brief_text()
         sev = (self.priority or {}).get("severity", "MEDIUM")
         title = _one_line((self.narrative or {}).get("title", self.work_item_id))
         repo = (self.repo or {}).get("name", "")
@@ -205,7 +233,7 @@ class AgentCodingPack:
             *([f"- **class:** `{fc_}` (guard task: `{(self.governance or {}).get('class_parent')}`)"]
               if (fc_ := ((self.governance or {}).get("finding_class") or {}).get("id"))
               and (self.governance or {}).get("class_parent") else []),
-            f"- **location:** `{loc.get('file_path', '')}`:{loc.get('line', 0)}"
+            f"- **location:** `{self.shown_path()}`:{loc.get('line', 0)}"
             + (f" (`{loc.get('symbol')}`)" if loc.get("symbol") else ""),
             "",
             "## Objective",
@@ -214,11 +242,10 @@ class AgentCodingPack:
             or title,
             "",
             "## Recommendation",
-            (self.narrative or {}).get("recommendation") or "(none)",
+            recommendation or "(none)",
             "",
             "## Acceptance criteria",
         ]
-        criteria = (self.narrative or {}).get("acceptance_criteria") or []
         lines.extend([f"- {c}" for c in criteria] or ["- Fix the finding without regressing related paths."])
         lines.append("")
         lines.append("## Evidence")
@@ -233,7 +260,6 @@ class AgentCodingPack:
         if call_path:
             lines.extend(["", "## Call path", *[f"- {p}" for p in call_path]])
         verify = self.verification or {}
-        cmds = verify.get("suggested_test_commands") or []
         if cmds:
             lines.extend(["", "## Verify", *[f"- `{c}`" for c in cmds]])
         lines.extend(["", "## Done means", f"- {self.done_means()}"])
@@ -282,6 +308,7 @@ class AgentCodingPack:
 
     def to_compact_md(self) -> str:
         """Short brief (no snippet/evidence) used by bundles under a token budget."""
+        recommendation, criteria, cmds = self._brief_text()
         title = _one_line((self.narrative or {}).get("title", self.work_item_id))
         loc = self.location or {}
         lines = [
@@ -289,16 +316,14 @@ class AgentCodingPack:
             f"`{self.work_item_id}` · {self.kind} · "
             f"{(self.priority or {}).get('severity', 'MEDIUM')} · status={self.status or DEFAULT_PACK_STATUS}",
             f"repo: {(self.repo or {}).get('name', '')} · "
-            f"`{loc.get('file_path', '')}`:{loc.get('line', 0)}",
+            f"`{self.shown_path()}`:{loc.get('line', 0)}",
             "",
-            (self.narrative or {}).get("recommendation") or (self.narrative or {}).get("description") or title,
+            recommendation or (self.narrative or {}).get("description") or title,
             "",
             f"Done: {self.done_means(short=True)}",
         ]
-        criteria = (self.narrative or {}).get("acceptance_criteria") or []
         if criteria:
             lines.extend(["", "Acceptance:", *[f"- {c}" for c in criteria[:4]]])
-        cmds = (self.verification or {}).get("suggested_test_commands") or []
         if cmds:
             lines.extend(["", "Verify: " + "; ".join(f"`{c}`" for c in cmds[:2])])
         return "\n".join(lines)
