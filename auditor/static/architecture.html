@@ -204,7 +204,7 @@ function cycleForm(c) {
   const d = c.decision || {};
   return `<tr class="x-form"><td colspan="3"><form data-id="${esc(c.id)}">
     <fieldset><legend>Imports in the cycle</legend>
-      ${c.edges.map((e) => `<div class="mono muted">${esc(e.sites[0] || e.from)} → ${esc(e.to)} <span class="muted">(${esc(e.names.join(", "))})${e.lazy ? " · inside a function" : ""}</span></div>`).join("")}
+      ${c.edges.map((e) => `<div class="mono muted">${esc(e.sites[0] || e.from)} → ${esc(e.to)} <span class="muted">(${esc(e.names.join(", "))})${e.lazy ? " · inside a function" : ""}${e.implicit ? " · implicit: Python runs the package first" : ""}</span></div>`).join("")}
     </fieldset>
     ${proposalNote(c.proposal)}
     <label class="note">What to move <textarea name="note" rows="4" minlength="${int(data.cycles.note_min)}" placeholder="Needed to approve: which names belong in which module, and which import is the real dependency">${esc(d.note || (c.proposal?.offered ? c.proposal.note : ""))}</textarea></label>
@@ -231,7 +231,7 @@ function renderCycles() {
       : (pk ? `<a class="status ${PACK_CLASS[pk.status] || ""}" href="/ui/packs/${encodeURIComponent(pk.id)}">${esc(pk.status.replace("_", " "))}</a> ` : "") +
         `<button class="secondary" data-review="${esc(c.id)}">Edit</button> <button class="secondary" data-withdraw="${esc(c.id)}">Withdraw</button>`;
     return `<tr><td><b>${esc(c.repo)}</b> · ${UI.plural(c.members.length, "module")}<div class="muted mono">${c.members.map(esc).join("<br>")}</div>
-        <div class="muted mono">${esc(c.id)}${state}</div>${c.decision?.note ? `<div class="muted">${esc(c.decision.note)}</div>` : ""}
+        <div class="muted mono">${esc(c.id)}${state}</div>${c.was ? `<div class="muted">Still or again a cycle after ${esc(c.was)} was resolved: needs a fresh approval</div>` : ""}${c.decision?.note ? `<div class="muted">${esc(c.decision.note)}</div>` : ""}
         ${!c.decision && c.proposal ? `<div class="muted">${c.proposal.stale ? "Agent proposal out of date" : c.proposal.offered ? "Agent proposal ready to review" : "Agent proposal needs a closer look"}</div>` : ""}</td>
       <td class="ev mono">${c.cuts.map((e) => `${esc(e.from)} → ${esc(e.to)} (${esc(e.names.slice(0, 4).join(", "))})`).join("<br>") || "—"}</td>
       <td class="acts">${acts}</td></tr>${creviewing === c.id ? cycleForm(c) : ""}`;
