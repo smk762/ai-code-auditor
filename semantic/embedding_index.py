@@ -119,7 +119,7 @@ class EmbeddingIndex:
         if faiss is not None and np is not None and self.path.exists() and not self.vectors_path.exists():
             try:
                 index = faiss.read_index(str(self.path))
-            except Exception:  # noqa: BLE001 — e.g. JSON vectors written there by an older build
+            except Exception:  # noqa: BLE001, S110 — JSON vectors from an older build: read below, or StaleIndexError
                 index = None
             if index is not None:
                 if index.d != len(q_vec):

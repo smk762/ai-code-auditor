@@ -12,6 +12,9 @@ rule in stdlib, plus one thing ruff doesn't check: a ``noqa`` for it must give a
   ``False``, ``None``, ``set()``…, or a bare ``return``): a corrupt state file read as empty state
   looks like success. No ruff rule covers it, so only this test does; it reports ``S110`` so one
   reasoned ``noqa`` works for both. The seeded-recall gate (#63) found this gap.
+* The same swallow rewritten (ai-code-auditor#155) is the same failure: a body of only ``...``, a
+  constant or ``_ = exc``; one that only assigns an empty value (``state = {}``) for the code after it;
+  and ``contextlib.suppress(Exception)``. Ruff sees none of them, so they are ``S110`` here.
 
 It fires on ``fixtures/silent_failure_guard/unguarded.py``, stays quiet on ``guarded.py``, and
 finds nothing in the repo's own code.
@@ -67,6 +70,40 @@ def _empty(value: ast.expr | None) -> bool:
             and not value.args and not value.keywords)
 
 
+def _inert(stmt: ast.stmt) -> bool:
+    """A statement that does nothing: ``pass``, ``...``, a bare constant, or a name or constant put in ``_``."""
+    if isinstance(stmt, ast.Pass):
+        return True
+    if isinstance(stmt, ast.Expr):
+        return isinstance(stmt.value, ast.Constant)
+    return (isinstance(stmt, ast.Assign) and isinstance(stmt.value, (ast.Name, ast.Constant))
+            and all(isinstance(t, ast.Name) and t.id == "_" for t in stmt.targets))
+
+
+def _empty_reset(stmt: ast.stmt) -> bool:
+    """An assignment of an empty value: ``state = {}``, for the code after the ``try`` to use."""
+    return isinstance(stmt, (ast.Assign, ast.AnnAssign)) and stmt.value is not None and _empty(stmt.value)
+
+
+def _swallows(body: list[ast.stmt]) -> str:
+    """The code for a broad handler's body that loses the error, else ``""``."""
+    rest = [s for s in body if not _inert(s)]
+    if not rest:
+        return "S110"
+    if len(rest) > 1:
+        return ""
+    if isinstance(rest[0], ast.Continue):
+        return "S112"
+    empty_return = isinstance(rest[0], ast.Return) and _empty(rest[0].value)
+    return "S110" if empty_return or _empty_reset(rest[0]) else ""
+
+
+def _broad_suppress(call: ast.Call) -> bool:
+    """``suppress(Exception)``: an except-pass spelled as a context manager."""
+    name = call.func.attr if isinstance(call.func, ast.Attribute) else getattr(call.func, "id", "")
+    return name == "suppress" and any(isinstance(a, ast.Name) and a.id in _BROAD for a in call.args)
+
+
 def findings(path: Path) -> list[str]:
     """``file:line code`` for each silent-failure pattern in *path* without a reasoned noqa."""
     source = path.read_text(encoding="utf-8")
@@ -81,13 +118,11 @@ def findings(path: Path) -> list[str]:
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "zip"
                 and node.args and not any(k.arg == "strict" for k in node.keywords)):
             hit(node.lineno, "B905")
-        elif isinstance(node, ast.ExceptHandler) and len(node.body) == 1 and _broad(node):
-            if isinstance(node.body[0], ast.Pass):
-                hit(node.lineno, "S110")
-            elif isinstance(node.body[0], ast.Continue):
-                hit(node.lineno, "S112")
-            elif isinstance(node.body[0], ast.Return) and _empty(node.body[0].value):
-                hit(node.lineno, "S110")
+        elif isinstance(node, ast.Call) and _broad_suppress(node):
+            hit(node.lineno, "S110")
+        elif isinstance(node, ast.ExceptHandler) and _broad(node):
+            if code := _swallows(node.body):
+                hit(node.lineno, code)
     return out
 
 
@@ -98,8 +133,8 @@ def repo_files() -> list[Path]:
 
 def test_fires_on_the_positive_fixture() -> None:
     hits = findings(FIXTURES / "unguarded.py")
-    # zip, except-continue, bare except-pass, a noqa that gives no reason, and two empty returns
-    assert sorted(h.rsplit(" ", 1)[1] for h in hits) == ["B905", "S110", "S110", "S110", "S110", "S112"], hits
+    # zip, except-continue, bare except-pass, a noqa that gives no reason, and two empty returns, then the rewrites
+    assert sorted(h.rsplit(" ", 1)[1] for h in hits) == ["B905", *["S110"] * 9, "S112"], hits
 
 
 def test_silent_on_the_negative_fixture() -> None:
