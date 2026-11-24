@@ -64,6 +64,7 @@ functions. This is work in progress ([#154](https://github.com/smk762/ai-code-au
 | Scan for cycles and private imports (`ai-audit structure`) | Working, Python only, no model calls |
 | Evidence check: the cycle is gone, none was added or moved, and the tests ran | Working; piloted on one cycle in this repo |
 | Approve or dismiss a cycle in the web UI; an approval must say what to move and creates one pack | Working, just added; too few packs to measure |
+| Agent-proposed notes: an agent can suggest what to move, and a fresh, high-confidence suggestion fills in the approval note | Working, just added; a person still approves, and nothing generates proposals on a schedule |
 | Suggested cuts | A hint only: in a hand-check all 13 cycles were real, but the suggested cut was in the right place for only 7 (public repos, 2026-11-24, [results](https://github.com/smk762/ai-code-auditor/issues/154)) |
 | Packs for private imports | Not built: they can be judged, but nothing creates them |
 | A CI rule that stops new cycles in other repos | Not built; this repo has its own test |
