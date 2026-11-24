@@ -21,6 +21,9 @@ Evidence kind      Resolves when
                    passed. Lint alone is not enough.
 ``test_only``      The patch changes only tests (the fix *is* the test): those tests ran.
 ``non_code``       The patch changes only docs or config (no code, no tests).
+``structure``      Structural packs (``module_cycle``, ``private_import``, #154): the scan finds the
+                   violation on the dev tree and not on the patched one (``structure.judge``), **and**
+                   the tests ran. A waiver stands in for the tests, never for the structure.
 ``waiver``         The caller gave ``evidence_waiver`` with a reason (≥ 20 characters), e.g.
                    the behaviour needs hardware or a live service. Recorded on the pack and
                    counted in the trust metrics, so a habit of waiving is visible.
@@ -48,7 +51,8 @@ from auditor.proc import child_env, run as proc_run
 logger = logging.getLogger(__name__)
 
 REPRO_KINDS = frozenset({"bug", "security", ""})  # "" = a finding pack from before finding_type was stored
-FINDING_PACK_EXCLUDE = frozenset({"world_model", "architecture", "extraction", "invariants"})
+STRUCTURE_KINDS = frozenset({"module_cycle", "private_import"})  # judged by structure.judge (#154)
+FINDING_PACK_EXCLUDE = frozenset({"world_model", "architecture", "extraction", "invariants"}) | STRUCTURE_KINDS
 MIN_WAIVER_CHARS = 20
 _OUTPUT_LIMIT = 6000
 
@@ -405,7 +409,7 @@ def run_repro(tree: Path, fresh_base: Callable[[], Path | None], tests: list[str
 @dataclass
 class Decision:
     status: str  # "resolved" | "unverified"
-    kind: str    # repro | tests | test_only | non_code | waiver | none
+    kind: str    # repro | tests | test_only | non_code | structure | waiver | none
     reason: str
     evidence: dict[str, Any]
 
@@ -483,8 +487,9 @@ def for_pack(repro: ReproResult, pack: dict[str, Any], tree: Path, *, named: lis
 
 
 def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproResult | None,
-           waiver: str = "", base_sha: str = "") -> Decision:
-    """Resolved or unverified, for a validate_patch run that passed."""
+           waiver: str = "", base_sha: str = "", structure: dict[str, Any] | None = None) -> Decision:
+    """Resolved or unverified, for a validate_patch run that passed. *structure* is
+    ``structure.judge``'s verdict; a structural pack without one is never resolved."""
     ch = classify_changes(changed)
     ev: dict[str, Any] = {
         "tool": tool, "base_sha": base_sha, "changed": {k: len(v) for k, v in ch.items()},
@@ -496,6 +501,14 @@ def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproR
     def done(status: str, kind: str, reason: str) -> Decision:
         return Decision(status, kind, reason, {**ev, "kind": kind, "reason": reason})
 
+    if pack.get("kind") in STRUCTURE_KINDS:
+        # Before the waiver and the docs/test-only shortcuts: none of them says the structure changed.
+        verdict = structure or {"gone": False, "reason": "the structure scan didn't run"}
+        ev["structure"] = verdict
+        if verdict.get("gone") is not True:
+            return done("unverified", "none", str(verdict.get("reason") or "the violation is still there"))
+        if tests_ran(tool):
+            return done("resolved", "structure", f"{verdict.get('reason')}; tests ran and passed")
     if waiver:
         if len(waiver.strip()) < MIN_WAIVER_CHARS:
             return done("unverified", "none", f"evidence_waiver needs a reason of at least {MIN_WAIVER_CHARS} characters")

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 KEYS = ("Pack", "Evidence", "Class", "Waiver")
-EVIDENCE_KINDS = ("repro", "tests", "test_only", "non_code", "waiver")
+EVIDENCE_KINDS = ("repro", "tests", "test_only", "non_code", "structure", "waiver")
 _TRAILER_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9-]*)\s*:\s*(.*)$")
 _PACK_RE = re.compile(r"^pack-[a-z0-9][a-z0-9-]*$")
 

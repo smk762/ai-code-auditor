@@ -1722,6 +1722,7 @@ def _judge_evidence(
     request: "_ValidatePatchRequest", *, tool: str, changed: list[str], tree: Path, fresh_base: Any,
     base_sha: str, venv_cache: Path, node_cache: Path, timeout_s: int,
     pack_id: str | None = None, repro_cache: dict[str, Any] | None = None, multi: bool = False,
+    structure_scans: Any = None,
 ) -> dict[str, Any]:
     """Run the evidence bar (#58) for a passing patch and set the pack resolved or unverified.
     *repro_cache* shares one repro run between the packs of a multi-pack request: the patch's
@@ -1745,8 +1746,16 @@ def _judge_evidence(
         named = request.pack_tests.get(pid)
         if multi or named:  # a lone pack is judged on the whole patch unless pack_tests names its tests
             repro = evidence.for_pack(repro, pack, tree, named=named)
+    verdict = None
+    if pack.get("kind") in evidence.STRUCTURE_KINDS and structure_scans is not None:
+        from auditor.structure import judge
+
+        cache = repro_cache if repro_cache is not None else {}
+        if "structure" not in cache:
+            cache["structure"] = structure_scans()
+        verdict = judge(pack, *cache["structure"])
     d = evidence.decide(pack, tool=tool, changed=changed, repro=repro, waiver=request.evidence_waiver or "",
-                        base_sha=base_sha)
+                        base_sha=base_sha, structure=verdict)
     if request.base_ref:
         d.evidence["base_ref"] = request.base_ref.strip()
     if request.revalidate:
@@ -1770,7 +1779,7 @@ def _judge_evidence(
 
 # Packs a revalidation may touch: resolved on a waiver, or left unverified. Evidence it may record.
 REVALIDATE_FROM = frozenset({"resolved", "unverified"})
-REVALIDATE_TO = frozenset({"repro", "tests", "test_only", "non_code"})
+REVALIDATE_TO = frozenset({"repro", "tests", "test_only", "non_code", "structure"})
 
 
 def _upgrade_evidence(request: "_ValidatePatchRequest", pack: dict[str, Any], d: Any, *, tool: str,
@@ -1943,6 +1952,26 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
                     return None
             return repro_dir
 
+        def _structure_scans() -> tuple[dict[str, Any], dict[str, Any]]:
+            """The structure scan of dev and of dev plus the patch (#58), on exports no test has run in:
+            a patch's tests could rewrite the tree they run in."""
+            from auditor.structure import scan_tree_isolated
+
+            scans: list[dict[str, Any]] = []
+            for name in ("structure_base", "structure_patched"):
+                tree = tmp_root / name
+                try:
+                    _export_clean_tree(Path(repo_path), tree, base)
+                    if name == "structure_patched":
+                        subprocess.run(["git", "apply", "--whitespace=fix", str(patch_file)], cwd=tree,
+                                       capture_output=True, text=True, check=True)
+                except Exception as exc:  # noqa: BLE001 — no tree, no verdict: the pack stays unverified
+                    logger.warning("validate_patch: no %s tree for %s: %s", name, request.repo, exc)
+                    scans.append({"error": f"could not build the {name} tree", "complete": False})
+                    continue
+                scans.append(scan_tree_isolated(tree, timeout_s=timeout_s))
+            return scans[0], scans[1]
+
         summary = extract_failure_summary(val_result.raw_output, val_result.tool)
         skipped = bool(val_result.skipped_reason)
         passed = val_result.passed and not skipped
@@ -2005,6 +2034,7 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
                     request, tool=val_result.tool, changed=changed, tree=repo_copy, fresh_base=_fresh_base,
                     base_sha=str(base_info.get("base_sha") or ""), venv_cache=venv_cache, node_cache=node_cache,
                     timeout_s=timeout_s, pack_id=pid, repro_cache=repro_cache, multi=len(pack_ids) > 1,
+                    structure_scans=_structure_scans,
                 )
             results.append(res)
         if results:

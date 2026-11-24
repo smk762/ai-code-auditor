@@ -67,7 +67,8 @@ REVERT_WINDOW_DAYS = 14
 GATE_WINDOW_DAYS = 14
 
 # Pack kinds that describe one finding. The others describe topology or proposals, not a bug.
-NON_FINDING_KINDS = frozenset({"world_model", "architecture", "extraction", "invariants", "class_guard"})
+NON_FINDING_KINDS = frozenset({"world_model", "architecture", "extraction", "invariants", "class_guard",
+    "module_cycle", "private_import"})
 REOPEN_STATUSES = frozenset({"open", "claimed", "in_progress"})
 _TOOL_RE = re.compile(r"\btool=([a-z_+]+)")
 _EVIDENCE_RE = re.compile(r"\bevidence=([a-z_]+)")

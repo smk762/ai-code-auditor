@@ -50,7 +50,8 @@ _STATUS_HISTORY_MAX = 20
 # (architecture titles are "repo: path:line") dedupe on exact id only.
 # obsolete (closed by pack GC, #67) is a target so a re-found issue reopens its own pack instead of a twin.
 _MERGE_INTO_STATUSES = ("in_progress", "claimed", "unverified", "wontfix", "open", "obsolete")  # keeper preference order
-_NO_TITLE_MATCH_KINDS = frozenset({"architecture", "extraction", "world_model", "invariants", "class_guard"})
+_NO_TITLE_MATCH_KINDS = frozenset({"architecture", "extraction", "world_model", "invariants", "class_guard",
+    "module_cycle", "private_import"})
 
 # Bundle sizing: token_budget is approximated as chars / CHARS_PER_TOKEN.
 CHARS_PER_TOKEN = 4
@@ -58,6 +59,20 @@ DEFAULT_BUNDLE_TOKEN_BUDGET = 2500
 WORLD_ECOSYSTEM_ID = "pack-world-ecosystem"
 WORLD_MEMORY_ID = "pack-world-architecture-memory"
 _TRUNCATION_MARK = "\n…[truncated]"
+
+# Structural packs (#154). "Prefer minimal patches" is wrong for them: the smallest patch for a cycle
+# is another lazy import, which hides it.
+STRUCTURE_KINDS = frozenset({"module_cycle", "private_import"})
+_STRUCTURE_GUIDANCE = """## How to fix structure
+Fix it from first principles, not with the smallest diff:
+- Which layer should each module be at, and who may use whom? For a private name: why does the other module
+  need it, and what narrow public function would serve it? Fix the whole cycle or type together.
+- These move or hide the problem and won't resolve the pack: an import inside a function, a re-export through
+  `__init__.py`, a relay module, renaming or moving a member, `import_module`, `getattr`.
+- Keep behaviour the same.
+- Put a before/after diagram of the modules in the PR.
+
+Do not auto-merge."""
 
 PACK_DISCOVERY: dict[str, str] = {
     "list": "/audit/packs",
@@ -237,7 +252,8 @@ class AgentCodingPack:
         if pack_url:
             lines.extend(["", f"Full pack: {pack_url}"])
         lines.append("")
-        lines.append("Do not auto-merge. Prefer minimal patches with citations.")
+        lines.append(_STRUCTURE_GUIDANCE if self.kind in STRUCTURE_KINDS
+                     else "Do not auto-merge. Prefer minimal patches with citations.")
         return "\n".join(lines)
 
     def done_means(self, *, short: bool = False) -> str:
@@ -247,6 +263,12 @@ class AgentCodingPack:
 
         if self.kind == "world_model":
             return "Nothing to close: this is context, not work."
+        if self.kind in STRUCTURE_KINDS:
+            if short:
+                return "the violation is gone, none added or moved, tests pass"
+            return ("The structure scan must find the violation on `dev` and not with your patch, the patch must not "
+                    "add or move one, and the project's tests must run and pass; otherwise the pack becomes "
+                    "`unverified`. `evidence_waiver` can stand in for the tests, never for the structure.")
         repro = needs_repro({"kind": self.kind, "narrative": self.narrative})
         if short:
             return "a test failing on dev, passing with the fix" if repro else "tests pass (lint alone: unverified)"

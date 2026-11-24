@@ -10,7 +10,7 @@
   ``if TYPE_CHECKING`` (no runtime dependency), and a package's ``__init__.py`` with the modules
   below it (importing its own parts is what an ``__init__`` is for).
 * ``private-import``: a ``_name`` another module defines, taken by ``from m import _name`` or used as
-  ``m._name``. Dunders and private *modules* (``pkg._impl``) don't count. A re-export of one is
+  ``m._name`` or ``getattr(m, "_name")``. Dunders and private *modules* (``pkg._impl``) don't count. A re-export of one is
   attributed to the module that defines it.
 
 Each cycle lists the edges inside it (``file:line``, names, whether every site is lazy) and
@@ -24,7 +24,8 @@ a name two modules share resolves to the one nearest the importer, and to neithe
 ``run`` reads every mirror's ``origin/dev`` through git objects (never the working tree, never a
 write) into ``reports/structure.json``. A repo that can't be read has an ``error`` and no counts, and
 a file that doesn't parse is listed in ``unparsed``: neither may be read as clean (``complete``).
-It opens no packs: that waits for the evidence check (#58).
+It opens no packs. ``judge`` is the evidence check for structural packs (#58): ``validate_patch`` scans
+dev and dev plus the patch, and the pack resolves only when the violation is really gone.
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import time
 import warnings
 from collections import defaultdict
@@ -126,6 +128,12 @@ def parse(text: str) -> Source:
             arg = node.args[0] if node.args else None
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and not arg.value.startswith("."):
                 refs = [Ref(arg.value, "", 0, node.lineno, bool(scopes), "", here)]
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr"
+              and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)
+              and isinstance(node.args[1].value, str) and _private(node.args[1].value)):
+            base = _dotted(node.args[0])
+            if base:
+                src.attrs.append((base, node.args[1].value, node.lineno, scopes))
         elif isinstance(node, ast.Attribute) and _private(node.attr):
             base = _dotted(node.value)
             if base:
@@ -394,6 +402,104 @@ def _cycle(members: list[str], edges: dict[tuple[str, str], dict[str, Any]]) -> 
     }
 
 
+# ── did a patch fix it? (#58) ────────────────────────────────────────────────
+
+def judge(pack: dict[str, Any], base: dict[str, Any], patched: dict[str, Any]) -> dict[str, Any]:
+    """``{"gone", "reason"}``: whether *patched* no longer has the violation a structural pack is for.
+
+    The pack's ``governance.structure`` is a scan entry: a cycle's ``members``, or a private import's
+    ``path``, ``defined_in`` and ``name``. Keys aren't compared, because a relay module or a rename
+    changes a key and keeps the problem. Gone means: dev shows it, the patched tree doesn't, and the
+    patched tree has no cycle (or private import) that dev lacks, which is where a moved one shows up.
+    Anything unread on the patched tree means unknown, and unknown is not gone."""
+    def no(reason: str) -> dict[str, Any]:
+        return {"gone": False, "reason": reason}
+
+    for name, scan in (("dev", base), ("patched", patched)):
+        if scan.get("error"):
+            return no(f"the structure scan couldn't read the {name} tree: {scan['error']}")
+    if patched.get("unparsed") or not patched.get("complete"):
+        return no(f"the patched tree has files the scan can't read: {', '.join(patched.get('unparsed') or [])[:300]}")
+    want = (pack.get("governance") or {}).get("structure") or {}
+    if pack.get("kind") == "module_cycle":
+        members = {str(m) for m in want.get("members") or ()}
+        if len(members) < 2:
+            return no("the pack names no cycle members")
+        was = [set(c["members"]) for c in base["cycles"]]
+        now = [set(c["members"]) for c in patched["cycles"]]
+        if not any(len(c & members) > 1 for c in was):
+            return no("dev doesn't have this cycle, so the patch can't be what fixed it")
+        left = next((c for c in now if c & members), None)
+        if left:
+            return no(f"still in a cycle: {', '.join(sorted(left))[:400]}")
+        new = next((c for c in now if not any(c <= w for w in was)), None)
+        if new:
+            return no(f"the patch adds or moves a cycle: {', '.join(sorted(new))[:400]}")
+        return {"gone": True, "reason": "the cycle is on dev and gone with the patch, and none was added"}
+    if pack.get("kind") == "private_import":
+        path, target = str(want.get("path") or ""), (want.get("defined_in"), want.get("name"))
+        if not path or not all(target):
+            return no("the pack names no private import")
+        hit = [p for p in base["private_imports"] if p["path"] == path and (p["defined_in"], p["name"]) == target]
+        if not hit:
+            return no("dev doesn't have this private import, so the patch can't be what fixed it")
+        keys = {p["key"] for p in patched["private_imports"]}
+        if hit[0]["key"] in keys:
+            return no(f"still there: {hit[0]['key']}")
+        new_keys = sorted(keys - {p["key"] for p in base["private_imports"]})
+        if new_keys:
+            return no(f"the patch adds or moves a private import: {', '.join(new_keys[:3])}")
+        cycles = [c for c in patched["cycles"] if not any(set(c["members"]) <= set(w["members"]) for w in base["cycles"])]
+        if cycles:
+            return no(f"the patch adds a cycle: {', '.join(cycles[0]['members'])[:400]}")
+        return {"gone": True, "reason": "the private import is on dev and gone with the patch, and none was added"}
+    return no(f"not a structural pack: {pack.get('kind')}")
+
+
+def scan_tree(root: Path) -> dict[str, Any]:
+    """Scan a directory's files. Symlinks are never followed."""
+    sources: dict[str, str] = {}
+    skipped: list[str] = []
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in _SKIP_DIRS]
+        for f in files:
+            p = Path(d) / f
+            rel = p.relative_to(root).as_posix()
+            if p.is_symlink() or not in_scope(rel):
+                continue
+            try:
+                if p.stat().st_size > MAX_FILE_BYTES:
+                    skipped.append(rel)
+                else:
+                    sources[rel] = p.read_bytes().decode("utf-8-sig", errors="replace")
+            except OSError:
+                skipped.append(rel)
+    return _with_skipped(scan_sources(sources), skipped)
+
+
+def _with_skipped(r: dict[str, Any], skipped: list[str]) -> dict[str, Any]:
+    unparsed = sorted([*r["unparsed"], *skipped])
+    return {**r, "unparsed": unparsed, "complete": not unparsed}
+
+
+def scan_tree_isolated(root: Path, *, timeout_s: int = 120) -> dict[str, Any]:
+    """``scan_tree`` in a child process: it is CPU-bound, and it parses untrusted source, which can
+    crash an interpreter. Any failure is an ``error``, never an empty scan."""
+    from auditor.proc import child_env
+    from auditor.proc import run as proc_run
+
+    try:
+        proc = proc_run([sys.executable, "-m", "auditor.structure", str(root.resolve())],
+                        cwd=Path(__file__).resolve().parents[1], env=child_env(), capture_output=True, text=True,
+                        timeout=timeout_s)
+        if proc.returncode != 0:
+            return {"error": f"scan exited {proc.returncode}: {(proc.stderr or '')[-200:]}", "complete": False}
+        data = json.loads(proc.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return {"error": str(exc)[:300], "complete": False}
+    return data if isinstance(data, dict) else {"error": "the scan returned no report", "complete": False}
+
+
 # ── mirrors ──────────────────────────────────────────────────────────────────
 
 def read_dev(mirror_path: Path | None) -> tuple[str, dict[str, str], list[str]]:
@@ -445,10 +551,7 @@ def scan_mirror(path: Path | None) -> dict[str, Any]:
         sha, sources, skipped = read_dev(path)
     except (Unreadable, OSError, subprocess.SubprocessError, ValueError) as exc:
         return {"error": str(exc)[:300], "complete": False}
-    r = scan_sources(sources)
-    r["unparsed"] = sorted([*r["unparsed"], *skipped])
-    r["complete"] = not r["unparsed"]
-    return {"dev_sha": sha, **r}
+    return {"dev_sha": sha, **_with_skipped(scan_sources(sources), skipped)}
 
 
 def run(output_dir: str | Path | None = None, *, mirrors_path: str | Path = "config/repo_mirrors.yaml",
@@ -495,3 +598,7 @@ def run_quietly(output_dir: str | Path | None = None, **kw: Any) -> dict[str, An
     except Exception as exc:  # noqa: BLE001 — reported, not fatal
         logger.warning("structure scan failed: %s", exc)
         return {"error": str(exc)[:300]}
+
+
+if __name__ == "__main__":  # scan_tree_isolated's child
+    print(json.dumps(scan_tree(Path(sys.argv[1]))))
