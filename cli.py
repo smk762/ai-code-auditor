@@ -776,9 +776,11 @@ def _run_structure(args) -> None:
         for c in r["cycles"]:
             print(f"    cycle of {c['size']}, {c['lazy_edges']}/{len(c['edges'])} edges lazy: {', '.join(c['members'][:6])}"
                   + (f" +{c['size'] - 6} more" if c["size"] > 6 else ""))
-            cut = c["cut"]
-            print(f"      cheapest cut: {cut['from']} -> {cut['to']} ({', '.join(cut['names'][:4])}), "
-                  f"leaving a circle of {cut['largest_left']}")
+            # a report written before #154's cut sets has no "cuts"
+            for n, cut in enumerate(c.get("cuts") or []):
+                few = f"{len(c['cuts'])} edge(s)" + ("" if c.get("cuts_smallest") else ", maybe not the fewest")
+                lead = f"hint, not a fix: {few} clear it:" if n == 0 else "and"
+                print(f"      {lead} {cut['from']} -> {cut['to']} ({', '.join(cut['names'][:4])})")
     print(f"\n{rep['summary']}")
 
 

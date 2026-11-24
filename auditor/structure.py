@@ -14,8 +14,9 @@
   attributed to the module that defines it.
 
 Each cycle lists the edges inside it (``file:line``, names, whether every site is lazy) and
-``cut``: the edge whose removal leaves the smallest circle, then the fewest names to move. It is a
-starting point for a person, not a fix.
+``cuts``: the fewest edges whose removal leaves no circle, then the fewest names to move. It is a hint,
+not a fix: it counts edges and can't see which dependency is the real one. The names on a cut usually
+belong in a module both ends may use, and a lazy import or a relay removes nothing.
 
 Not read: tests, code in other languages, dynamic imports of a computed name, ``from m import *``
 names (the edge counts, the names don't). An import is resolved only to a module of the same repo;
@@ -52,6 +53,7 @@ MAX_FILE_BYTES = 1_000_000
 _SKIP_DIRS = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__", "fixtures", "testdata", "build",
                         "dist", "vendor", "third_party", "site-packages"})
 _MAX_SITES = 5  # shown per edge
+_MAX_CUT_STEPS = 3000  # cut sets tried per cycle
 
 
 class Unreadable(Exception):
@@ -382,23 +384,82 @@ def _has_child(mods: Modules, path: str, name: str) -> bool:
     return p.name == "__init__.py" and mods.at((*p.parent.parts, name)) is not None
 
 
+def _loop(graph: dict[str, set[str]]) -> list[tuple[str, str]]:
+    """The edges of a shortest circle in *graph*, or [] when it has none."""
+    best: list[tuple[str, str]] = []
+    for start in sorted(graph):
+        prev: dict[str, str] = {}
+        queue, seen = [start], {start}
+        for node in queue:
+            for nxt in sorted(graph.get(node, ())):
+                if nxt == start:
+                    path = [(node, start)]
+                    while node != start:
+                        path.append((prev[node], node))
+                        node = prev[node]
+                    if not best or len(path) < len(best):
+                        best = path[::-1]
+                    queue.clear()
+                    break
+                if nxt not in seen:
+                    seen.add(nxt)
+                    prev[nxt] = node
+                    queue.append(nxt)
+            else:
+                continue
+            break
+    return best
+
+
+def _cuts(inside: dict[tuple[str, str], dict[str, Any]]) -> tuple[list[tuple[str, str]], bool]:
+    """The fewest edges whose removal leaves no circle, then the fewest names to move, then the most
+    lazy ones. The flag is False when the search was cut short (``_MAX_CUT_STEPS``) and the set may
+    not be the smallest; it still breaks every circle."""
+    def cost(cut: frozenset) -> tuple:
+        return (len(cut), sum(len(inside[e]["names"]) for e in cut), sum(not inside[e]["lazy"] for e in cut), sorted(cut))
+
+    def loop(cut: frozenset) -> list[tuple[str, str]]:
+        g: dict[str, set[str]] = defaultdict(set)
+        for a, b in inside:
+            if (a, b) not in cut:
+                g[a].add(b)
+        return _loop(g)
+
+    best: frozenset = frozenset()
+    while circle := loop(best):  # a first answer, so a search cut short still has one
+        best |= {min(circle, key=lambda e: (len(inside[e]["names"]), not inside[e]["lazy"], e))}
+    for e in sorted(best):  # drop what later cuts made needless
+        if not loop(best - {e}):
+            best -= {e}
+    steps, seen, stack = 0, set(), [frozenset()]
+    while stack:
+        cut = stack.pop()
+        if cut in seen or len(cut) > len(best):
+            continue
+        seen.add(cut)
+        steps += 1
+        if steps > _MAX_CUT_STEPS:
+            return sorted(best), False
+        circle = loop(cut)
+        if not circle:
+            best = min(best, cut, key=cost)
+        elif len(cut) < len(best):  # every answer cuts some edge of this circle
+            stack.extend(cut | {e} for e in circle)
+    return sorted(best), True
+
+
 def _cycle(members: list[str], edges: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
     inside = {k: v for k, v in sorted(edges.items()) if k[0] in members and k[1] in members}
 
-    def left(cut: tuple[str, str]) -> int:
-        g: dict[str, set[str]] = defaultdict(set)
-        for a, b in inside:
-            if (a, b) != cut:
-                g[a].add(b)
-        return max((len(c) for c in _components(g)), default=0)
-    best = min(inside, key=lambda k: (left(k), len(inside[k]["names"]), len(inside[k]["sites"]), k))
+    cuts, smallest = _cuts(inside)
     return {
         "key": "module-cycle:" + ",".join(members), "members": members, "size": len(members),
         "lazy_edges": sum(v["lazy"] for v in inside.values()),
         "edges": [{"from": a, "to": b, "names": sorted(v["names"]), "lazy": v["lazy"],
                    "sites": [f"{a}:{n}" for n in sorted(set(v["sites"]))[:_MAX_SITES]]}
                   for (a, b), v in inside.items()],
-        "cut": {"from": best[0], "to": best[1], "names": sorted(inside[best]["names"]), "largest_left": left(best)},
+        "cuts": [{"from": a, "to": b, "names": sorted(inside[a, b]["names"])} for a, b in cuts],
+        "cuts_smallest": smallest,
     }
 
 
