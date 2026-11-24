@@ -57,3 +57,38 @@ def narrow_empty(read):
         return read()
     except FileNotFoundError:
         return {}
+
+
+def suppress_narrow(fn, contextlib):
+    with contextlib.suppress(FileNotFoundError):
+        fn()
+
+
+def suppress_reasoned(fn, contextlib):
+    with contextlib.suppress(Exception):  # noqa: S110 closing a dead socket, nothing to lose
+        fn()
+
+
+def reset_and_log(read):
+    try:
+        state = read()
+    except Exception:
+        log.exception("state unreadable, starting empty")
+        state = {}
+    return state
+
+
+def reset_narrow(read):
+    try:
+        state = read()
+    except FileNotFoundError:
+        state = {}
+    return state
+
+
+def real_fallback(read, default):
+    try:
+        state = read()
+    except Exception:
+        state = default
+    return state

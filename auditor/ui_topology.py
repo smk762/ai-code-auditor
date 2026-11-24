@@ -372,7 +372,8 @@ def _build(out: Path, repos: list[Any], side: Path, doc_path: Path | None = None
                   if isinstance(e, dict) and isinstance(e.get("from"), str) and isinstance(e.get("to"), str)]
     try:
         poll = load_state(merge_poll_state_path(out)).get("repos") or {}
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — optional enrichment, but say it is missing
+        logger.warning("topology: no merge-poll state: %s", exc)
         poll = {}
     imports, uses, files = _scan(repos)
 
