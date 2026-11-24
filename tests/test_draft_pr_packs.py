@@ -165,6 +165,7 @@ def test_git_writes_refuse_a_scan_source(repo: Path, monkeypatch: pytest.MonkeyP
 def test_every_configured_mirror_and_repo_path_is_a_scan_source() -> None:
     import yaml
 
+    from auditor.fsutil import host_path
     from auditor.git_ops import scan_source_paths
 
     paths = scan_source_paths()
@@ -172,7 +173,7 @@ def test_every_configured_mirror_and_repo_path_is_a_scan_source() -> None:
     repos = yaml.safe_load(Path("config/ecosystem.yaml").read_text())["repos"]
     assert mirrors and repos
     for item in [*mirrors, *repos]:
-        assert Path(item["path"]).resolve() in paths, item["path"]
+        assert Path(host_path(item["path"])).resolve() in paths, item["path"]
 
 
 # ── no orphan branches on the remote (gh missing, or the PR could not be opened) ────────────

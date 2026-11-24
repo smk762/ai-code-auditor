@@ -12,6 +12,8 @@ from typing import Any
 
 import yaml
 
+from auditor.fsutil import host_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -197,7 +199,13 @@ def load_mirrors_config(path: str | Path = "config/repo_mirrors.yaml") -> dict[s
     p = Path(path)
     if not p.exists():
         return {}
-    return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    if cfg.get("mirror_root"):
+        cfg["mirror_root"] = host_path(cfg["mirror_root"])
+    for item in cfg.get("mirrors") or []:
+        if item.get("path"):
+            item["path"] = host_path(item["path"])
+    return cfg
 
 
 def _sync_mirror_item(
@@ -329,7 +337,7 @@ def sync_one_mirror(
     An explicit *branch* wins; otherwise the config ``default_branch`` (or ``dev``).
     """
     cfg = load_mirrors_config(config_path)
-    root = Path(cfg.get("mirror_root") or "/home/smk/mirrors")
+    root = Path(cfg.get("mirror_root") or host_path("~/mirrors"))
     root.mkdir(parents=True, exist_ok=True)
     preferred = str(branch or cfg.get("default_branch") or "dev")
     needle = name.strip().lower()
@@ -356,7 +364,7 @@ def sync_mirrors(
     An explicit *branch* wins; otherwise the config ``default_branch`` (or ``dev``).
     """
     cfg = load_mirrors_config(config_path)
-    root = Path(cfg.get("mirror_root") or "/home/smk/mirrors")
+    root = Path(cfg.get("mirror_root") or host_path("~/mirrors"))
     root.mkdir(parents=True, exist_ok=True)
     preferred = str(branch or cfg.get("default_branch") or "dev")
     results: list[MirrorSyncResult] = []

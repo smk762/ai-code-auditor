@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from auditor.env_loader import load_env_file
+from auditor.fsutil import host_path
 
 load_env_file()
 
@@ -100,7 +101,7 @@ def load_ecosystem_config(path: str | Path = "config/ecosystem.yaml") -> Ecosyst
     repos = [
         RepoConfig(
             name=item["name"],
-            path=item["path"],
+            path=host_path(item["path"]),
             branch=item.get("branch", ""),
             enabled=_yaml_bool(item.get("enabled"), f"repos[{item.get('name')}].enabled", True),
             access_token_env=item.get("access_token_env", ""),

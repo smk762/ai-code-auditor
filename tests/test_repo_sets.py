@@ -32,7 +32,7 @@ def test_scan_set_and_mirror_set_match() -> None:
 
 
 def test_this_repo_is_scanned_from_a_mirror_not_the_working_checkout() -> None:
-    assert _names("config/ecosystem.yaml", "repos")["ai-code-auditor"] == "/home/smk/mirrors/ai-code-auditor"
+    assert _names("config/ecosystem.yaml", "repos")["ai-code-auditor"] == "~/mirrors/ai-code-auditor"
 
 
 def test_generated_docs_bundle_is_not_scanned() -> None:

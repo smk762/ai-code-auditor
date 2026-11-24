@@ -1,4 +1,4 @@
-"""Atomic file replacement: readers see the old file or the new one, never half of it."""
+"""Files and paths: atomic replacement (readers see the old file or the new one, never half of it), and "~" in config."""
 from __future__ import annotations
 
 import os
@@ -41,3 +41,18 @@ def _fsync_dir(directory: Path) -> None:
         pass
     finally:
         os.close(fd)
+
+
+def host_path(path: str) -> str:
+    """A configured path with a leading ``~`` expanded to the host user's home.
+
+    In Docker the repos are mounted at their host paths while ``HOME`` is ``/``, so compose passes
+    the host's home as ``AI_AUDIT_HOST_HOME``. Without a usable home it raises: ``/mirrors`` would
+    read as every repo being empty."""
+    p = str(path or "")
+    if p != "~" and not p.startswith("~/"):
+        return p
+    home = (os.getenv("AI_AUDIT_HOST_HOME", "").strip() or os.path.expanduser("~")).rstrip("/")
+    if not home.startswith("/"):
+        raise ValueError(f"can't expand {p!r}: set AI_AUDIT_HOST_HOME to the host user's home directory")
+    return home + p[1:]

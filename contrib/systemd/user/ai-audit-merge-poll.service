@@ -1,6 +1,6 @@
 [Unit]
 Description=AI Code Auditor — hourly GitHub dev-tip poll → merge refresh
-Documentation=file:///home/smk/ai-code-auditor/contrib/github/merge-refresh-webhook.md
+Documentation=file://%h/ai-code-auditor/contrib/github/merge-refresh-webhook.md
 After=network-online.target
 Wants=network-online.target
 
