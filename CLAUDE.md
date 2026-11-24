@@ -116,6 +116,7 @@ version there too: a bug in such a helper can't show repro. That is deliberate (
 file would let a test-helper change manufacture the failure the code change is meant to earn), so a patch that only
 touches test files resolves as `test_only`, and a mixed patch whose proof needs the old helper takes a waiver.
 Other code changes need tests or npm checks to have run. Docs/config-only patches pass.
+The evidence records what the tests skipped (`tests`, `validator.pytest_counts`; no counts means unknown, not zero), and a skip changes no verdict. A `repro` can't rest on a skipped test; `tests`, `test_only` and `structure` can.
 `evidence_waiver` (≥ 20 chars) resolves anyway and is recorded. Fix commits carry `Pack:` / `Evidence:` trailers
 (`auditor/trailers.py`), which the trust metrics read from `git log`.
 
