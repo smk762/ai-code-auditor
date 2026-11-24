@@ -242,6 +242,17 @@ def plan(packs: list[PackView], scans: list[Scan], mirrors: dict[str, Mirror], *
             "wontfix_considered": sum(n for (_, st), n in considered.items() if st == "wontfix")}
 
 
+def _file_gone(p: PackView, files: set[str]) -> bool:
+    """The pack's file is not on the ref. When its path can't be anchored to the repo root, a file on
+    the ref that the path ends with may be the one it means, so the pack is kept (#171)."""
+    if p.path in files:
+        return False
+    if p.path_anchored:
+        return True
+    parts = p.path.split("/")
+    return not any("/".join(parts[i:]) in files for i in range(1, len(parts)))
+
+
 def _code_changed(p: PackView, seq: list[Scan], m: Mirror | None) -> str:
     """Why the pack's cited lines count as changed away, or "" when they don't."""
     seen = p.detected_at
@@ -267,7 +278,7 @@ def _judge_wontfix(p: PackView, seq: list[Scan], m: Mirror | None, *, keeper_sta
         if keeper_status in {"resolved", "obsolete"}:
             return close("keeper_closed", f"duplicate of {p.duplicate_of}, which is {keeper_status}")
         return None
-    if m is not None and m.ok and p.path not in m.files():
+    if m is not None and m.ok and _file_gone(p, m.files()):
         return close("wontfix_file_gone", f"{p.path} is not on {m.ref}")
     if p.kind in HUMAN_KINDS:
         return None
@@ -281,7 +292,7 @@ def _judge(p: PackView, seq: list[Scan], m: Mirror | None, *, now: datetime, mis
     def close(rule: str, reason: str) -> Closure:
         return Closure(p.id, p.repo, p.path, p.title, p.kind, rule, reason)
 
-    if m is not None and m.ok and p.path not in m.files():
+    if m is not None and m.ok and _file_gone(p, m.files()):
         return close("file_gone", f"{p.path} is not on {m.ref}")
     if p.kind in HUMAN_KINDS:
         return None

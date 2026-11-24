@@ -159,3 +159,11 @@ def test_scan_context_missing_path_returns_empty(tmp_path: Path) -> None:
     ctx = scan_repo_with_context(repo)
     assert ctx.files == []
     assert ctx.diffs == []
+
+
+def test_a_relative_repo_path_is_resolved_to_an_absolute_one(tmp_path, monkeypatch) -> None:
+    from auditor.config import RepoConfig
+    from auditor.repo_resolver import resolve_repo_path
+
+    monkeypatch.chdir(tmp_path)
+    assert resolve_repo_path(RepoConfig(name="sample", path="./sample")) == tmp_path / "sample"

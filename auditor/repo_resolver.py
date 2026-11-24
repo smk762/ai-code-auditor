@@ -114,7 +114,8 @@ def diff_files(repo_path: Path, base: str, head: str = "HEAD") -> frozenset[str]
 def resolve_repo_path(repo: RepoConfig) -> Path:
     if _is_remote(repo.path):
         return _materialize_remote_repo(repo)
-    return Path(repo.path)
+    # Absolute (symlinks kept), so every path found under it names its checkout (#171).
+    return Path(os.path.abspath(repo.path))
 
 
 def resolve_scan_root(repo: RepoConfig) -> Path:

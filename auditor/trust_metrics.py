@@ -54,7 +54,7 @@ import yaml
 
 from auditor.finding_match import reworded_score
 from auditor.fsutil import atomic_write_text
-from auditor.repo_paths import mirror_paths, rel_path
+from auditor.repo_paths import anchored, mirror_paths, rel_path
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,7 @@ class PackView:
     duplicate_of: str = ""
     snippet: str = ""  # location.code_snippet: numbered lines ("  17| code") around the finding
     finding_class: str = ""  # governance.finding_class.id (#53); "" when unclassified
+    path_anchored: bool = True  # False: ``path`` may still start with part of the checkout (#171)
 
     @property
     def is_finding(self) -> bool:
@@ -136,6 +137,7 @@ def pack_view(data: dict[str, Any]) -> PackView:
         kind=str(data.get("kind") or "finding"),
         repo=repo,
         path=rel_path(repo, str(loc.get("file_path") or "")),
+        path_anchored=anchored(repo, str(loc.get("file_path") or "")),
         line=int(loc.get("line") or 0),
         title=str((data.get("narrative") or {}).get("title") or ""),
         status=str(data.get("status") or "open"),

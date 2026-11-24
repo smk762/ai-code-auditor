@@ -24,6 +24,19 @@ def rel_path(repo: str, path: str) -> str:
     return p.lstrip("/")
 
 
+def anchored(repo: str, path: str) -> bool:
+    """Whether ``rel_path`` can be sure where the repo root is in *path* (#171).
+
+    Not when an absolute path never names the repo, the name comes up more than once, or a relative
+    path starts with the repo's name (a checkout, or a package named after the repo)."""
+    p = str(path or "")
+    if p.startswith("/"):
+        return p.split("/")[:-1].count(repo) == 1
+    while p.startswith("./"):
+        p = p[2:]
+    return repo not in p.split("/")[:-1]
+
+
 def mirror_paths(mirrors_path: str | Path = "config/repo_mirrors.yaml") -> dict[str, Path]:
     try:
         from conductor.mirrors import load_mirrors_config
