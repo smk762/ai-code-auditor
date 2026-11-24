@@ -72,7 +72,8 @@ def test_the_key_names_members_never_lines_and_the_cut_is_the_thin_edge() -> Non
     one = structure.scan_sources({**BASE, **files})["cycles"][0]
     moved = {**BASE, **files, "pkg/kinds.py": "\n\n\n" + BASE["pkg/kinds.py"]}
     assert one["key"] == structure.scan_sources(moved)["cycles"][0]["key"] == "module-cycle:pkg/kinds.py,pkg/socket.py"
-    assert one["cut"] == {"from": "pkg/kinds.py", "to": "pkg/socket.py", "names": ["BACKLOG"], "largest_left": 0}
+    assert one["cuts"] == [{"from": "pkg/kinds.py", "to": "pkg/socket.py", "names": ["BACKLOG"]}]
+    assert one["cuts_smallest"] is True
     assert one["edges"][0]["sites"] == ["pkg/kinds.py:1"] and one["lazy_edges"] == 0
 
 
@@ -173,3 +174,29 @@ def test_one_repo_keeps_the_others_results_and_a_typo_is_refused(tmp_path: Path)
     assert set(structure.run(tmp_path / "out", mirrors_path=cfg, repos=["demo"])["repos"]) == {"demo", "gone"}
     with pytest.raises(ValueError, match="typo"):
         structure.run(tmp_path / "out", mirrors_path=cfg, repos=["typo"])
+
+
+def _edges(spec: dict[str, int]) -> dict[tuple[str, str], dict]:
+    return {(e[0], e[1]): {"names": {str(i) for i in range(n)}, "lazy": False} for e, n in spec.items()}
+
+
+def _clears(edges: dict, cuts: list) -> bool:
+    graph: dict[str, set[str]] = {}
+    for a, b in set(edges) - set(cuts):
+        graph.setdefault(a, set()).add(b)
+    return structure._components(graph) == []
+
+
+def test_the_cuts_clear_every_circle_not_just_the_first() -> None:
+    """#154's pilot: the one best edge of a 12-module cycle left a circle of 5 behind."""
+    two_loops = _edges({"ab": 1, "ba": 2, "bc": 1, "cb": 2})
+    assert structure._cuts(two_loops) == ([("a", "b"), ("b", "c")], True)
+    shared = _edges({"ab": 5, "bc": 1, "ca": 1, "bd": 1, "da": 1})  # one edge in both: fewest edges before fewest names
+    assert structure._cuts(shared) == ([("a", "b")], True)
+
+
+def test_a_search_cut_short_still_clears_the_cycle_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(structure, "_MAX_CUT_STEPS", 1)
+    edges = _edges({a + b: 1 for a in "abcde" for b in "abcde" if a != b})
+    cuts, smallest = structure._cuts(edges)
+    assert smallest is False and _clears(edges, cuts)
