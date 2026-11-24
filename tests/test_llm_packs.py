@@ -59,10 +59,10 @@ def test_anthropic_fallback_is_budget_checked(ledger_env: Path, monkeypatch: pyt
     monkeypatch.setenv("AI_AUDIT_BUDGET_CONDUCTOR_USD", "0.01")
     get_ledger().record("conductor", "claude-opus-5-5", 0, 1_000_000)  # $20, lane spent
     calls: list[dict[str, Any]] = []
-    _fake_litellm(monkeypatch, "openai/gpt-x", calls)
+    _fake_litellm(monkeypatch, "ollama/qwen", calls)
     with pytest.raises(BudgetExceeded):
         cl.completion([{"role": "user", "content": "hi"}])
-    assert [c["model"] for c in calls] == ["openai/gpt-x"]  # the fallback never ran
+    assert [c["model"] for c in calls] == ["ollama/qwen"]  # the fallback never ran
 
 
 def test_openai_requests_path_records_usage(ledger_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:

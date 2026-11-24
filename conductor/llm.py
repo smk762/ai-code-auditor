@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from auditor.spend_ledger import BudgetExceeded, get_ledger
+from auditor.spend_ledger import LOCAL_PROVIDERS, BudgetExceeded, get_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def completion(
 
     temperature=None omits the parameter (required for Claude 5.x, which rejects
     sampling params). effort sets Anthropic output_config.effort (low|medium|high|xhigh|max).
-    lane is the spend-ledger budget lane; Anthropic calls raise BudgetExceeded once it is spent.
+    lane is the spend-ledger budget lane; every call but a local model's raises BudgetExceeded once it is spent.
     note labels the ledger row (e.g. mission:task id, repo) for the usage dashboard.
     """
     models = load_conductor_models()
@@ -75,9 +75,10 @@ def completion(
         # Current Claude models reject sampling params with a 400 ("`temperature` is
         # deprecated for this model"), so never send it on the Anthropic path.
         temperature = None
-        get_ledger().check(lane)
     elif _is_openai_reasoning(chosen):
         temperature = None  # OpenAI reasoning models reject a non-default temperature
+    if _is_metered(chosen):
+        get_ledger().check(lane)
     extra: dict[str, Any] = {}
     if temperature is not None:
         extra["temperature"] = temperature
@@ -111,13 +112,13 @@ def completion(
         for fb in models.fallbacks:
             fb_anthropic = _is_anthropic(fb)
             # Same rules as the primary path: Claude rejects sampling params, and
-            # every Anthropic call is budget-checked and recorded in the ledger.
+            # every cloud call is budget-checked and every call recorded in the ledger (#172).
             fb_temperature = None if fb_anthropic or _is_openai_reasoning(fb) else requested_temperature
-            if fb_anthropic:
+            if _is_metered(fb):
                 try:
                     get_ledger().check(lane)
                 except BudgetExceeded as be:
-                    # Only this fallback is blocked: later non-Anthropic ones still run.
+                    # Only this fallback is blocked: a later local one still runs.
                     logger.warning("fallback %s skipped: %s", fb, be)
                     budget_exc = budget_exc or be
                     continue
@@ -131,21 +132,24 @@ def completion(
             except Exception as fb_exc:  # noqa: BLE001 — try the next fallback; the primary's error is raised last
                 logger.warning("fallback model %s failed too: %s", fb, fb_exc)
                 continue
-            if fb_anthropic:
-                _record_litellm_usage(lane, fb, resp, note)
+            _record_litellm_usage(lane, fb, resp, note)
             logger.warning("primary model %s failed (%s); used fallback %s", chosen, exc, fb)
             return str(resp.choices[0].message.content or "")
         if budget_exc is not None:
             # A spent lane stays visible as BudgetExceeded; the primary's failure is its cause.
             raise budget_exc from exc
         raise
-    if is_anthropic:
-        _record_litellm_usage(lane, chosen, resp, note)
+    _record_litellm_usage(lane, chosen, resp, note)
     return str(resp.choices[0].message.content or "")
 
 
 def _is_anthropic(model: str) -> bool:
     return model.startswith("anthropic/") or model.startswith("claude")
+
+
+def _is_metered(model: str) -> bool:
+    """Whether a call costs money, so the lane budget applies: anything but a local model."""
+    return not model.startswith(LOCAL_PROVIDERS)
 
 
 def _is_openai_reasoning(model: str) -> bool:
