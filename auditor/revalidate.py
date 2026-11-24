@@ -41,7 +41,8 @@ from auditor.fsutil import atomic_write_text
 logger = logging.getLogger(__name__)
 
 REPORT_NAME = "revalidate.json"
-FINDING_KINDS_EXCLUDED = frozenset({"world_model", "architecture", "extraction", "invariants", "class_guard"})
+FINDING_KINDS_EXCLUDED = frozenset({"world_model", "architecture", "extraction", "invariants", "class_guard",
+    "module_cycle", "private_import"})
 _TEST_HINTS = ("test", "tests/", "__tests__", ".spec.", ".test.")
 
 

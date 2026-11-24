@@ -34,6 +34,7 @@ here and in code. Don't add a rule to remember.
 | Count a guard seed as caught or missed when the guard's check already fails on the unplanted export, or count an unproven guard toward `guards.seeded_recall` | `test_guard_seeded::test_a_check_that_already_fails_unplanted_is_invalid_not_a_miss`, `::test_no_proven_guards_is_insufficient`, `::test_a_rule_that_cannot_run_makes_the_seed_invalid` |
 | Count a guard seed's variant (`dodges`, `fixes`) toward `guards.seeded_recall`, or a dodge of a seed the guard missed | `test_guard_seeded::test_a_missed_dodge_leaves_seeded_recall_alone`, `::test_a_dodge_of_a_seed_the_guard_misses_is_not_counted` |
 | The structure scan reading an unreadable repo or file as clean, writing a mirror, or losing a cycle to a lazy import, re-export or relay | `test_structure::test_an_unreadable_repo_or_file_is_never_clean`, `::test_run_reads_origin_dev_and_never_writes_the_mirror`, `::test_a_cycle_stays_one_however_it_is_dressed`, `::test_a_relay_module_joins_the_cycle` |
+| Resolve a structural pack whose violation is still there, moved, or unread, or on a waiver alone | `test_structural_evidence::test_a_dodge_is_not_gone`, `::test_unknown_is_never_gone`, `::test_no_shortcut_or_waiver_resolves_a_cycle_that_is_still_there`, `::test_a_patchs_tests_cannot_rewrite_the_tree_that_is_judged` |
 | Overwrite `trust_history.jsonl`, `trust_eval_history.jsonl`, `pack_savings_history.jsonl` or `autonomy_history.jsonl` | `test_trust_metrics::test_refresh_writes_report_and_appends_history`, `test_trust_eval::test_evaluate_writes_report_and_history`, `test_pack_savings::test_refresh_writes_report_and_appends_history`, `test_autonomy::test_refresh_moves_each_scope_one_step_and_appends_history` |
 | A partial RAG send retiring other docs | `test_rag_retire::test_sync_retires_only_what_the_send_replaced`, `::test_failed_delete_is_retried_and_failed_send_retires_nothing` |
 | Remove a GitHub label this tool didn't add, or label an external item | `test_linchpin::test_apply_labels_adds_removes_only_its_own_and_records_ledger` |
@@ -150,8 +151,9 @@ call. Convention rules such as `silent-except` are not findings. The `rules.fixt
 passing their fixtures. In CI, a repo's `.suite-rules-baseline.json` may only shrink.
 
 **Structure** (#154, `auditor/structure.py`, `ai-audit structure`) finds module cycles and private imports inside each
-repo, from the mirror's `origin/dev`, Python only. It is report-only (`reports/structure.json`): it opens no packs until
-`validate_patch` can check that a cycle is gone (#58). Every import inside a function counts, because that is how
+repo, from the mirror's `origin/dev`, Python only. It is report-only (`reports/structure.json`) and opens no packs.
+`validate_patch` can already judge one (`structure.judge`, #58): it scans fresh exports of dev and dev plus the patch
+in a child process, and compares members, not keys. `agent_pack.STRUCTURE_KINDS` and `evidence.STRUCTURE_KINDS` must match. Every import inside a function counts, because that is how
 all the cycles it finds today avoid an import error.
 
 **Pack GC** (`auditor/pack_gc.py`) and revalidation are the only things besides an agent or a person that close finding

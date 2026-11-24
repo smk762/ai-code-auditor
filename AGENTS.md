@@ -33,7 +33,8 @@ Optional: `q=<keyword>` boosts matches, `status=open,claimed,in_progress` (defau
    (or `--rag-chat-api-key`). The ai-audit JWT is never forwarded to rag-chat.
 4. **Close** — `POST /audit/validate_patch {"repo","patch","pack_id":"<id>"}`. A pass resolves the pack only with
    evidence (see "Done means" in the brief): for bug and security packs, a test in the patch that **fails on `dev` and
-   passes with the fix**. Otherwise the pack becomes `unverified` and `pack.reason` says what's missing;
+   passes with the fix**; for structural packs (`module_cycle`, `private_import`), the violation gone with none added
+   or moved, and the tests run (a waiver can replace the tests, never the structure). Otherwise the pack becomes `unverified` and `pack.reason` says what's missing;
    `"evidence_waiver": "<why no test can exercise it>"` resolves it anyway, recorded on the pack.
    The "fails on `dev`" run uses your patched test files whole (anything under `tests/` too), so a helper defined
    inside a test file runs its fixed version on `dev` as well and can't show the failure. A patch that changes only

@@ -104,6 +104,7 @@ def _private(user: str, **files: str) -> list[tuple[str, str]]:
     "from pkg.core import _secret as secret\n",
     "import pkg.core\n\n\ndef f():\n    return pkg.core._secret\n",
     "from pkg import core\n\nx = core._secret\n",
+    "from pkg import core\n\nx = getattr(core, '_secret')\n",
     "def f():\n    from . import core as c\n    return lambda: c._secret\n",
 ])
 def test_a_private_name_is_reported_however_it_is_reached(user: str) -> None:
