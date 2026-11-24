@@ -1,4 +1,4 @@
-"""conductor.llm: a spent Anthropic lane skips only that fallback, not the rest of the chain."""
+"""conductor.llm: a spent lane stops every cloud call and never a local one; every call is recorded (#172)."""
 
 from __future__ import annotations
 
@@ -41,19 +41,58 @@ def _litellm(monkeypatch: pytest.MonkeyPatch, fallbacks: list[str], fail: set[st
     return calls
 
 
-def test_spent_anthropic_fallback_moves_on_to_the_next(spent_lane: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _litellm(monkeypatch, ["anthropic/claude-opus-5-5", "xai/grok-x"], fail={"openai/gpt-x"})
-    out = cl.completion([{"role": "user", "content": "hi"}])
-    assert out == "xai/grok-x"
-    assert calls == ["openai/gpt-x", "xai/grok-x"]  # the Anthropic fallback was never called
+OLLAMA = "ollama/qwen"
 
 
-def test_all_fallbacks_exhausted_keeps_the_primary_failure_as_cause(
+@pytest.fixture
+def ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_AUDIT_SPEND_DB", str(tmp_path / "spend.db"))
+    for k in ("AI_AUDIT_BUDGET_TOTAL_USD", "AI_AUDIT_BUDGET_CONDUCTOR_USD", "AI_AUDIT_BUDGET_RESET_DAY"):
+        monkeypatch.delenv(k, raising=False)
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-x", "xai/grok-x", "anthropic/claude-opus-5-5"])
+def test_a_spent_lane_refuses_every_cloud_model(spent_lane: None, monkeypatch: pytest.MonkeyPatch, model: str) -> None:
+    calls = _litellm(monkeypatch, [], fail=set())
+    with pytest.raises(BudgetExceeded):
+        cl.completion([{"role": "user", "content": "hi"}], model=model)
+    assert calls == []
+
+
+def test_a_spent_lane_refuses_without_litellm_too(spent_lane: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "litellm", None)
+    with pytest.raises(BudgetExceeded):
+        cl.completion([{"role": "user", "content": "hi"}], model="xai/grok-x")
+
+
+def test_a_spent_lane_skips_cloud_fallbacks_and_runs_a_local_one(
     spent_lane: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls = _litellm(monkeypatch, ["anthropic/claude-opus-5-5", "xai/grok-x"],
-                     fail={"openai/gpt-x", "xai/grok-x"})
+    calls = _litellm(monkeypatch, ["anthropic/claude-opus-5-5", "xai/grok-x", "ollama/local"], fail={OLLAMA})
+    assert cl.completion([{"role": "user", "content": "hi"}], model=OLLAMA) == "ollama/local"
+    assert calls == [OLLAMA, "ollama/local"]
+
+
+def test_a_spent_lane_with_no_local_fallback_keeps_the_primary_failure_as_cause(
+    spent_lane: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _litellm(monkeypatch, ["anthropic/claude-opus-5-5", "xai/grok-x"], fail={OLLAMA})
     with pytest.raises(BudgetExceeded) as ei:
-        cl.completion([{"role": "user", "content": "hi"}])
-    assert "openai/gpt-x down" in str(ei.value.__cause__)
-    assert calls == ["openai/gpt-x", "xai/grok-x"]
+        cl.completion([{"role": "user", "content": "hi"}], model=OLLAMA)
+    assert f"{OLLAMA} down" in str(ei.value.__cause__)
+    assert calls == [OLLAMA]
+
+
+@pytest.mark.parametrize("fail", [set(), {"openai/gpt-x"}])
+def test_every_litellm_call_is_recorded(ledger: None, monkeypatch: pytest.MonkeyPatch, fail: set[str]) -> None:
+    _litellm(monkeypatch, ["xai/grok-x"], fail=fail)
+    used = cl.completion([{"role": "user", "content": "hi"}], note="n1")
+    rows = get_ledger().rows_since(0)
+    assert [(r[1], r[2], r[3], r[4], r[5]) for r in rows] == [("conductor", used.split("/")[1], "n1", 1, 1)]
+    assert rows[0][7] > 0
+
+
+def test_a_local_call_is_recorded_as_free(ledger: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    _litellm(monkeypatch, [], fail=set())
+    cl.completion([{"role": "user", "content": "hi"}], model=OLLAMA)
+    assert [r[7] for r in get_ledger().rows_since(0)] == [0.0]

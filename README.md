@@ -164,7 +164,7 @@ With Ollama on localhost, scan review sends no code off the machine.
 
 ## Cost control
 
-- **Ledger.** Each Anthropic call on these paths is recorded with its token counts and priced from a table in
+- **Ledger.** Each Anthropic call, and each conductor call, is recorded with its token counts and priced from a table in
   `auditor/spend_ledger.py`. A model missing from the table is charged at the dearest known rate. `ai-audit budget` shows it.
 - **Lanes and caps.** Spend is split into lanes, each with a monthly cap set by `AI_AUDIT_BUDGET_<LANE>_USD`, under an
   overall `AI_AUDIT_BUDGET_TOTAL_USD`. The defaults are $190 in all: `audit` 15, `audit_batch` 100, `conductor` 80,
@@ -177,7 +177,8 @@ With Ollama on localhost, scan review sends no code off the machine.
 When a cap is reached: a synchronous scan falls back to simple pattern rules and records those files as unreviewed; a batch
 submits only what fits; a conductor task fails and says why; a wiki build stops. Nothing closes as a result.
 
-Caps apply to Anthropic calls only. OpenAI and xAI calls are not capped here. A cap is checked before each call, so calls
+Caps cover Anthropic everywhere, and every cloud model in the conductor. Scan reviews by OpenAI, xAI or a compatible endpoint
+are not capped or recorded. A cap is checked before each call, so calls
 already running can take a lane slightly over it. Set a limit in the provider's console too.
 
 ## How it checks itself
