@@ -45,4 +45,12 @@ COPY gpu-tenant.yaml /app/gpu-tenant.yaml
 # doesn't satisfy it (validator.test_python, #141); its interpreters live in the venv cache.
 RUN pip install --no-cache-dir . ruff uv==0.11.9
 
+# The structure scan parses with this one: a file using syntax newer than the parser is unreadable to it
+# (auditor/structure.py). Never below TEST_PYTHONS' newest. It runs no packages, and no patch's tests.
+ARG SCAN_PYTHON_VERSION=3.14
+RUN uv python install --no-cache --no-bin --install-dir /opt/scan-python ${SCAN_PYTHON_VERSION} \
+    && ln -s /opt/scan-python/cpython-${SCAN_PYTHON_VERSION}-*/bin/python${SCAN_PYTHON_VERSION} /usr/local/bin/scan-python \
+    && chmod -R a+rX /opt/scan-python && scan-python --version
+ENV AI_AUDIT_SCAN_PYTHON=/usr/local/bin/scan-python
+
 CMD ["python", "pipelines/nightly_repo_audit.py"]
