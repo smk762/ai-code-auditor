@@ -33,11 +33,11 @@ def _cite(repo: str, path: str, line: int) -> str:
 
 def _findings(repo: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]], int]:
     from auditor import ui
-    from auditor.run_views import run_to_dict
-    from auditor.ui_runs import _findings as run_findings, _resolve_run
+    from auditor.run_views import resolve_run, run_to_dict
+    from auditor.ui_runs import _findings as run_findings
 
     with ui._db_session() as s:
-        row = _resolve_run(s, None)
+        row = resolve_run(s, None)
         if row is None:
             return None, [], 0
         run = run_to_dict(row)

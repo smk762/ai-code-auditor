@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from auditor import pr_intel
+from auditor.pr_model import days_since
 
 
 @pytest.mark.parametrize(
@@ -26,10 +27,10 @@ def test_non_release_titles_are_not(title):
 
 def test_days_since_mixes_naive_and_aware_without_crashing():
     aware_now = datetime(2026, 1, 2, tzinfo=timezone.utc)
-    assert pr_intel._days_since("2026-01-01T00:00:00", aware_now) == pytest.approx(1.0)
+    assert days_since("2026-01-01T00:00:00", aware_now) == pytest.approx(1.0)
     naive_now = datetime(2026, 1, 2)
-    assert pr_intel._days_since("2026-01-01T00:00:00Z", naive_now) == pytest.approx(1.0)
-    assert pr_intel._days_since(None, aware_now) == 0.0
+    assert days_since("2026-01-01T00:00:00Z", naive_now) == pytest.approx(1.0)
+    assert days_since(None, aware_now) == 0.0
 
 
 @pytest.mark.parametrize("body", ["[1, 2]", '"text"', "3", "null"])

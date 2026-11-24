@@ -54,6 +54,7 @@ import yaml
 
 from auditor.finding_match import reworded_score
 from auditor.fsutil import atomic_write_text
+from auditor.repo_paths import mirror_paths, rel_path
 
 logger = logging.getLogger(__name__)
 
@@ -88,19 +89,6 @@ def _parse_ts(value: Any) -> datetime | None:
         except ValueError:
             return None
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
-
-
-def rel_path(repo: str, path: str) -> str:
-    """Repo-relative path. Stored paths are absolute and differ by checkout (mirror or home)."""
-    p = str(path or "")
-    marker = f"/{repo}/"
-    if marker in p:
-        # The first occurrence is the checkout root; a same-named subdirectory must survive.
-        return p.split(marker, 1)[1]
-    # Strip a literal "./" prefix only: lstrip("./") would eat the dot of ".github/" or ".env".
-    while p.startswith("./"):
-        p = p[2:]
-    return p.lstrip("/")
 
 
 def _rate(num: int, den: int) -> float | None:
@@ -1068,17 +1056,6 @@ def headline(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _mirror_paths(mirrors_path: str | Path) -> dict[str, Path]:
-    try:
-        from conductor.mirrors import load_mirrors_config
-
-        cfg = load_mirrors_config(mirrors_path)
-    except Exception as exc:  # noqa: BLE001
-        logger.info("no mirrors config: %s", exc)
-        return {}
-    return {str(m["name"]): Path(m["path"]) for m in cfg.get("mirrors") or [] if m.get("name") and m.get("path")}
-
-
 def load_prs_cache(output_dir: str | Path) -> list[dict[str, Any]] | None:
     try:
         data = json.loads((Path(output_dir) / PRS_CACHE_NAME).read_text())
@@ -1095,7 +1072,7 @@ def refresh_prs(output_dir: str | Path, *, owner: str = "smk762", token: str = "
     tok = token or github_token()
     if not tok:
         raise RuntimeError("GITHUB_TOKEN (or GH_TOKEN) is required to list agent PRs")
-    repos = set(_mirror_paths(mirrors_path)) or None
+    repos = set(mirror_paths(mirrors_path)) or None
     prs = fetch_agent_prs(github_graphql(tok), owner, repos=repos)
     path = Path(output_dir) / PRS_CACHE_NAME
     atomic_write_text(path, json.dumps({"fetched_at": datetime.now(UTC).isoformat(), "prs": prs}, indent=1))
@@ -1119,7 +1096,7 @@ def build(output_dir: str | Path, *, session=None, refresh_github: bool = False,
             prs = refresh_prs(out, mirrors_path=mirrors_path)
         except Exception as exc:  # noqa: BLE001 — keep the cached list, say why
             logger.warning("agent PR refresh failed, using cache: %s", exc)
-    paths = _mirror_paths(mirrors_path)
+    paths = mirror_paths(mirrors_path)
     attach_code_times(scans, paths)
     git_log = mirror_git_log(paths)
     now_ = now or datetime.now(UTC)

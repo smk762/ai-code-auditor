@@ -146,7 +146,7 @@ def test_catalogue_is_read_from_dev_not_the_checkout(tmp_path: Path, monkeypatch
     assert d is not None and (d / "check.py").read_text() == "print('v1')\n"   # HEAD has none; origin/dev does
     assert suite_rules.export_catalogue(m, cache) == d                          # cached by tree hash
     monkeypatch.delenv("AI_AUDIT_SUITE_RULES_DIR", raising=False)
-    monkeypatch.setattr("auditor.trust_metrics._mirror_paths", lambda *_: {"argus-ci": m})
+    monkeypatch.setattr("auditor.suite_rules.mirror_paths", lambda *_: {"argus-ci": m})
     got = suite_rules.catalogue_dir(cache_root=tmp_path / "out")          # cache_root is the output dir
     assert got == tmp_path / "out" / "_suite_rules" / d.parent.name / "suite-rules" and (got / "check.py").exists()
 

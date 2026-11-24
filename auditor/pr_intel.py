@@ -27,10 +27,20 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+from auditor import linchpin
+from auditor.pr_model import (
+    WAITING,
+    Blocker,
+    PrIntel,
+    days_since,
+    parse_dependants,
+    parse_dependencies,
+    slug_ref,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +56,6 @@ BLOCKER_ORDER = (
 )
 # Blockers the PR's author can act on right now (vs waiting on something else).
 ACTIONABLE = {"dep_closed", "wrong_base", "conflict", "ci_failing", "behind", "changes_requested"}
-WAITING = {"depends_on", "stacked"}
 
 _PR_QUERY = """
 query($owner: String!, $name: String!) {
@@ -91,140 +100,6 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }
 """
-
-# ── dependency parsing ─────────────────────────────────────────────────────────
-
-_REF = (
-    r"(?:https?://github\.com/(?P<u_owner>[\w.-]+)/(?P<u_repo>[\w.-]+)/(?:pull|issues)/(?P<u_n>\d+)"
-    r"|(?P<o_owner>[\w.-]+)/(?P<o_repo>[\w.-]+)#(?P<o_n>\d+)"
-    r"|(?P<r_repo>[A-Za-z][\w.-]*)#(?P<r_n>\d+)"
-    r"|#(?P<h_n>\d+))"
-)
-# A bare "after" is not a dependency ("regression introduced after #120"): only "merge/land after".
-_DEP_RE = re.compile(
-    r"(?<![\w-])(?P<verb>stacked on(?: top of)?|depends on|blocked (?:by|on)|requires|waiting (?:for|on)"
-    r"|(?:merge|land)s? after)\s+(?:PR\s+|pull request\s+|issue\s+)?[\[`(]*" + _REF,
-    re.I,
-)
-
-
-def parse_dependencies(body: str, *, owner: str, repo: str) -> list[dict[str, Any]]:
-    """Return ``[{"slug": "owner/repo", "number": N, "verb": …}]`` named as prerequisites."""
-    out: list[dict[str, Any]] = []
-    seen: set[tuple[str, int]] = set()
-    for m in _DEP_RE.finditer(body or ""):
-        slug, n = _ref_from_match(m.groupdict(), owner, repo)
-        key = (slug.lower(), n)
-        if key in seen:
-            continue
-        seen.add(key)
-        verb = m.group("verb").lower()
-        out.append({"slug": slug, "number": int(n), "verb": "stacked" if verb.startswith("stacked") else "depends"})
-    return out
-
-
-# The reverse direction: "Blocks argus-lens#96" means argus-lens#96 waits on this one.
-_DEPENDANT_RE = re.compile(
-    r"(?<![\w-])(?P<verb>blocks|blocking|unblocks|required by|needed by|prerequisite (?:of|for))\s+"
-    r"(?:PR\s+|pull request\s+|issue\s+)?[\[`(]*" + _REF,
-    re.I,
-)
-
-
-def _ref_from_match(g: dict[str, Any], owner: str, repo: str) -> tuple[str, int]:
-    if g["u_n"]:
-        return f"{g['u_owner']}/{g['u_repo']}", int(g["u_n"])
-    if g["o_n"]:
-        return f"{g['o_owner']}/{g['o_repo']}", int(g["o_n"])
-    if g["r_n"]:
-        return f"{owner}/{g['r_repo']}", int(g["r_n"])
-    return f"{owner}/{repo}", int(g["h_n"])
-
-
-def parse_dependants(body: str, *, owner: str, repo: str) -> list[dict[str, Any]]:
-    """Return ``[{"slug", "number"}]`` that the body says wait on this PR/issue."""
-    out: list[dict[str, Any]] = []
-    seen: set[tuple[str, int]] = set()
-    for m in _DEPENDANT_RE.finditer(body or ""):
-        slug, n = _ref_from_match(m.groupdict(), owner, repo)
-        if (slug.lower(), n) in seen:
-            continue
-        seen.add((slug.lower(), n))
-        out.append({"slug": slug, "number": n})
-    return out
-
-
-# ── data model ────────────────────────────────────────────────────────────────
-
-
-@dataclass(slots=True)
-class Blocker:
-    kind: str
-    detail: str
-    ref: str = ""  # "repo#N" of the PR/issue it waits on, when there is one
-    url: str = ""
-
-
-@dataclass(slots=True)
-class PrIntel:
-    repo: str
-    slug: str
-    number: int
-    title: str
-    url: str
-    author: str
-    base: str
-    head: str
-    default_branch: str
-    draft: bool
-    created_at: str
-    updated_at: str
-    mergeable: str
-    merge_state: str
-    review_decision: str
-    failed_checks: list[dict[str, str]] = field(default_factory=list)
-    pending_checks: int = 0
-    labels: list[str] = field(default_factory=list)
-    release: bool = False
-    deps: list[dict[str, Any]] = field(default_factory=list)
-    dependants: list[dict[str, Any]] = field(default_factory=list)  # body says these wait on it
-    closes: list[dict[str, Any]] = field(default_factory=list)  # issues it closes on merge
-    blockers: list[Blocker] = field(default_factory=list)
-    blocks: list[str] = field(default_factory=list)  # refs this PR holds up (transitively)
-    state: str = "ready"  # blocked | waiting | ready | draft | pending
-    next_action: str = ""
-    score: float = 0.0
-    p0: bool = False
-    linchpin: list[str] = field(default_factory=list)  # why it is P0: cross_repo, cycle
-    cross_repo: bool = False  # head branch lives in a fork, so it can never be another PR's base
-
-    @property
-    def ref(self) -> str:
-        return f"{self.repo}#{self.number}"
-
-    def age_days(self, now: datetime) -> float:
-        return _days_since(self.updated_at, now)
-
-    def to_dict(self, now: datetime) -> dict[str, Any]:
-        d = asdict(self)
-        d["ref"] = self.ref
-        d["idle_days"] = round(self.age_days(now), 1)
-        d["open_days"] = round(_days_since(self.created_at, now), 1)
-        return d
-
-
-def _as_utc(t: datetime) -> datetime:
-    """Treat a naive datetime as UTC so aware and naive values can be subtracted."""
-    return t.replace(tzinfo=timezone.utc) if t.tzinfo is None else t
-
-
-def _days_since(iso: str | None, now: datetime) -> float:
-    try:
-        t = datetime.fromisoformat(str(iso or "").replace("Z", "+00:00"))
-    except ValueError:
-        return 0.0
-    return max((_as_utc(now) - _as_utc(t)).total_seconds() / 86400, 0.0)
-
 
 # ── GitHub access ─────────────────────────────────────────────────────────────
 
@@ -320,8 +195,6 @@ def fetch_repo(
 ) -> tuple[list[PrIntel], list[Any]]:
     """Open PRs and open issues for one repo. GitHub computes ``mergeable`` lazily and
     answers UNKNOWN on the first ask, so re-query while any PR is still UNKNOWN."""
-    from auditor.linchpin import issue_from_node
-
     owner, name = slug.split("/", 1)
     prs: list[PrIntel] = []
     repo_data: dict[str, Any] = {}
@@ -334,7 +207,7 @@ def fetch_repo(
         if attempt == retries or not any(p.mergeable == "UNKNOWN" for p in prs):
             break
         time.sleep(retry_wait_s)
-    issues = [issue_from_node(repo, slug, n) for n in ((repo_data.get("issues") or {}).get("nodes") or [])]
+    issues = [linchpin.issue_from_node(repo, slug, n) for n in ((repo_data.get("issues") or {}).get("nodes") or [])]
     return prs, issues
 
 
@@ -345,10 +218,6 @@ def fetch_repo_prs(
 
 
 # ── classification ────────────────────────────────────────────────────────────
-
-
-def _slug_ref(slug: str, number: int) -> str:
-    return f"{slug.split('/', 1)[-1]}#{number}"
 
 
 def classify(
@@ -384,7 +253,7 @@ def classify(
             key = (dep["slug"].lower(), int(dep["number"]))
             if key in waits_on or key == (p.slug.lower(), p.number):
                 continue
-            ref = _slug_ref(dep["slug"], dep["number"])
+            ref = slug_ref(dep["slug"], dep["number"])
             open_pr = by_ref.get(key)
             if open_pr is not None:
                 waits_on.add(key)
@@ -580,9 +449,7 @@ def spoken_summary(report: dict[str, Any], *, max_items: int = 2) -> str:
         f"Pull requests: {total} open, {blocked} blocked, {waiting} waiting on another, "
         f"{ready} ready to merge."
     ]
-    from auditor.linchpin import spoken_linchpins
-
-    lp = spoken_linchpins(report)
+    lp = linchpin.spoken_linchpins(report)
     if lp:
         parts.append(lp)
     top = [p for p in report.get("prs") or [] if p.get("state") == "blocked"][:max_items]
@@ -617,7 +484,6 @@ def build_report(
     retry_wait_s: float = 3.0,
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
-    from auditor import linchpin
 
     prs: list[PrIntel] = []
     issues: list[Any] = []
@@ -688,7 +554,6 @@ def refresh(
 
     *label* (default ``AI_AUDIT_LINCHPIN_LABELS``) puts the P0 label on linchpins in
     mirrored repos and takes it off the ones this tool labelled that are no longer P0."""
-    from auditor.linchpin import apply_labels, labels_enabled
     from auditor.merge_poll import github_token, list_poll_targets
 
     tok = token if token is not None else github_token()
@@ -696,8 +561,8 @@ def refresh(
         raise RuntimeError("pr intel needs GITHUB_TOKEN (GraphQL has no anonymous access)")
     targets = list_poll_targets(mirrors_path)
     report = build_report(targets, github_graphql(tok))
-    if label if label is not None else labels_enabled():
-        report["labels"] = apply_labels(
+    if label if label is not None else linchpin.labels_enabled():
+        report["labels"] = linchpin.apply_labels(
             report, token=tok, output_dir=output_dir, dry_run=label_dry_run,
         )
     path = report_path(output_dir)
@@ -725,7 +590,7 @@ def load_report(output_dir: str | Path | None = None, *, max_age_h: float | None
     if not isinstance(report, dict):
         return None
     if max_age_h is not None:
-        age_h = _days_since(str(report.get("generated_at") or ""), datetime.now(timezone.utc)) * 24
+        age_h = days_since(str(report.get("generated_at") or ""), datetime.now(timezone.utc)) * 24
         if not report.get("generated_at") or age_h > max_age_h:
             return None
     return report

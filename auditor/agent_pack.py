@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover — PyYAML built without libyaml
 from auditor.contracts import Finding, RuleViolation, utc_now_iso
 from auditor.fsutil import atomic_write_text
 from auditor.finding_match import reworded_score
+from auditor.repo_paths import rel_path
 from auditor.validator import suggest_test_commands
 
 logger = logging.getLogger(__name__)
@@ -1040,8 +1041,6 @@ def _areas(entry: dict[str, Any]) -> set[str]:
     repo, fp = str(entry.get("repo") or ""), str(entry.get("file_path") or "")
     if not fp:
         return set()
-    from auditor.trust_metrics import rel_path
-
     return {f"{repo}/{os.path.dirname(rel_path(repo, fp))}"}
 
 

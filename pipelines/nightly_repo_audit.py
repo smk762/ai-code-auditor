@@ -73,7 +73,7 @@ def run() -> None:
                         unreviewed_rel: list[str] = []
                         if unreviewed:
                             # Silence about these files proves nothing (pack GC, trust metrics).
-                            from auditor.trust_metrics import rel_path
+                            from auditor.repo_paths import rel_path
 
                             unreviewed_rel = sorted({rel_path(repo.name, f) for f in unreviewed})
                         # The commit the scan read, so trust metrics only count findings from code

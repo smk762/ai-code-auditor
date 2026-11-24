@@ -157,11 +157,10 @@ def _latest_findings() -> dict[str, Any] | None:
     from sqlalchemy import func, select
 
     from auditor.db import FindingRecord
-    from auditor.run_views import run_to_dict
-    from auditor.ui_runs import _resolve_run
+    from auditor.run_views import resolve_run, run_to_dict
 
     with _db_session() as s:
-        row = _resolve_run(s, None)
+        row = resolve_run(s, None)
         if row is None:
             return None
         rows = s.execute(

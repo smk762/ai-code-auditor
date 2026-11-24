@@ -94,11 +94,11 @@ def _violations_by_repo(output_dir: Path, repo_names: list[str]) -> dict[str, in
 
 def _findings_by_repo() -> dict[str, Any] | None:
     """Per-repo severity counts and new-since-baseline counts from the newest run with findings."""
-    from auditor.run_views import run_to_dict
-    from auditor.ui_runs import _baseline, _delta, _findings, _resolve_run
+    from auditor.run_views import resolve_run, run_to_dict
+    from auditor.ui_runs import _baseline, _delta, _findings
 
     with ui._db_session() as s:
-        row = _resolve_run(s, None)
+        row = resolve_run(s, None)
         if row is None:
             return None
         run = run_to_dict(row)

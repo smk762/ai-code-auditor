@@ -34,12 +34,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from auditor.pr_intel import (
+from auditor.pr_model import (
     WAITING,
     PrIntel,
-    _slug_ref,
     parse_dependants,
     parse_dependencies,
+    slug_ref,
 )
 
 logger = logging.getLogger(__name__)
@@ -159,7 +159,7 @@ def analyse(
 
     def ensure(slug: str, number: int, known: dict[str, Any] | None = None) -> str | None:
         """Ref of an *open* PR/issue, adding it as an external node if needed; else None."""
-        ref = _slug_ref(slug, number)
+        ref = slug_ref(slug, number)
         if ref in nodes:
             return ref
         info = known if known is not None else (resolve_ref(slug, number) if resolve_ref else None)
@@ -182,7 +182,7 @@ def analyse(
             waits[dependant][prereq] = source  # keep the strongest evidence
 
     for p in prs:
-        dep_by_ref = {_slug_ref(d["slug"], d["number"]): d for d in p.deps}
+        dep_by_ref = {slug_ref(d["slug"], d["number"]): d for d in p.deps}
         for b in p.blockers:
             if b.kind not in WAITING or not b.ref:
                 continue
@@ -194,7 +194,7 @@ def analyse(
         for d in p.dependants:
             edge(ensure(d["slug"], int(d["number"])), p.ref, "body")
         for c in p.closes:
-            iref = _slug_ref(c["slug"], int(c["number"]))
+            iref = slug_ref(c["slug"], int(c["number"]))
             if iref in nodes and nodes[iref].kind == "issue":
                 edge(iref, p.ref, "closes")
     for i in issues:
@@ -525,15 +525,15 @@ def apply_labels(
             if not dry_run:
                 call("DELETE", f"/repos/{slug}/issues/{n}/labels/{enc}", None)
                 applied.pop(key, None)
-            out["removed"].append(_slug_ref(slug, int(n)))
+            out["removed"].append(slug_ref(slug, int(n)))
         except urllib.error.HTTPError as exc:
             if exc.code == 404:  # label already gone, or the item was deleted
                 applied.pop(key, None)
-                out["removed"].append(_slug_ref(slug, int(n)))
+                out["removed"].append(slug_ref(slug, int(n)))
             else:
-                out["errors"].append({"ref": _slug_ref(slug, int(n)), "error": str(exc)[:200]})
+                out["errors"].append({"ref": slug_ref(slug, int(n)), "error": str(exc)[:200]})
         except (urllib.error.URLError, OSError, ValueError) as exc:
-            out["errors"].append({"ref": _slug_ref(slug, int(n)), "error": str(exc)[:200]})
+            out["errors"].append({"ref": slug_ref(slug, int(n)), "error": str(exc)[:200]})
     for old, keys in sorted(stale.items()):
         old_enc = urllib.parse.quote(old, safe="")
         for key in sorted(keys):
@@ -542,15 +542,15 @@ def apply_labels(
                 if not dry_run:
                     call("DELETE", f"/repos/{slug}/issues/{n}/labels/{old_enc}", None)
                     keys.pop(key, None)
-                out["removed"].append(_slug_ref(slug, int(n)))
+                out["removed"].append(slug_ref(slug, int(n)))
             except urllib.error.HTTPError as exc:
                 if exc.code == 404:
                     keys.pop(key, None)
-                    out["removed"].append(_slug_ref(slug, int(n)))
+                    out["removed"].append(slug_ref(slug, int(n)))
                 else:
-                    out["errors"].append({"ref": _slug_ref(slug, int(n)), "error": str(exc)[:200]})
+                    out["errors"].append({"ref": slug_ref(slug, int(n)), "error": str(exc)[:200]})
             except (urllib.error.URLError, OSError, ValueError) as exc:
-                out["errors"].append({"ref": _slug_ref(slug, int(n)), "error": str(exc)[:200]})
+                out["errors"].append({"ref": slug_ref(slug, int(n)), "error": str(exc)[:200]})
     stale = {k: v for k, v in stale.items() if v}
     if not dry_run:
         path.parent.mkdir(parents=True, exist_ok=True)
