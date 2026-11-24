@@ -1,6 +1,6 @@
 [Unit]
 Description=AI Code Auditor — night conductor rest session
-Documentation=file:///home/smk/ai-code-auditor/conductor/CONDUCTOR.md
+Documentation=file://%h/ai-code-auditor/conductor/CONDUCTOR.md
 After=network-online.target
 Wants=network-online.target
 

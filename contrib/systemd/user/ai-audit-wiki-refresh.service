@@ -1,6 +1,6 @@
 [Unit]
 Description=AI Code Auditor — weekly wiki refresh (stale pages only) + publish to argus-docs
-Documentation=file:///home/smk/ai-code-auditor/CLAUDE.md
+Documentation=file://%h/ai-code-auditor/CLAUDE.md
 After=network-online.target
 Wants=network-online.target
 

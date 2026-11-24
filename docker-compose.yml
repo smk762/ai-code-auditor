@@ -27,6 +27,8 @@ x-auditor-base: &auditor-base
   environment:
     # Match the host clock so ledger/dashboard hours line up with the systemd timers.
     - TZ=${TZ:-Australia/Perth}
+    # "~" in config/*.yaml means the host's home (mounted above); HOME is "/" in here.
+    - AI_AUDIT_HOST_HOME=${HOME}
     - DATABASE_URL=${DATABASE_URL}
     - DB_POOL_SIZE=${DB_POOL_SIZE}
     - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW}

@@ -2,200 +2,200 @@
 # (the generated docs bundle this tool writes), plus shared deps the suite consumes
 # (agent-composer, voluptas) and this repo. mithrandir is omitted (HTTP status handoff only).
 # Keep in step with config/repo_mirrors.yaml (tests/test_repo_sets.py).
-# Prefer local checkouts under /home/smk/<name>; otherwise /home/smk/mirrors/<name>
+# Prefer local checkouts under ~/<name>; otherwise ~/mirrors/<name>
 # (see config/repo_mirrors.yaml + scripts/sync_repo_mirrors.sh). Scan branch: dev.
 repos:
   - name: argus-assay
-    path: /home/smk/mirrors/argus-assay
+    path: ~/mirrors/argus-assay
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-atlas
-    path: /home/smk/mirrors/argus-atlas
+    path: ~/mirrors/argus-atlas
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-ci
-    path: /home/smk/mirrors/argus-ci
+    path: ~/mirrors/argus-ci
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-cortex
-    path: /home/smk/mirrors/argus-cortex
+    path: ~/mirrors/argus-cortex
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-cull
-    path: /home/smk/argus-cull
+    path: ~/argus-cull
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-curator
-    path: /home/smk/mirrors/argus-curator
+    path: ~/mirrors/argus-curator
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-darkroom
-    path: /home/smk/mirrors/argus-darkroom
+    path: ~/mirrors/argus-darkroom
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-echo
-    path: /home/smk/mirrors/argus-echo
+    path: ~/mirrors/argus-echo
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-forge
-    path: /home/smk/mirrors/argus-forge
+    path: ~/mirrors/argus-forge
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-halo
-    path: /home/smk/mirrors/argus-halo
+    path: ~/mirrors/argus-halo
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-handbook
-    path: /home/smk/mirrors/argus-handbook
+    path: ~/mirrors/argus-handbook
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-herald
-    path: /home/smk/mirrors/argus-herald
+    path: ~/mirrors/argus-herald
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-iris
-    path: /home/smk/mirrors/argus-iris
+    path: ~/mirrors/argus-iris
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-lens
-    path: /home/smk/argus-lens
+    path: ~/argus-lens
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-lightbox
-    path: /home/smk/mirrors/argus-lightbox
+    path: ~/mirrors/argus-lightbox
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-mask
-    path: /home/smk/mirrors/argus-mask
+    path: ~/mirrors/argus-mask
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-mint
-    path: /home/smk/mirrors/argus-mint
+    path: ~/mirrors/argus-mint
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-pkg-template
-    path: /home/smk/mirrors/argus-pkg-template
+    path: ~/mirrors/argus-pkg-template
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-proof
-    path: /home/smk/mirrors/argus-proof
+    path: ~/mirrors/argus-proof
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-puppet
-    path: /home/smk/mirrors/argus-puppet
+    path: ~/mirrors/argus-puppet
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-quarry
-    path: /home/smk/mirrors/argus-quarry
+    path: ~/mirrors/argus-quarry
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-realms
-    path: /home/smk/mirrors/argus-realms
+    path: ~/mirrors/argus-realms
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-retina
-    path: /home/smk/mirrors/argus-retina
+    path: ~/mirrors/argus-retina
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-safelight
-    path: /home/smk/mirrors/argus-safelight
+    path: ~/mirrors/argus-safelight
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-scout
-    path: /home/smk/mirrors/argus-scout
+    path: ~/mirrors/argus-scout
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-sightline
-    path: /home/smk/mirrors/argus-sightline
+    path: ~/mirrors/argus-sightline
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-studio
-    path: /home/smk/mirrors/argus-studio
+    path: ~/mirrors/argus-studio
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: argus-survey
-    path: /home/smk/mirrors/argus-survey
+    path: ~/mirrors/argus-survey
     branch: dev
     enabled: true
     provider: local
@@ -203,14 +203,14 @@ repos:
 
   # Shared deps Argus consumes
   - name: agent-composer
-    path: /home/smk/agent-composer
+    path: ~/agent-composer
     branch: dev
     enabled: true
     provider: local
     subpath: ""
 
   - name: voluptas
-    path: /home/smk/mirrors/voluptas
+    path: ~/mirrors/voluptas
     branch: dev
     enabled: true
     provider: local
@@ -218,7 +218,7 @@ repos:
 
   # This repo, scanned from its own mirror (never the working checkout)
   - name: ai-code-auditor
-    path: /home/smk/mirrors/ai-code-auditor
+    path: ~/mirrors/ai-code-auditor
     branch: dev
     enabled: true
     provider: local

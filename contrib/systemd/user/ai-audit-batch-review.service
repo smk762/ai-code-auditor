@@ -1,6 +1,6 @@
 [Unit]
 Description=AI Code Auditor — nightly Opus batch review of changed code units
-Documentation=file:///home/smk/ai-code-auditor/CLAUDE.md
+Documentation=file://%h/ai-code-auditor/CLAUDE.md
 After=network-online.target
 Wants=network-online.target
 

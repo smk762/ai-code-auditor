@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from auditor.fsutil import host_path
+
 log = logging.getLogger(__name__)
 
 _GIT_TIMEOUT = 30   # seconds — local operations
@@ -62,7 +64,7 @@ def scan_source_paths() -> set[Path]:
             continue
         for item in data.get(key) or []:
             if isinstance(item, dict) and item.get("path"):
-                out.add(Path(str(item["path"])).expanduser().resolve())
+                out.add(Path(host_path(str(item["path"]))).resolve())
     return out
 
 
