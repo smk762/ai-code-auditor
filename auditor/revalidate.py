@@ -37,6 +37,7 @@ from typing import Any, Callable
 import yaml
 
 from auditor.fsutil import atomic_write_text
+from auditor.repo_paths import mirror_paths, rel_path
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +71,6 @@ class Outcome:
 
 
 def _rel(repo: str, path: str) -> str:
-    from auditor.trust_metrics import rel_path
-
     return rel_path(repo, path)
 
 
@@ -334,7 +333,7 @@ def run(output_dir: str | Path, *, repo: str = "", limit: int = 0, dry_run: bool
     post = post or api_poster(timeout_s=timeout_s + 300)
     dirs = git_dirs if git_dirs is not None else {}
     if git_dirs is None:
-        paths = tm._mirror_paths(mirrors_path)
+        paths = mirror_paths(mirrors_path)
         from auditor.validate_base import resolve_base
 
         for r in sorted({c.repo for c in cands}):

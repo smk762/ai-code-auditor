@@ -268,7 +268,7 @@ def run(output_dir: str | Path | None = None, *, repos: list[str] | None = None,
         max_repos: int = 6, timeout_s: int = 180, budget_s_per_repo: float = 300,
         mirrors_path: str | Path = "config/repo_mirrors.yaml", seed: str | None = None) -> dict[str, Any]:
     """Seed bugs into up to *max_repos* repos and record how the evidence bar judged them."""
-    from auditor.trust_metrics import _mirror_paths
+    from auditor.repo_paths import mirror_paths
 
     out = Path(output_dir or os.getenv("AI_AUDIT_OUTPUT_DIR") or "reports")
     now = datetime.now(UTC)
@@ -277,7 +277,7 @@ def run(output_dir: str | Path | None = None, *, repos: list[str] | None = None,
     rng = random.Random(seed)
     out.mkdir(parents=True, exist_ok=True)  # before the long run, so the report can always be written
     venv_cache = Path(os.getenv("AI_AUDIT_VALIDATE_VENV_DIR") or out / "_validate_venvs")
-    mirrors = {k: v for k, v in _mirror_paths(mirrors_path).items() if (v / ".git").exists()}
+    mirrors = {k: v for k, v in mirror_paths(mirrors_path).items() if (v / ".git").exists()}
     names = sorted(repos or mirrors)
     rng.shuffle(names)
     scenarios: list[Scenario] = []

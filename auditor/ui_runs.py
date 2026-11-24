@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 from auditor import ui
 from auditor.db import AuditRun, FindingRecord, RepoRun, as_utc
 from auditor.finding_match import reworded_score
-from auditor.run_views import SUCCESS_STATUSES, repo_run_to_dict, run_to_dict
+from auditor.run_views import SUCCESS_STATUSES, repo_run_to_dict, resolve_run, run_to_dict
 
 SEVERITIES = ui.SEVERITIES
 BASELINE_LOOKBACK = 50
@@ -146,21 +146,6 @@ def _delta(current: list[dict[str, Any]], previous: list[dict[str, Any]], repos:
         "fixed": [f for i, f in enumerate(fixed) if i not in paired_fixed],
         "reworded": len(paired_new),
     }
-
-
-def _resolve_run(session, run_id: str | None) -> AuditRun | None:
-    if run_id:
-        return session.execute(select(AuditRun).where(AuditRun.run_id == run_id)).scalar_one_or_none()
-    # Default: newest finished-ok run that has findings stored (ecosystem runs store none).
-    return session.execute(
-        select(AuditRun)
-        .where(
-            AuditRun.status.in_(SUCCESS_STATUSES),
-            AuditRun.run_id.in_(select(FindingRecord.run_id).distinct()),
-        )
-        .order_by(AuditRun.started_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
 
 
 def _history(session, upto: AuditRun) -> list[dict[str, Any]]:
@@ -377,7 +362,7 @@ def findings_data(
     filters = {"repo": repo, "severity": severity, "source": source, "type": type, "q": q,
                "change": change, "pack_status": pack_status, "limit": limit}
     with ui._db_session() as s:
-        row = _resolve_run(s, run_id or None)
+        row = resolve_run(s, run_id or None)
         if row is None:  # same keys as the full response below
             return None if run_id else {"run": None, "previous": None, "matrix": {}, "facets": {},
                                         "findings": [], "total": 0, "filtered_total": 0, "delta": None,

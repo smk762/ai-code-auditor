@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from auditor.contracts import Finding
+from auditor.repo_paths import mirror_paths
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +51,7 @@ def catalogue_dir(mirrors_path: str | Path = "config/repo_mirrors.yaml", *,
     if env:
         d = Path(env)
         return d if (d / "check.py").is_file() and (d / "catalogue.toml").is_file() else None
-    from auditor.trust_metrics import _mirror_paths
-
-    ci = _mirror_paths(mirrors_path).get("argus-ci")
+    ci = mirror_paths(mirrors_path).get("argus-ci")
     if ci is None or not (ci / ".git").exists():
         return None
     return export_catalogue(ci, Path(cache_root or os.getenv("AI_AUDIT_OUTPUT_DIR") or "reports") / "_suite_rules")

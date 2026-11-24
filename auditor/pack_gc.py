@@ -63,6 +63,7 @@ from pathlib import Path
 from typing import Any
 
 from auditor.fsutil import atomic_write_text
+from auditor.repo_paths import mirror_paths
 from auditor.trust_metrics import PackView, Scan, _same_issue, load_packs, load_scans
 
 logger = logging.getLogger(__name__)
@@ -149,12 +150,6 @@ class Mirror:
             return datetime.fromisoformat(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
         except ValueError:
             return None
-
-
-def mirror_paths(mirrors_path: str | Path = "config/repo_mirrors.yaml") -> dict[str, Path]:
-    from auditor.trust_metrics import _mirror_paths
-
-    return _mirror_paths(mirrors_path)
 
 
 # ── planning ─────────────────────────────────────────────────────────────────

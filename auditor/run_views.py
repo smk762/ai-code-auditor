@@ -12,10 +12,27 @@ from __future__ import annotations
 
 from typing import Any
 
-from auditor.db import AuditRun, RepoRun, as_utc, utcnow
+from sqlalchemy import select
+
+from auditor.db import AuditRun, FindingRecord, RepoRun, as_utc, utcnow
 
 ACTIVE_STATUSES = ("pending", "running")
 SUCCESS_STATUSES = ("success", "completed", "partial_success")
+
+
+def resolve_run(session, run_id: str | None) -> AuditRun | None:
+    if run_id:
+        return session.execute(select(AuditRun).where(AuditRun.run_id == run_id)).scalar_one_or_none()
+    # Default: newest finished-ok run that has findings stored (ecosystem runs store none).
+    return session.execute(
+        select(AuditRun)
+        .where(
+            AuditRun.status.in_(SUCCESS_STATUSES),
+            AuditRun.run_id.in_(select(FindingRecord.run_id).distinct()),
+        )
+        .order_by(AuditRun.started_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
 
 
 def elapsed_ms(row: AuditRun) -> int | None:
