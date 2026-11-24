@@ -258,3 +258,99 @@ def test_a_seed_without_its_marker_is_refused(tmp_path: Path) -> None:
     bad.write_text("c:\n  - id: a\n    code: |\n      def other():\n          pass\n")
     with pytest.raises(ValueError, match="_seeded_a"):
         gs.load_seeds(bad)
+
+
+# ── variants (#155) ──────────────────────────────────────────────────────────
+
+VARIANT_SEEDS = """\
+silent_failure:
+  - id: t_except_pass
+    code: |
+      def _seeded_t_except_pass(path):
+          try:
+              open(path).read()
+          except Exception:
+              pass
+    dodges:
+      - id: t_continue
+        code: |
+          def _seeded_t_continue(paths):
+              for p in paths:
+                  try:
+                      open(p).read()
+                  except Exception:
+                      continue
+    fixes:
+      - id: t_raise
+        code: |
+          def _seeded_t_raise(path):
+              try:
+                  return open(path).read()
+              except OSError as exc:
+                  raise RuntimeError("unreadable") from exc
+"""
+
+
+def _variants(tmp_path: Path, monkeypatch, **kw) -> dict:
+    out, mirrors, seeds = _setup(tmp_path, monkeypatch, **kw)
+    seeds.write_text(VARIANT_SEEDS)
+    return _run(out, mirrors, seeds)
+
+
+def _gates(result: dict) -> dict:
+    return {g.id: g for g in build_gates(None, None, guard_seeded=result)}
+
+
+def test_variants_are_caught_or_silent_and_kept_apart_from_the_seeds(tmp_path: Path, monkeypatch) -> None:
+    r = _variants(tmp_path, monkeypatch)
+    g = r["guards"][0]
+    assert [(s["seed"], s["of"], s["status"]) for s in g["dodges"]] == [("t_continue", "t_except_pass", "caught")]
+    assert [(s["seed"], s["status"]) for s in g["fixes"]] == [("t_raise", "missed")]
+    assert {s["file"] for s in [*g["seeds"], *g["dodges"], *g["fixes"]]} == {g["seeds"][0]["file"]}
+    assert r["summary"]["planted"] == 1  # variants are not seeds
+    assert r["variants"] == {"dodges": {"n": 1, "right": 1, "invalid": 0}, "fixes": {"n": 1, "right": 1, "invalid": 0}}
+    assert _gates(r)["guards.dodge_recall"].status == "insufficient"  # one variant is below the minimum
+
+
+def test_a_missed_dodge_leaves_seeded_recall_alone(tmp_path: Path, monkeypatch) -> None:
+    r = _variants(tmp_path, monkeypatch, kinds="(ast.Pass,)")
+    gates = _gates(r)
+    assert gates["guards.dodge_recall"].value == 0.0 and "t_continue" in gates["guards.dodge_recall"].note
+    assert gs.recall_metric(r)["rate"] == gs.recall_metric({**r, "guards": [
+        {**g, "dodges": [], "fixes": []} for g in r["guards"]]})["rate"]
+    assert r["guards"][0]["seeds"][0]["status"] == "caught"
+
+
+def test_a_guard_that_fires_on_a_fix_is_a_false_alarm(tmp_path: Path, monkeypatch) -> None:
+    r = _variants(tmp_path, monkeypatch, kinds="(ast.Pass, ast.Continue, ast.Raise)")
+    gate = _gates(r)["guards.fix_silence"]
+    assert gate.value == 0.0 and "t_raise" in gate.note
+
+
+def test_a_dodge_of_a_seed_the_guard_misses_is_not_counted(tmp_path: Path, monkeypatch) -> None:
+    out, mirrors, seeds = _setup(tmp_path, monkeypatch)
+    seeds.write_text(VARIANT_SEEDS.replace("          pass\n", "          return None\n"))  # this guard misses it
+    r = _run(out, mirrors, seeds)
+    assert r["guards"][0]["seeds"][0]["status"] == "missed"
+    d = r["guards"][0]["dodges"][0]
+    assert d["status"] == "invalid" and "nothing was dodged" in d["note"]
+    assert _gates(r)["guards.dodge_recall"].value is None
+
+
+def test_a_variant_whose_rule_cannot_run_is_invalid(tmp_path: Path, monkeypatch) -> None:
+    out, mirrors, seeds = _setup(tmp_path, monkeypatch, rule={"tool": "ruff", "codes": ["S110"]})
+    seeds.write_text(VARIANT_SEEDS)
+    r = _run(out, mirrors, seeds, rule_runner=lambda *a: None)
+    assert r["guards"][0]["fixes"][0]["status"] == "invalid"
+    assert _gates(r)["guards.fix_silence"].value is None
+
+
+def test_variants_share_the_seed_id_space_and_do_not_nest(tmp_path: Path) -> None:
+    f = tmp_path / "s.yaml"
+    f.write_text(VARIANT_SEEDS.replace("t_continue", "t_except_pass"))
+    with pytest.raises(ValueError, match="duplicate"):
+        gs.load_seeds(f)
+    f.write_text("c:\n  - id: a\n    code: 'def _seeded_a(): pass'\n    dodges:\n      - id: b\n"
+                 "        code: 'def _seeded_b(): pass'\n        fixes: [{id: c, code: 'def _seeded_c(): pass'}]\n")
+    with pytest.raises(ValueError, match="variants of its own"):
+        gs.load_seeds(f)

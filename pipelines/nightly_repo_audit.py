@@ -162,6 +162,10 @@ def run() -> None:
     from auditor.test_env_readiness import run_quietly as test_env
 
     logger.info("test env: %s", test_env(cfg.output_dir))
+    # Module cycles and private imports inside each repo (#154). Report-only: it opens no packs.
+    from auditor.structure import run_quietly as structure
+
+    logger.info("structure: %s", structure(cfg.output_dir))
     # Re-check merged fixes that were waived or left unverified, now the test envs may run them (#58).
     # Bounded per night; it only ever records stronger evidence. Before the metrics, which read it.
     from auditor.revalidate import run_quietly as revalidate

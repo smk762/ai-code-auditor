@@ -16,6 +16,7 @@ def _harness(tmp_path: Path, monkeypatch, audit, head_commit=lambda *_: "abc"):
     import auditor.pack_gc
     import auditor.retry
     import auditor.revalidate
+    import auditor.structure
     import auditor.test_env_readiness
     import auditor.trust_eval
     import auditor.trust_metrics
@@ -47,7 +48,7 @@ def _harness(tmp_path: Path, monkeypatch, audit, head_commit=lambda *_: "abc"):
     monkeypatch.setattr(auditor.agent_pack, "emit_packs_from_findings", lambda *a, **k: [])
     for mod, fn in ((auditor.pack_gc, "run_quietly"), (auditor.trust_metrics, "refresh_quietly"),
                     (auditor.pack_classes, "run_quietly"), (auditor.class_packs, "run_quietly"),
-                    (auditor.test_env_readiness, "run_quietly"), (auditor.revalidate, "run_quietly"),
+                    (auditor.structure, "run_quietly"), (auditor.test_env_readiness, "run_quietly"), (auditor.revalidate, "run_quietly"),
                     (auditor.trust_eval, "evaluate_quietly")):
         monkeypatch.setattr(mod, fn, noop)
     return seen

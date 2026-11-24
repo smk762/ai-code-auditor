@@ -11,6 +11,10 @@
 #   why      the shape of real findings this stands for
 #   imports  module-level lines the seed needs, inserted after the file's last top-level import
 #   code     the seed itself, appended at the end of the file as top-level code
+#   dodges   the same defect rewritten (#155): the guard must still catch it. Not counted as seeds.
+#   fixes    the defect is really gone (#155): the guard must stay silent.
+#            Both are lists of id/why/imports/code, planted where their seed is. The same rule holds:
+#            never tune a variant to make a guard pass.
 #
 # Where to plant is not configured here: it comes from the guard's own scope (the files its proof
 # test reads while it runs, else, for a static rule, any non-test .py in the repo).
@@ -25,6 +29,52 @@ silent_failure:
                   fh.write(data)
           except Exception:
               pass
+    dodges:
+      - id: silent_contextlib_suppress
+        why: the same swallow spelled as a context manager
+        imports: [import contextlib]
+        code: |
+          def _seeded_silent_contextlib_suppress(path, data: bytes) -> None:
+              with contextlib.suppress(Exception):
+                  with open(path, "wb") as fh:
+                      fh.write(data)
+      - id: silent_except_ellipsis
+        why: "`...` instead of pass"
+        code: |
+          def _seeded_silent_except_ellipsis(path, data: bytes) -> None:
+              try:
+                  with open(path, "wb") as fh:
+                      fh.write(data)
+              except Exception:
+                  ...
+      - id: silent_except_dead_store
+        why: a statement that does nothing stands in for pass
+        code: |
+          def _seeded_silent_except_dead_store(path, data: bytes) -> None:
+              try:
+                  with open(path, "wb") as fh:
+                      fh.write(data)
+              except Exception as exc:
+                  _ = exc
+    fixes:
+      - id: silent_fixed_raise
+        why: the failure reaches the caller with context
+        code: |
+          def _seeded_silent_fixed_raise(path, data: bytes) -> None:
+              try:
+                  with open(path, "wb") as fh:
+                      fh.write(data)
+              except OSError as exc:
+                  raise RuntimeError(f"could not write {path}") from exc
+      - id: silent_fixed_narrow
+        why: one expected error is handled, everything else still raises
+        imports: [import os]
+        code: |
+          def _seeded_silent_fixed_narrow(path) -> None:
+              try:
+                  os.unlink(path)
+              except FileNotFoundError:
+                  pass
   - id: silent_except_continue
     why: records that fail to parse are dropped from a batch without a trace
     imports: [import json]
@@ -42,6 +92,18 @@ silent_failure:
     code: |
       def _seeded_silent_zip_truncate(names: list[str], vectors: list[list[float]]) -> dict[str, list[float]]:
           return {name: vec for name, vec in zip(names, vectors)}
+    dodges:
+      - id: silent_map_truncate
+        why: map() over two lists truncates the same way zip() does
+        code: |
+          def _seeded_silent_map_truncate(names: list[str], vectors: list[list[float]]) -> dict[str, list[float]]:
+              return dict(map(lambda name, vec: (name, vec), names, vectors))
+    fixes:
+      - id: silent_fixed_zip_strict
+        why: a length mismatch raises
+        code: |
+          def _seeded_silent_fixed_zip_strict(names: list[str], vectors: list[list[float]]) -> dict[str, list[float]]:
+              return {name: vec for name, vec in zip(names, vectors, strict=True)}
   - id: silent_reset_to_empty
     why: an unreadable or corrupt state file is turned into a plausible empty state
     imports: [import json]
@@ -52,6 +114,18 @@ silent_failure:
                   return json.load(fh)
           except Exception:
               return {}
+    dodges:
+      - id: silent_reset_via_variable
+        why: the empty state is assigned in the handler and returned after it
+        imports: [import json]
+        code: |
+          def _seeded_silent_reset_via_variable(path) -> dict:
+              try:
+                  with open(path, encoding="utf-8") as fh:
+                      state = json.load(fh)
+              except Exception:
+                  state = {}
+              return state
 
 ssrf:
   - id: ssrf_httpx_get
@@ -61,6 +135,26 @@ ssrf:
       def _seeded_ssrf_httpx_get(payload: dict) -> int:
           resp = httpx.get(payload["callback_url"], timeout=10)
           return resp.status_code
+    dodges:
+      - id: ssrf_httpx_alias
+        why: the same fetch through an import alias
+        imports: [import httpx as _seed_http]
+        code: |
+          def _seeded_ssrf_httpx_alias(payload: dict) -> int:
+              return _seed_http.get(payload["callback_url"], timeout=10).status_code
+      - id: ssrf_httpx_from_import
+        why: the same fetch through a function imported by name
+        imports: [from httpx import get as _seed_get]
+        code: |
+          def _seeded_ssrf_httpx_from_import(payload: dict) -> int:
+              return _seed_get(payload["callback_url"], timeout=10).status_code
+      - id: ssrf_httpx_indirect
+        why: the same fetch through a local name for the function
+        imports: [import httpx]
+        code: |
+          def _seeded_ssrf_httpx_indirect(payload: dict) -> int:
+              fetch = httpx.get
+              return fetch(payload["callback_url"], timeout=10).status_code
   - id: ssrf_async_client
     why: a caller-supplied target is POSTed to from a fresh client
     imports: [import httpx]
@@ -87,6 +181,36 @@ info_leak:
               return int(raw)
           except Exception as exc:
               raise HTTPException(status_code=500, detail=f"conversion failed: {exc}") from exc
+    dodges:
+      - id: leak_exc_via_variable
+        why: the exception text goes through a local name first
+        imports: [from fastapi import HTTPException]
+        code: |
+          def _seeded_leak_exc_via_variable(raw: str) -> int:
+              try:
+                  return int(raw)
+              except Exception as exc:
+                  message = str(exc)
+                  raise HTTPException(status_code=500, detail=message) from exc
+      - id: leak_exc_args
+        why: exc.args instead of str(exc)
+        imports: [from fastapi import HTTPException]
+        code: |
+          def _seeded_leak_exc_args(raw: str) -> int:
+              try:
+                  return int(raw)
+              except Exception as exc:
+                  raise HTTPException(status_code=500, detail=exc.args[0]) from exc
+    fixes:
+      - id: leak_fixed_generic
+        why: a fixed message goes to the client, the cause stays server-side
+        imports: [from fastapi import HTTPException]
+        code: |
+          def _seeded_leak_fixed_generic(raw: str) -> int:
+              try:
+                  return int(raw)
+              except ValueError as exc:
+                  raise HTTPException(status_code=500, detail="conversion failed") from exc
   - id: leak_exc_json_502
     why: an exception's text in a JSON error body with a 5xx status
     imports: [from fastapi.responses import JSONResponse]

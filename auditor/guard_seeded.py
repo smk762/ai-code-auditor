@@ -21,6 +21,15 @@ guards) close no children, so nothing else measures them. This eval does, for ev
    can't run (no ruff, no test results, a clean test that fails) makes the seed ``invalid``, which
    is never counted as caught or missed.
 
+A seed may also carry **variants** (#155), planted at its site and kept apart from the seeds, so
+``guards.seeded_recall`` means what it always did:
+
+* ``dodges``: the same defect rewritten so a shallow check may lose it. The guard must still fire. A
+  dodge counts only when its seed was caught; a guard blind to the seed wasn't dodged.
+* ``fixes``: the defect is gone. The guard must stay silent; firing is a false alarm.
+
+They feed the informational gates ``guards.dodge_recall`` and ``guards.fix_silence``.
+
 Results go to ``reports/guard_seeded.json``; the ``guards.seeded_recall`` gate in
 ``auditor/trust_eval.py`` reads them. The gate counts only guards whose proof was ``proven``.
 """
@@ -58,6 +67,8 @@ class Seed:
     code: str
     imports: tuple[str, ...] = ()
     why: str = ""
+    dodges: tuple[Seed, ...] = ()
+    fixes: tuple[Seed, ...] = ()
 
     @property
     def marker(self) -> str:
@@ -70,18 +81,25 @@ def load_seeds(path: str | Path = SEEDS_PATH) -> dict[str, list[Seed]]:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     out: dict[str, list[Seed]] = {}
     seen: set[str] = set()
+
+    def load(cls: str, it: dict[str, Any], *, variant: bool = False) -> Seed:
+        if variant and (it.get("dodges") or it.get("fixes")):
+            raise ValueError(f"variant {it['id']} can't have variants of its own")
+        s = Seed(id=str(it["id"]), cls=cls, code=str(it["code"]).rstrip() + "\n",
+                 imports=tuple(str(x) for x in it.get("imports") or ()), why=str(it.get("why") or ""),
+                 dodges=tuple(load(cls, v, variant=True) for v in it.get("dodges") or ()),
+                 fixes=tuple(load(cls, v, variant=True) for v in it.get("fixes") or ()))
+        if s.id in seen:
+            raise ValueError(f"duplicate seed id {s.id}")
+        seen.add(s.id)
+        tree = ast.parse("\n".join(s.imports) + "\n" + s.code)
+        if not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == s.marker for n in tree.body):
+            raise ValueError(f"seed {s.id} must define {s.marker}")
+        return s
+
     for cls, items in raw.items():
         for it in items or []:
-            s = Seed(id=str(it["id"]), cls=str(cls), code=str(it["code"]).rstrip() + "\n",
-                     imports=tuple(str(x) for x in it.get("imports") or ()), why=str(it.get("why") or ""))
-            if s.id in seen:
-                raise ValueError(f"duplicate seed id {s.id}")
-            seen.add(s.id)
-            tree = ast.parse("\n".join(s.imports) + "\n" + s.code)
-            if not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == s.marker
-                       for n in tree.body):
-                raise ValueError(f"seed {s.id} must define {s.marker}")
-            out.setdefault(s.cls, []).append(s)
+            out.setdefault(str(cls), []).append(load(str(cls), it))
     return out
 
 
@@ -247,6 +265,7 @@ class SeedResult:
     lines: list[int] = field(default_factory=list)
     note: str = ""
     code: str = ""
+    of: str = ""         # for a variant: the seed it rewrites
 
 
 @dataclass
@@ -262,6 +281,8 @@ class GuardResult:
     sites: int = 0
     note: str = ""
     seeds: list[SeedResult] = field(default_factory=list)
+    dodges: list[SeedResult] = field(default_factory=list)  # caught is right
+    fixes: list[SeedResult] = field(default_factory=list)   # missed (silent) is right
 
 
 def proven_guards(packs_from: Path, statuses: tuple[str, ...] = ("proven",)) -> list[tuple[str, str, str, dict]]:
@@ -332,7 +353,24 @@ def eval_guard(pack: str, cls: str, repo: str, rec: dict[str, Any], mirror: Path
             return g
         g.status = "ok"
         for seed in seeds:
-            g.seeds.append(_check_seed(seed, clean, Path(tmp), rng.choice(sites), tests, rule, runner, rule_runner))
+            site = rng.choice(sites)
+
+            def check(s: Seed, at: str = site) -> SeedResult:
+                return _check_seed(s, clean, Path(tmp), at, tests, rule, runner, rule_runner)
+            base_result = check(seed)
+            g.seeds.append(base_result)
+            for variant in seed.dodges:
+                if base_result.status == "caught":
+                    r = check(variant)
+                else:
+                    r = SeedResult(seed=variant.id, file=site, status="invalid",
+                                   note=f"its seed {seed.id} was {base_result.status}, so nothing was dodged")
+                r.of = seed.id
+                g.dodges.append(r)
+            for variant in seed.fixes:
+                r = check(variant)
+                r.of = seed.id
+                g.fixes.append(r)
     return g
 
 
@@ -420,6 +458,8 @@ def run(output_dir: str | Path | None = None, *, packs_from: str | Path | None =
                                       note=f"eval crashed: {str(exc)[:300]}"))
     report = {"at": now.isoformat(), "seed": seed, "seconds": round(time.monotonic() - t0, 1),
               "summary": summarize(guards), "guards": [asdict(g) for g in guards]}
+    report["variants"] = {k: {x: v for x, v in _variant_counts(report["guards"], k).items() if x != "wrong"}
+                          for k in ("dodges", "fixes")}
     atomic_write_text(out / RESULT_NAME, json.dumps(report, indent=1))
     return report
 
@@ -446,3 +486,23 @@ def recall_metric(result: dict[str, Any] | None) -> dict[str, Any]:
             f"missed: {', '.join(missed[:6])}" if missed else "")
     rate = round(caught / len(seeds), 4) if guards and seeds and not short else None
     return {"guards": len(guards), "n": len(seeds), "caught": caught, "rate": rate, "note": note}
+
+
+def _variant_counts(guards: list[dict[str, Any]], kind: str) -> dict[str, Any]:
+    rows = [(g, s) for g in guards for s in g.get(kind) or []]
+    valid = [(g, s) for g, s in rows if s.get("status") in ("caught", "missed")]
+    right = "caught" if kind == "dodges" else "missed"
+    wrong = [f"{g['pack']}@{g['repo']}:{s['seed']}" for g, s in valid if s["status"] != right]
+    return {"n": len(valid), "right": len(valid) - len(wrong), "invalid": len(rows) - len(valid), "wrong": wrong}
+
+
+def variant_metric(result: dict[str, Any] | None, kind: str) -> dict[str, Any]:
+    """For ``guards.dodge_recall`` (*kind* ``dodges``: the share caught) and ``guards.fix_silence``
+    (``fixes``: the share the guard stays silent on), over proven guards. Invalid ones aren't counted."""
+    guards = [g for g in (result or {}).get("guards") or [] if g.get("proof_status") == "proven"]
+    c = _variant_counts(guards, kind)
+    what = "dodged by" if kind == "dodges" else "fired on"
+    note = (f"{what}: {', '.join(c['wrong'][:6])}" if c["wrong"] else f"no valid {kind}" if not c["n"] else "")
+    if c["invalid"]:
+        note = "; ".join(x for x in (note, f"{c['invalid']} invalid") if x)
+    return {"n": c["n"], "rate": round(c["right"] / c["n"], 4) if c["n"] else None, "note": note}

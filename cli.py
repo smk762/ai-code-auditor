@@ -346,6 +346,11 @@ def _build_parser() -> argparse.ArgumentParser:
     tenv.add_argument("--json", action="store_true", help="Print the full report as JSON")
     tenv.add_argument("--cached", action="store_true", help="Show the last report instead of re-checking")
 
+    st = sub.add_parser("structure", help="Module cycles and private imports inside each repo's dev (report-only, no LLM)")
+    st.add_argument("--repo", action="append", default=[], help="Only this repo (repeatable); others keep their last result")
+    st.add_argument("--json", action="store_true", help="Print the full report as JSON")
+    st.add_argument("--cached", action="store_true", help="Show the last report instead of re-scanning")
+
     ev = sub.add_parser("eval", help="Reliability evals (#63)")
     ev_sub = ev.add_subparsers(dest="eval_command", required=True)
     evt = ev_sub.add_parser("trust", help="Gates for the trust upgrade: what passes, fails, lacks data, or isn't built")
@@ -698,7 +703,9 @@ def _run_eval_trust(args) -> None:
         gr = guard_seeded.run(out)
         gs = gr["summary"]
         print(f"guard seeded recall: {gs['caught']}/{gs['caught'] + gs['missed']} seeds caught, "
-              f"{gs['invalid']} invalid, {gs['guards']} guard(s) ({gr['seconds']}s)",
+              f"{gs['invalid']} invalid, {gs['guards']} guard(s) ({gr['seconds']}s); "
+              + "; ".join(f"{k} {v['right']}/{v['n']} right, {v['invalid']} invalid"
+                          for k, v in gr["variants"].items()),
               file=sys.stderr if args.json else sys.stdout)
     rep = trust_eval.evaluate(out, record=not args.no_record)
     if args.json:
@@ -742,6 +749,37 @@ def _run_test_env(args) -> None:
                       or (f"{p['tests']} tests" if "tests" in p else ", ".join(p.get("checks") or [])))
             print(f"{name:22} {p['kind']:6} {p['project']:28} {p['status']:14} {detail[:110]}")
     print(f"\n{rep['summary']['by_status']}")
+
+
+def _run_structure(args) -> None:
+    from auditor import structure
+
+    out = _output_dir_default()
+    try:
+        rep = structure.load_report(out) if args.cached else structure.run(out, repos=args.repo or None)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if rep is None:
+        raise SystemExit("No structure report yet; run `ai-audit structure` first.")
+    if args.json:
+        print(json.dumps(rep, indent=2, default=str))
+        return
+    for name, r in rep["repos"].items():
+        if args.repo and name not in args.repo:
+            continue
+        if r.get("error"):
+            print(f"{name:22} NOT READ  {r['error'][:120]}")
+            continue
+        blind = f" · {len(r['unparsed'])} file(s) not read: {', '.join(r['unparsed'][:3])}" if r["unparsed"] else ""
+        print(f"{name:22} {r['modules']:4} modules · {len(r['cycles'])} cycle(s) · "
+              f"{len(r['private_imports'])} private import(s){blind}")
+        for c in r["cycles"]:
+            print(f"    cycle of {c['size']}, {c['lazy_edges']}/{len(c['edges'])} edges lazy: {', '.join(c['members'][:6])}"
+                  + (f" +{c['size'] - 6} more" if c["size"] > 6 else ""))
+            cut = c["cut"]
+            print(f"      cheapest cut: {cut['from']} -> {cut['to']} ({', '.join(cut['names'][:4])}), "
+                  f"leaving a circle of {cut['largest_left']}")
+    print(f"\n{rep['summary']}")
 
 
 def _run_trust(*, as_json: bool, cached: bool, history: bool, github: bool) -> None:
@@ -1726,6 +1764,8 @@ def main() -> None:
         _run_pack_savings(as_json=args.json, cached=args.cached, history=args.history)
     elif args.command == "test-env":
         _run_test_env(args)
+    elif args.command == "structure":
+        _run_structure(args)
     elif args.command == "wiki":
         _run_wiki(args)
     elif args.command == "diff-audit":
