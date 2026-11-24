@@ -42,6 +42,17 @@
   </section>
 
   <section class="grid">
+    <div class="card span-12" data-panel="cycles">
+      <h2>Module cycles</h2>
+      <p class="hint" id="c-hint">Modules inside one repo that import each other in a circle; imports inside functions count. A cycle is only a proposal: approving it, with a note on what to move, writes one agent pack. Dismissing it keeps it out of this list unless it grows. Actions need the API token or auth code.</p>
+      <div class="chips" id="c-chips" role="group" aria-label="Decision"></div>
+      <span id="c-flash" role="status"></span>
+      <div class="table-wrap"><table id="cycles">
+        <thead><tr><th>Cycle</th><th title="The fewest imports whose removal clears the cycle. A hint: it counts imports and can't see which one is the real dependency">Fewest cuts (hint)</th><th></th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="grid">
     <div class="card span-12" data-panel="proposals">
       <h2>Pattern proposals</h2>
       <p class="hint" id="p-hint">Usage patterns seen across repos that could be standardised.</p>
@@ -174,6 +185,43 @@ async function showPrompt(c) {
   document.getElementById("x-flash").innerHTML = ok ? `<span class="status ok">Copied a prompt for ${esc(c.pack.id)}</span>` : `<span class="status warn">Select the text below and copy it</span>`;
 }
 
+let cview = "open", creviewing = "";
+function cycleForm(c) {
+  const d = c.decision || {};
+  return `<tr class="x-form"><td colspan="3"><form data-id="${esc(c.id)}">
+    <fieldset><legend>Imports in the cycle</legend>
+      ${c.edges.map((e) => `<div class="mono muted">${esc(e.sites[0] || e.from)} → ${esc(e.to)} <span class="muted">(${esc(e.names.join(", "))})${e.lazy ? " · inside a function" : ""}</span></div>`).join("")}
+    </fieldset>
+    <label class="note">What to move <textarea name="note" rows="2" minlength="${int(data.cycles.note_min)}" placeholder="Needed to approve: which names belong in which module, and which import is the real dependency">${esc(d.note || "")}</textarea></label>
+    <div class="row">
+      ${c.reported ? `<button class="primary" name="do" value="approved">${d.status === "approved" ? "Update approval" : "Approve"}</button>` : ""}
+      ${d.status === "dismissed" ? "" : `<button class="secondary" name="do" value="dismissed" formnovalidate>Dismiss</button>`}
+      <button class="secondary" type="button" data-cancel>Cancel</button>
+    </div></form></td></tr>`;
+}
+
+function renderCycles() {
+  const x = data.cycles, tbody = document.querySelector("#cycles tbody");
+  if (!x) { document.getElementById("c-chips").innerHTML = ""; tbody.innerHTML = `<tr><td colspan="3" class="empty">No structure scan yet: it runs nightly.</td></tr>`; return; }
+  if (x.decisions_error) document.getElementById("c-flash").innerHTML = `<span class="err">Decisions file unreadable: ${esc(x.decisions_error)}</span>`;
+  else if (x.unread.length) document.getElementById("c-hint").title = `Not read whole: ${x.unread.join(", ")}`;
+  document.getElementById("c-chips").innerHTML = Object.entries(VIEWS)
+    .map(([k, label]) => `<button data-view="${k}" aria-pressed="${k === cview}">${label} ${int(x.cycles.filter((c) => viewOf(c) === k).length)}</button>`).join("");
+  const list = x.cycles.filter((c) => viewOf(c) === cview);
+  tbody.innerHTML = list.length ? list.map((c) => {
+    const pk = c.pack, st = viewOf(c);
+    const state = c.reported ? "" : c.reported === null ? " · repo not read whole" : " · not in the latest scan";
+    const acts = st === "open" ? `<button class="primary" data-review="${esc(c.id)}">Review</button>`
+      : st === "dismissed" ? `<button class="secondary" data-withdraw="${esc(c.id)}">Restore</button>`
+      : (pk ? `<a class="status ${PACK_CLASS[pk.status] || ""}" href="/ui/packs/${encodeURIComponent(pk.id)}">${esc(pk.status.replace("_", " "))}</a> ` : "") +
+        `<button class="secondary" data-review="${esc(c.id)}">Edit</button> <button class="secondary" data-withdraw="${esc(c.id)}">Withdraw</button>`;
+    return `<tr><td><b>${esc(c.repo)}</b> · ${UI.plural(c.members.length, "module")}<div class="muted mono">${c.members.map(esc).join("<br>")}</div>
+        <div class="muted mono">${esc(c.id)}${state}</div>${c.decision?.note ? `<div class="muted">${esc(c.decision.note)}</div>` : ""}</td>
+      <td class="ev mono">${c.cuts.map((e) => `${esc(e.from)} → ${esc(e.to)} (${esc(e.names.slice(0, 4).join(", "))})`).join("<br>") || "—"}</td>
+      <td class="acts">${acts}</td></tr>${creviewing === c.id ? cycleForm(c) : ""}`;
+  }).join("") : `<tr><td colspan="3" class="empty">${cview === "open" ? "Nothing left to decide." : `Nothing ${VIEWS[cview].toLowerCase()} yet.`}</td></tr>`;
+}
+
 function renderProposals() {
   const ps = data.proposals;
   const tbody = document.querySelector("#proposals tbody");
@@ -188,12 +236,13 @@ function renderProposals() {
 function render(d) {
   data = d;
   UI.setParams({ rule, view: view === "open" ? "" : view });
-  renderViolations(); renderExtraction(); renderProposals();
+  renderViolations(); renderExtraction(); renderCycles(); renderProposals();
   const vc = d.violations ? d.violations.violations.length : null;
   const xc = d.extraction ? d.extraction.candidates.filter((c) => !c.decision).length : null;
   document.getElementById("sub").textContent = [
     vc != null ? UI.plural(vc, "violation") : null,
     xc != null ? `${int(xc)} extraction candidate${xc === 1 ? "" : "s"} to decide` : null,
+    d.cycles ? `${UI.plural(d.cycles.cycles.filter((c) => !c.decision).length, "cycle")} to decide` : null,
     d.proposals ? UI.plural(d.proposals.length, "pattern proposal") : null,
   ].filter(Boolean).join(" · ") || "No reports yet.";
 }
@@ -247,6 +296,41 @@ document.getElementById("extraction").addEventListener("submit", async (e) => {
   } catch (err) {
     f.querySelectorAll("button").forEach((x) => { x.disabled = false; });
     flash(`<span class="err">Not saved: ${esc(err.message)}</span>`);
+  }
+});
+const cflash = (html) => { document.getElementById("c-flash").innerHTML = html; };
+document.getElementById("c-chips").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-view]");
+  if (b) { cview = b.dataset.view; creviewing = ""; renderCycles(); }
+});
+document.getElementById("cycles").addEventListener("click", async (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.review) { creviewing = creviewing === b.dataset.review ? "" : b.dataset.review; renderCycles(); return; }
+  if (b.hasAttribute("data-cancel")) { creviewing = ""; renderCycles(); return; }
+  if (!b.dataset.withdraw) return;
+  b.disabled = true;
+  try {
+    await UI.send("DELETE", `/audit/cycles/${encodeURIComponent(b.dataset.withdraw)}/decision`);
+    cflash(`<span class="status ok">${esc(b.dataset.withdraw)} is a proposal again</span>`);
+    reload();
+  } catch (err) { b.disabled = false; cflash(`<span class="err">Not changed: ${esc(err.message)}</span>`); }
+});
+document.getElementById("cycles").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target, status = e.submitter?.value || "approved", note = f.note.value.trim();
+  if (status === "approved" && note.length < data.cycles.note_min) { cflash(`<span class="err">Say what to move (${int(data.cycles.note_min)} characters or more).</span>`); return; }
+  f.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+  try {
+    const out = await UI.send("POST", `/audit/cycles/${encodeURIComponent(f.dataset.id)}/decision`, { status, note });
+    creviewing = "";
+    cflash(status === "approved"
+      ? `<span class="status ok">Approved: pack <a href="/ui/packs/${encodeURIComponent(out.pack_id)}">${esc(out.pack_id)}</a> is ${esc(out.status)}</span>`
+      : `<span class="status ok">Dismissed ${esc(f.dataset.id)}</span>`);
+    reload();
+  } catch (err) {
+    f.querySelectorAll("button").forEach((x) => { x.disabled = false; });
+    cflash(`<span class="err">Not saved: ${esc(err.message)}</span>`);
   }
 });
 UI.load("/audit/architecture.json", render, document.getElementById("sub"));

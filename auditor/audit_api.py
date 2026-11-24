@@ -31,6 +31,8 @@ GET  /ui/night                        Night summary (data: /audit/night.json?run
 GET  /ui/architecture                 Architecture & patterns (data: /audit/architecture.json)
 POST /audit/extraction/{id}/decision  Approve or dismiss an extraction candidate (writes its pack; auth)
 DELETE /audit/extraction/{id}/decision  Withdraw that decision (auth)
+POST /audit/cycles/{id}/decision      Approve (with a note on what to move) or dismiss a module cycle (auth)
+DELETE /audit/cycles/{id}/decision    Withdraw that decision (auth)
 GET  /audit/runs.json                 All pipelines' runs + facets (pipeline, status filters)
 GET  /audit/runs/{run_id}/summary.json  Run summary with findings delta vs the previous run
 GET  /audit/findings.json             Filtered findings + severity × repo matrix for a run
@@ -1041,23 +1043,22 @@ class _ExtractionDecision(BaseModel):
     note: str = ""
 
 
-def _extraction_call(fn, candidate_id: str):
-    from auditor.extraction import DecisionConflict, decisions_path
+def _decision_call(fn, candidate_id: str, what: str, path: str):
+    from auditor.decisions import DecisionConflict
 
     if not re.fullmatch(r"[A-Za-z0-9._~-]{1,120}", candidate_id):
         raise HTTPException(status_code=422, detail="Bad candidate id.")
-    path = decisions_path()
     try:
         out = fn()
     except DecisionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except OSError as exc:  # e.g. rules/ not mounted, or not writable by the API's user
-        raise HTTPException(status_code=503, detail=f"Can't write extraction decisions to {path}: "
+        raise HTTPException(status_code=503, detail=f"Can't write {what} decisions to {path}: "
                             f"{exc.strerror or exc}. In Docker, ./rules must be mounted (docker-compose.yml).") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if out is None:
-        raise HTTPException(status_code=404, detail=f"Extraction candidate {candidate_id!r} not found.")
+        raise HTTPException(status_code=404, detail=f"No {what} {candidate_id!r}: not reported and not decided.")
     return JSONResponse(out)
 
 
@@ -1076,23 +1077,48 @@ def _repo_paths() -> dict[str, str]:
 @app.post("/audit/extraction/{candidate_id}/decision", dependencies=[Depends(_require_mutating_auth)])
 def post_extraction_decision(candidate_id: str, request: _ExtractionDecision) -> JSONResponse:
     """Approve (writes the candidate's pack, reopening it if closed) or dismiss (its pack becomes wontfix)."""
-    from auditor.extraction import decide
+    from auditor.extraction import decide, decisions_path
     from conductor.publish import public_base_url
 
-    return _extraction_call(lambda: decide(
+    return _decision_call(lambda: decide(
         _output_dir(), candidate_id, request.status, target_repo=request.target_repo.strip(),
         target_module=request.target_module.strip(), units=request.units, note=request.note,
-        repo_paths=_repo_paths(), public_base_url=public_base_url()), candidate_id)
+        repo_paths=_repo_paths(), public_base_url=public_base_url()), candidate_id, "extraction", decisions_path())
 
 
 @app.delete("/audit/extraction/{candidate_id}/decision", dependencies=[Depends(_require_mutating_auth)])
 def delete_extraction_decision(candidate_id: str) -> JSONResponse:
     """Withdraw a decision: the candidate is a proposal again and its idle pack is closed as obsolete."""
-    from auditor.extraction import withdraw
+    from auditor.extraction import decisions_path, withdraw
     from conductor.publish import public_base_url
 
-    return _extraction_call(lambda: withdraw(_output_dir(), candidate_id, public_base_url=public_base_url()),
-                            candidate_id)
+    return _decision_call(lambda: withdraw(_output_dir(), candidate_id, public_base_url=public_base_url()),
+                          candidate_id, "extraction", decisions_path())
+
+
+class _CycleDecision(BaseModel):
+    status: str  # approved | dismissed
+    note: str = ""  # what to move; required to approve
+
+
+@app.post("/audit/cycles/{cycle_id}/decision", dependencies=[Depends(_require_mutating_auth)])
+def post_cycle_decision(cycle_id: str, request: _CycleDecision) -> JSONResponse:
+    """Approve a module cycle (writes its pack) or dismiss it (its pack becomes wontfix)."""
+    from auditor.structure_packs import decide, decisions_path
+    from conductor.publish import public_base_url
+
+    return _decision_call(lambda: decide(_output_dir(), cycle_id, request.status, note=request.note,
+                                         public_base_url=public_base_url()), cycle_id, "cycle", decisions_path())
+
+
+@app.delete("/audit/cycles/{cycle_id}/decision", dependencies=[Depends(_require_mutating_auth)])
+def delete_cycle_decision(cycle_id: str) -> JSONResponse:
+    """Withdraw a decision: the cycle is a proposal again and its idle pack is closed as obsolete."""
+    from auditor.structure_packs import decisions_path, withdraw
+    from conductor.publish import public_base_url
+
+    return _decision_call(lambda: withdraw(_output_dir(), cycle_id, public_base_url=public_base_url()),
+                          cycle_id, "cycle", decisions_path())
 
 
 @app.get("/ui/pack-savings", response_class=HTMLResponse)

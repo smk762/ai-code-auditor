@@ -125,6 +125,8 @@ def _candidates(output_dir: Path, decisions_path: str | Path) -> dict[str, Any] 
 
 def architecture_data(output_dir: str | Path, repo_names: list[str],
                       decisions_path: str | Path | None = None) -> dict[str, Any]:
+    from auditor.structure_packs import ui_data as cycle_data
+
     out_dir = Path(output_dir)
     violations = _violations(out_dir, repo_names)
     proposals = _proposals(out_dir)
@@ -137,6 +139,7 @@ def architecture_data(output_dir: str | Path, repo_names: list[str],
         "proposals": proposals,
         "proposal_counts": dict(Counter(p.get("status", "") for p in proposals)) if proposals else {},
         "extraction": _candidates(out_dir, decisions_path or _decisions_path()),
+        "cycles": cycle_data(out_dir),
         "repos": sorted(repo_names),
     }
 

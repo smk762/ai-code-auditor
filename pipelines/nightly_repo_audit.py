@@ -162,10 +162,19 @@ def run() -> None:
     from auditor.test_env_readiness import run_quietly as test_env
 
     logger.info("test env: %s", test_env(cfg.output_dir))
-    # Module cycles and private imports inside each repo (#154). Report-only: it opens no packs.
+    # Module cycles and private imports inside each repo (#154). A cycle has a pack only once a person
+    # approved it; the packs follow a scan that finished, never an older report.
     from auditor.structure import run_quietly as structure
 
-    logger.info("structure: %s", structure(cfg.output_dir))
+    scanned = structure(cfg.output_dir)
+    logger.info("structure: %s", scanned)
+    if scanned and not scanned.get("error"):
+        from auditor.structure_packs import sync_packs as sync_cycle_packs
+
+        try:
+            logger.info("cycle packs: %s", sync_cycle_packs(cfg.output_dir))
+        except Exception as exc:  # noqa: BLE001 — reported, not fatal
+            logger.warning("cycle packs not synced: %s", exc)
     # Re-check merged fixes that were waived or left unverified, now the test envs may run them (#58).
     # Bounded per night; it only ever records stronger evidence. Before the metrics, which read it.
     from auditor.revalidate import run_quietly as revalidate
