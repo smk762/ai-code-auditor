@@ -28,20 +28,21 @@ the mirrors (``dev``), which is the evidence the migration happened.
 from __future__ import annotations
 
 import ast
-import fcntl
 import hashlib
 import json
 import logging
 import os
 import re
 from collections.abc import Iterable
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from auditor.contracts import utc_now_iso
+from auditor.decisions import DecisionConflict as DecisionConflict
+from auditor.decisions import close_idle, locked, save_decisions
+from auditor.decisions import load_decisions as read_decisions
 from auditor.fsutil import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -50,17 +51,11 @@ DEFAULT_TARGET = "argus-cortex"
 MATCH_MIN = 0.5
 IDS_FILE = "extraction_ids.json"
 DECISION_STATUSES = ("approved", "dismissed")
-# Statuses an approval change may move a pack out of; anything else is someone's work in flight.
-_IDLE = frozenset({"open", "obsolete", "wontfix"})
 # Statuses the nightly sync resolves once every copy is gone (``unknown`` never counts as gone).
 _WORKING = frozenset({"open", "claimed", "in_progress", "unverified"})
 # Copies in these places are left out of an approval by default: a test or script helper is a
 # poor reason for a service to depend on a library.
 _SIDE_PATH = re.compile(r"(^|/)(tests?|scripts|demo|examples?|benchmarks?)/|(^|/)test_[^/]*\.py$|_test\.py$")
-
-
-class DecisionConflict(Exception):
-    """The candidate's pack is claimed or in progress, so its decision can't change under it."""
 
 
 def decisions_path() -> str:
@@ -104,37 +99,9 @@ def suggested(unit: dict[str, Any]) -> bool:
     return not _SIDE_PATH.search(str(unit.get("path") or ""))
 
 
-# ── decisions file ───────────────────────────────────────────────────────────
-
-@contextmanager
-def _locked(path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path.with_name(path.name + ".lock"), "a") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
-
-
 def load_decisions(path: str | Path | None = None) -> dict[str, dict[str, Any]]:
-    """``{candidate_id: decision}``; a missing file is none. A malformed one raises ValueError."""
-    p = Path(path or decisions_path())
-    try:
-        text = p.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return {}
-    data = json.loads(text) if text.strip() else {}
-    found = data.get("decisions") if isinstance(data, dict) else None
-    if found is None:
-        return {}
-    if not isinstance(found, dict):
-        raise ValueError(f"{p}: 'decisions' must be an object keyed by candidate id")  # noqa: TRY004 — bad data, not a bad call
-    return {str(k): v for k, v in found.items() if isinstance(v, dict)}
-
-
-def _save(path: Path, decisions: dict[str, dict[str, Any]]) -> None:
-    atomic_write_text(path, json.dumps({"decisions": decisions}, indent=2, sort_keys=True) + "\n")
+    """``{candidate_id: decision}``; see ``auditor.decisions``."""
+    return read_decisions(path or decisions_path())
 
 
 # ── stable ids ───────────────────────────────────────────────────────────────
@@ -359,23 +326,6 @@ def _write_approved(output_dir: str | Path, cid: str, decision: dict[str, Any],
             "copies": len(copies), "done": bool(copies) and all(c["state"] == "gone" for c in copies)}
 
 
-def _close(output_dir: str | Path, pid: str, status: str, note: str) -> str | None:
-    """Close an idle pack; raise DecisionConflict if someone holds it. Returns the status it had."""
-    from auditor.agent_pack import AgentCodingPack, load_pack, write_pack
-
-    data = load_pack(output_dir, pid)
-    if data is None:
-        return None
-    pack = AgentCodingPack.from_dict(data, fallback_id=pid)
-    current = pack.status or "open"
-    if current not in _IDLE:
-        raise DecisionConflict(f"{pid} is {current}: an agent is working on it. Finish or release it first.")
-    if current != status:
-        pack.apply_status(status, note)
-        write_pack(pack, output_dir, preserve_status=False)
-    return current
-
-
 # ── decisions ────────────────────────────────────────────────────────────────
 
 def _candidates(output_dir: str | Path) -> list[dict[str, Any]]:
@@ -400,7 +350,7 @@ def decide(output_dir: str | Path, candidate_id: str, status: str, *, target_rep
     if status not in DECISION_STATUSES:
         raise ValueError(f"status must be one of {DECISION_STATUSES}")
     p = Path(path or decisions_path())
-    with _locked(p), pack_lock(output_dir):
+    with locked(p), pack_lock(output_dir):
         decisions = load_decisions(p)
         cand = next((c for c in _candidates(output_dir) if c.get("id") == candidate_id), None)
         prev = decisions.get(candidate_id)
@@ -436,10 +386,10 @@ def decide(output_dir: str | Path, candidate_id: str, status: str, *, target_rep
         if status == "approved":
             out = _write_approved(output_dir, candidate_id, decision, repo_paths or {}, public_base_url)
         else:
-            had = _close(output_dir, pid, "wontfix", f"extraction dismissed{': ' + note if note else ''}")
+            had = close_idle(output_dir, pid, "wontfix", f"extraction dismissed{': ' + note if note else ''}")
             out = {"pack_id": pid if had else None, "status": "wontfix" if had else None}
         decisions[candidate_id] = decision
-        _save(p, decisions)
+        save_decisions(p, decisions)
         rebuild_index(output_dir, public_base_url=public_base_url)
     return {"id": candidate_id, "decision": status, **out}
 
@@ -450,13 +400,13 @@ def withdraw(output_dir: str | Path, candidate_id: str, *, public_base_url: str 
     from auditor.agent_pack import pack_lock, rebuild_index
 
     p = Path(path or decisions_path())
-    with _locked(p), pack_lock(output_dir):
+    with locked(p), pack_lock(output_dir):
         decisions = load_decisions(p)
         if candidate_id not in decisions:
             return None
-        had = _close(output_dir, pack_id(candidate_id), "obsolete", "extraction approval withdrawn")
+        had = close_idle(output_dir, pack_id(candidate_id), "obsolete", "extraction approval withdrawn")
         del decisions[candidate_id]
-        _save(p, decisions)
+        save_decisions(p, decisions)
         rebuild_index(output_dir, public_base_url=public_base_url)
     return {"id": candidate_id, "decision": None, "pack_status": "obsolete" if had else None}
 

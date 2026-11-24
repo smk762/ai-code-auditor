@@ -25,7 +25,7 @@ a name two modules share resolves to the one nearest the importer, and to neithe
 ``run`` reads every mirror's ``origin/dev`` through git objects (never the working tree, never a
 write) into ``reports/structure.json``. A repo that can't be read has an ``error`` and no counts, and
 a file that doesn't parse is listed in ``unparsed``: neither may be read as clean (``complete``).
-It opens no packs. ``judge`` is the evidence check for structural packs (#58): ``validate_patch`` scans
+It opens no packs itself (``structure_packs``: a person approves). ``judge`` is the evidence check for structural packs (#58): ``validate_patch`` scans
 dev and dev plus the patch, and the pack resolves only when the violation is really gone.
 """
 from __future__ import annotations
