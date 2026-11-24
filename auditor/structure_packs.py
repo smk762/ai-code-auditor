@@ -2,7 +2,8 @@
 
 The structure scan (``auditor.structure``) proposes; its suggested cuts are often the wrong place to
 fix a cycle, so a cycle becomes a pack only when someone approves it on ``/ui/architecture`` and says
-what to move (``NOTE_MIN`` characters or more). Dismissing one keeps it out of the list while it doesn't grow.
+what to move (``NOTE_MIN`` characters or more). An agent can propose that note (``propose``); the decision
+records whether it was approved as written or edited. Dismissing one keeps it out of the list while it doesn't grow.
 
 Decisions live in ``rules/structure_decisions.json`` (``AI_AUDIT_STRUCTURE_DECISIONS_PATH``), outside
 git: a private repo's paths are in them. An id is a hash of the repo and the sorted members. A cycle that changed is
@@ -17,6 +18,7 @@ scan couldn't read whole changes nothing. Only ``validate_patch`` resolves one (
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,9 @@ from typing import Any
 from auditor.contracts import utc_now_iso
 from auditor.decisions import close_idle, load_decisions, locked, save_decisions
 from auditor.structure import load_report
+from auditor.structure_proposals import check, edges_key, proposals_path, view
+
+logger = logging.getLogger(__name__)
 
 KIND = "module_cycle"
 NOTE_MIN = 20
@@ -75,6 +80,32 @@ def rows(report: dict[str, Any] | None, decisions: dict[str, dict[str, Any]]) ->
                         "edges": [], "cuts": [], "cuts_smallest": None, "reported": False if known else None,
                         "decision": d})
     return out
+
+
+def _proposals() -> dict[str, dict[str, Any]]:
+    """Stored proposals; none when the file is unreadable, which must not stop a decision."""
+    try:
+        return load_decisions(proposals_path(), "proposals")
+    except (OSError, ValueError) as exc:
+        logger.warning("cycle proposals unreadable: %s", exc)
+        return {}
+
+
+def propose(output_dir: str | Path, cid: str, proposal: dict[str, Any],
+            path: str | Path | None = None) -> dict[str, Any] | None:
+    """Store an agent's proposal for a reported cycle. None when it isn't reported; ValueError when it
+    is badly formed, written for other imports, or leaves a circle. It changes no decision and no pack."""
+    p = Path(proposals_path())
+    with locked(p):
+        decisions = load_decisions(path or decisions_path())
+        row = next((r for r in rows(load_report(output_dir), decisions) if r["id"] == cid and r["reported"]), None)
+        if row is None:
+            return None
+        entry = {**check(proposal, row["edges"], NOTE_MIN), "repo": row["repo"], "at": utc_now_iso()}
+        stored = load_decisions(p, "proposals")
+        stored[cid] = entry
+        save_decisions(p, stored, "proposals")
+    return {"id": cid, **(view(entry, row["edges"]) or {})}
 
 
 def build_pack(cid: str, d: dict[str, Any], *, public_base_url: str = "", run_id: str = ""):
@@ -151,6 +182,10 @@ def decide(output_dir: str | Path, cid: str, status: str, *, note: str = "", pub
              "members": prev["members"] if keep else row["members"],
              "edges": (prev.get("edges") if keep else None) or row["edges"],
              "cuts": (prev.get("cuts") if keep else None) or row["cuts"]}
+        offer = view(_proposals().get(cid), row["edges"])
+        if status == "approved" and offer and offer["offered"]:
+            d["proposal"] = {"used": "as_written" if note == offer["note"] else "edited",
+                             **{k: offer.get(k) for k in ("author", "at", "note")}}
         if status == "approved":
             held = (load_pack(output_dir, pack_id(cid)) or {}).get("status") or "open"
             if held in ("claimed", "in_progress", "unverified"):
@@ -229,7 +264,10 @@ def ui_data(output_dir: str | Path, path: str | Path | None = None) -> dict[str,
     if report is None and not decisions:
         return None
     out = rows(report, decisions)
+    proposals = _proposals()
     for r in out:
+        r["edges_key"] = edges_key(r["edges"])
+        r["proposal"] = view(proposals.get(r["id"]), r["edges"]) if r["reported"] else None
         pk = load_pack(output_dir, pack_id(r["id"])) if r["decision"] else None
         r["pack"] = {"id": pack_id(r["id"]), "status": pk.get("status") or "open"} if pk else None
     unread = sorted(n for n, r in ((report or {}).get("repos") or {}).items() if r.get("error") or not r.get("complete"))
