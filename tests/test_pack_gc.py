@@ -53,6 +53,9 @@ class FakeMirror(Mirror):
     def last_change(self, path: str) -> datetime | None:
         return self._changes.get(path)
 
+    def lines(self, path: str) -> list[str] | None:
+        return self._text.get(path)  # a real mirror's git show fails for a file that isn't there
+
 
 FIXED = ["def add(a, b):", "    return a + b", ""]
 
@@ -78,6 +81,26 @@ def test_file_gone_closes_any_open_finding_pack_including_ask() -> None:
     m = {"x": FakeMirror({"other.py": ["x"]})}
     r = plan([pack("n"), pack("a", kind="ask"), pack("d", kind="diff_audit")], [], m, now=NOW)
     assert ids(r) == {"n": "file_gone", "a": "file_gone", "d": "file_gone"}
+
+
+@pytest.mark.parametrize("stored", [
+    "x/app/calc.py",              # the repo was configured with a relative path
+    "./x/app/calc.py",
+    "/srv/checkout/app/calc.py",  # the checkout isn't named after the repo
+    "/srv/x/ws/x/app/calc.py",    # the repo's name comes up earlier in the path
+])
+@pytest.mark.parametrize("status", ["open", "wontfix"])
+def test_a_path_that_cannot_be_anchored_is_not_a_deleted_file(stored: str, status: str) -> None:
+    packs = [pack("p", path=stored, status=status)]
+    live = plan(packs, [], {"x": FakeMirror({"app/calc.py": CODE})}, now=NOW)
+    assert ids(live) == {}
+    gone = plan(packs, [], {"x": FakeMirror({"other.py": CODE})}, now=NOW)
+    assert list(ids(gone)) == ["p"]
+
+
+def test_an_anchored_path_still_closes_when_only_its_name_matches() -> None:
+    packs = [pack("p", path="/m/x/app/calc.py")]
+    assert ids(plan(packs, [], {"x": FakeMirror({"calc.py": CODE})}, now=NOW)) == {"p": "file_gone"}
 
 
 def test_nightly_pack_closes_after_n_consecutive_misses() -> None:
