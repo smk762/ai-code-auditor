@@ -12,8 +12,9 @@ import shlex
 import shutil
 import subprocess
 import time
+from collections import Counter
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from packaging.utils import canonicalize_name
 
@@ -833,7 +834,7 @@ def _run_project_tests(root: Path, python: Path, timeout_s: int,
     env = child_env(PYTHONPATH=os.pathsep.join([*paths, str(root)]), PYTHONDONTWRITEBYTECODE="1")
     t0 = time.monotonic()
     try:
-        proc = proc_run([str(python), "-m", "pytest", "-q", "--tb=short", "-rfE", "-p", "no:cacheprovider",
+        proc = proc_run([str(python), "-m", "pytest", "-q", "--tb=short", "-rsfE", "-p", "no:cacheprovider",
                          *(["--", *only] if only else [])],
                               cwd=root, env=env, capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=timeout_s)
@@ -843,14 +844,17 @@ def _run_project_tests(root: Path, python: Path, timeout_s: int,
     except OSError as exc:  # the env's interpreter is gone or broken: an env problem, not the patch's
         return "env_gap", ValidationResult(passed=False, tool="pytest", duration_ms=0, errors=[str(exc)],
                                            raw_output=f"ImportError: cannot run tests: {exc}")
-    full = proc.stdout + proc.stderr
+    counts = pytest_counts(proc.stdout)
+    # Counted, then dropped: a skip reason ("No module named …") must not read as an env gap or crowd out a failure.
+    stdout = _SKIP_RE.sub("", proc.stdout)
+    full = stdout + proc.stderr
     out = full[-_OUTPUT_LIMIT:]
     # pytest reports failures (tracebacks, the -rfE summary) on stdout; stderr is often just noise
-    error = proc.stdout.strip()[-1000:] or proc.stderr.strip()[-1000:]
+    error = stdout.strip()[-1000:] or proc.stderr.strip()[-1000:]
     res = ValidationResult(passed=proc.returncode == 0, tool="pytest",
                            duration_ms=int((time.monotonic() - t0) * 1000),
                            errors=[] if proc.returncode == 0 else [error],
-                           raw_output=out)
+                           raw_output=out, tests=counts)
     if proc.returncode == 5:  # pytest: no tests collected
         return "no_tests", res
     # only collection errors, at least one from a missing module, and no test ran at all. Judged on
@@ -897,6 +901,47 @@ def stub_version_files(root: Path) -> list[str]:
             continue
         written.append(rel)
     return written
+
+
+_COUNT_RE = re.compile(r"\b(\d+) (passed|failed|skipped|xfailed|xpassed|errors?)\b")
+_SKIP_RE = re.compile(r"^SKIPPED \[(\d+)\] (\S+?)(?::\d+)?: (.*)\n?", re.M)
+_TOP_SKIPS = 10
+
+
+def pytest_counts(output: str) -> dict[str, Any]:
+    """What pytest's final summary line counts, and what the run skipped, by reason and by test file
+    (``-rs``). {} when the output has no summary line: unknown, never zero."""
+    last = next((ln for ln in reversed(output.splitlines()) if re.search(r"\bin [\d.]+s\b", ln) and _COUNT_RE.search(ln)), "")
+    if not last:
+        return {}
+    out: dict[str, Any] = {k: 0 for k in ("passed", "failed", "skipped", "xfailed", "xpassed", "errors")}
+    for n, what in _COUNT_RE.findall(last):
+        out["errors" if what.startswith("error") else what] += int(n)
+    reasons: Counter[str] = Counter()
+    files: Counter[str] = Counter()
+    for n, path, reason in _SKIP_RE.findall(output):
+        reasons[reason.strip()[:120]] += int(n)
+        files[path] += int(n)
+    out["skip_reasons"] = dict(reasons.most_common(_TOP_SKIPS))
+    out["skipped_files"] = dict(files.most_common(_TOP_SKIPS))
+    return out
+
+
+def merge_counts(parts: list[dict[str, Any]]) -> dict[str, Any]:
+    """One record for several runs. A run whose counts are unknown makes the whole record ``partial``."""
+    known = [p for p in parts if p]
+    if not known:
+        return {}
+    out: dict[str, Any] = {k: sum(p[k] for p in known)
+                           for k in ("passed", "failed", "skipped", "xfailed", "xpassed", "errors")}
+    for k in ("skip_reasons", "skipped_files"):
+        total: Counter[str] = Counter()
+        for p in known:
+            total.update(p[k])
+        out[k] = dict(total.most_common(_TOP_SKIPS))
+    if len(known) < len(parts):
+        out["partial"] = True
+    return out
 
 
 def _failure_lines(output: str) -> list[str]:
@@ -977,16 +1022,21 @@ def validate_patch_tree(
     tool = "+".join(dict.fromkeys(tools)) or "skipped"
     duration += sum(r.duration_ms for _, r in ran)
     note = "\n".join(notes)
+    tests = merge_counts([r.tests for _, r in ran if r.tool == "pytest"])
     failed = [(lbl, r) for lbl, r in ran if not r.passed]
     if failed:
         return ValidationResult(
             passed=False, tool=tool, duration_ms=duration,
             errors=[e for _, r in failed for e in r.errors],
-            raw_output="\n".join(f"== {lbl}\n{r.raw_output}" for lbl, r in failed)[-_OUTPUT_LIMIT:],
+            raw_output="\n".join(f"== {lbl}\n{r.raw_output}" for lbl, r in failed)[-_OUTPUT_LIMIT:], tests=tests,
         )
     parts = []
     if py_labels := [lbl for lbl, r in ran if r.tool == "pytest"]:
         parts.append("tests passed: " + ", ".join(py_labels))
+        if tests.get("skipped"):
+            notes.append(f"{tests['skipped']} test(s) skipped, {tests['passed']} passed; skipped code is not covered: "
+                         + "; ".join(f"{r} ({n})" for r, n in list(tests["skip_reasons"].items())[:3]))
+            note = "\n".join(notes)
     if js_ran := [f"{lbl} ({r.raw_output})" if r.tool == validate_node.TOOL else lbl
                   for lbl, r in ran if r.tool != "pytest"]:
         parts.append("npm checks passed: " + ", ".join(js_ran))
@@ -997,9 +1047,9 @@ def validate_patch_tree(
         reason = "TypeScript/JavaScript not validated: " + "; ".join(unvalidated)
         return ValidationResult(passed=False, tool="skipped", duration_ms=duration, errors=[],
                                 raw_output="\n".join(x for x in (reason, head, note) if x)[-_OUTPUT_LIMIT:],
-                                skipped_reason=reason[:1000])
+                                skipped_reason=reason[:1000], tests=tests)
     return ValidationResult(
-        passed=True, tool=tool, duration_ms=duration, errors=[],
+        passed=True, tool=tool, duration_ms=duration, errors=[], tests=tests,
         raw_output="\n".join(x for x in (head, note) if x)[-_OUTPUT_LIMIT:],
     )
 
@@ -1132,4 +1182,5 @@ def _against_base(
     if failed := both - errored:
         notes.append(f"{label}: {len(failed)} test(s) fail on the base branch too, not counted: "
                      f"{', '.join(sorted(failed))[:400]}")
-    return ValidationResult(passed=True, tool="pytest", duration_ms=duration, errors=[], raw_output=res.raw_output)
+    return ValidationResult(passed=True, tool="pytest", duration_ms=duration, errors=[], raw_output=res.raw_output,
+                            tests=res.tests)

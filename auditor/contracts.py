@@ -145,6 +145,7 @@ class ValidationResult:
     errors: list[str]
     raw_output: str      # truncated stdout + stderr
     skipped_reason: str = ""
+    tests: dict = field(default_factory=dict)  # pytest counts and skips (validator.pytest_counts); empty for other tools
 
 
 @dataclass(slots=True)

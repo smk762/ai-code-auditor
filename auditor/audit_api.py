@@ -1775,7 +1775,7 @@ def _judge_evidence(
     request: "_ValidatePatchRequest", *, tool: str, changed: list[str], tree: Path, fresh_base: Any,
     base_sha: str, venv_cache: Path, node_cache: Path, timeout_s: int,
     pack_id: str | None = None, repro_cache: dict[str, Any] | None = None, multi: bool = False,
-    structure_scans: Any = None,
+    structure_scans: Any = None, tests: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the evidence bar (#58) for a passing patch and set the pack resolved or unverified.
     *repro_cache* shares one repro run between the packs of a multi-pack request: the patch's
@@ -1808,7 +1808,7 @@ def _judge_evidence(
             cache["structure"] = structure_scans()
         verdict = judge(pack, *cache["structure"])
     d = evidence.decide(pack, tool=tool, changed=changed, repro=repro, waiver=request.evidence_waiver or "",
-                        base_sha=base_sha, structure=verdict)
+                        base_sha=base_sha, structure=verdict, tests=tests)
     if request.base_ref:
         d.evidence["base_ref"] = request.base_ref.strip()
     if request.revalidate:
@@ -2054,6 +2054,7 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
             "failure_summary": summary,
             "raw_output":      val_result.raw_output[-2000:],
             "skipped_reason":  val_result.skipped_reason,
+            "tests":           val_result.tests,
         }
         from auditor import equivalence
 
@@ -2087,7 +2088,7 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
                     request, tool=val_result.tool, changed=changed, tree=repo_copy, fresh_base=_fresh_base,
                     base_sha=str(base_info.get("base_sha") or ""), venv_cache=venv_cache, node_cache=node_cache,
                     timeout_s=timeout_s, pack_id=pid, repro_cache=repro_cache, multi=len(pack_ids) > 1,
-                    structure_scans=_structure_scans,
+                    structure_scans=_structure_scans, tests=val_result.tests,
                 )
             results.append(res)
         if results:

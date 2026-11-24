@@ -487,9 +487,11 @@ def for_pack(repro: ReproResult, pack: dict[str, Any], tree: Path, *, named: lis
 
 
 def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproResult | None,
-           waiver: str = "", base_sha: str = "", structure: dict[str, Any] | None = None) -> Decision:
+           waiver: str = "", base_sha: str = "", structure: dict[str, Any] | None = None,
+           tests: dict[str, Any] | None = None) -> Decision:
     """Resolved or unverified, for a validate_patch run that passed. *structure* is
-    ``structure.judge``'s verdict; a structural pack without one is never resolved."""
+    ``structure.judge``'s verdict; a structural pack without one is never resolved.
+    *tests* (``validator.pytest_counts``) is recorded, skips included, and changes no verdict yet."""
     ch = classify_changes(changed)
     ev: dict[str, Any] = {
         "tool": tool, "base_sha": base_sha, "changed": {k: len(v) for k, v in ch.items()},
@@ -497,6 +499,8 @@ def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproR
     }
     if repro is not None:
         ev["repro"] = repro.to_dict()
+    if tests:
+        ev["tests"] = tests
 
     def done(status: str, kind: str, reason: str) -> Decision:
         return Decision(status, kind, reason, {**ev, "kind": kind, "reason": reason})
