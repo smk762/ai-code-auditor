@@ -6,8 +6,8 @@ includes a test that fails before it and passes after it, or a written waiver.
 
 ![Packs board: nine open packs, one unverified, one resolved](docs/img/packs.png)
 
-The board after scanning three invented repos with no model, with the module cycle approved by hand. The pages below are real output from that scan
-([script](scripts/build_example_reports.py)):
+The board after scanning three invented repos with no model, with the module cycle approved by hand. The pages below are
+real output from that scan ([script](scripts/build_example_reports.py)):
 
 | Report | What it shows |
 |---|---|
@@ -18,7 +18,11 @@ The board after scanning three invented repos with no model, with the module cyc
 | [Extraction candidates](reports/examples/extraction_candidates.example.md) | One function duplicated in two repos |
 
 **Status:** runs nightly on one person's repos. The checked-in configuration is for that deployment, there is no packaged
-release, and [its own exit criteria](#how-it-checks-itself) are not met: agent PR reverts, for one, have no data yet.
+release.
+
+**Current results** (one deployment, 2026-11-23, `ai-audit eval trust`): 12 of 13 gates pass and one has no data (agent PRs
+reverted, 0 of the 20 needed). 2.6% of 2,789 resolved issues came back; 2.5% of 2,394 resolutions in 14 days ran no tests
+and 9.4% were waived. The exit criteria are not met. [Every gate, and what they don't prove](#how-it-checks-itself).
 
 ## From finding to resolved pack
 
@@ -104,14 +108,17 @@ YAML
 
 export AI_AUDIT_LLM_CACHE_ONLY=1     # never call a model
 export AI_AUDIT_PACK_RAG_INGEST=0    # don't send packs to a search service
+export AI_AUDIT_TEST_ENV_CHECK=0     # skip checks for patch validation, which needs the API
+export AI_AUDIT_LOG_LEVEL=ERROR
 ai-audit repo-run
 ai-audit packs
 ai-audit packs --repo sample --bundle
 ```
 
 `ai-audit packs` lists two packs, one for `shell=True` (HIGH) and one for the `subprocess` import (LOW). `--bundle` prints
-the briefs an agent would get. Reports are in `reports/`. Warnings about `JWT_SECRET`, Redis, `GITHUB_TOKEN` and the base
-URL are expected. The final `trust eval` line shows every gate short of data, which is right for a first run.
+the briefs an agent would get. Reports are in `reports/`. Two notices are
+expected, about `JWT_SECRET` and `AI_AUDIT_PUBLIC_BASE_URL`: both are only for running the API. `ai-audit eval trust` will
+show every gate short of data, which is right for a first run.
 
 Use a fresh shell, or check that no `.env` sits in the clone: it is read automatically. To scan your own repo, change
 `path` to its absolute path.
