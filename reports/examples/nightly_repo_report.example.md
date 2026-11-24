@@ -1,93 +1,84 @@
-# Nightly Repo Report (Example)
+# Nightly Repo Report
+
+> Real output from a scan of three invented repos, with no model. Rebuild: `scripts/build_example_reports.py`.
 
 ## Summary
-- Total findings: 24
-- Critical: 2
-- High: 9
-- Medium: 8
-- Low: 5
+- Total findings: 8
+- Critical: 0
+- High: 2
+- Medium: 2
+- Low: 4
 
-## Highlights
-- Critical findings include exposed admin token fallback and permissive CORS config.
-- High-severity issues cluster around secret handling and auth guard bypass risks.
-- Medium findings show reliability debt: weak retries, broad exception catches, stale TODOs.
-- Recommendation trend: harden defaults, standardize auth middleware, and tighten CI gates.
+## Findings
 
-## Category Breakdown
-- Security: 14
-- Reliability: 5
-- Code quality: 3
-- Architecture: 2
+### blacklist
+- Severity: LOW
+- Type: security
+- Repo: orders-api
+- File: `orders-api/orders_api/health.py`:1
+- Source: bandit
+- Description: Consider possible security implications associated with the subprocess module.
+- Recommendation: Review and remediate this security finding.
 
-## Ownership + SLA Snapshot
-- `platform-security`: 8 findings (2 critical, 5 high, 1 medium)
-- `identity-team`: 7 findings (3 high, 3 medium, 1 low)
-- `devex`: 9 findings (4 medium, 4 low, 1 high)
-- 72-hour SLA breaches: 1 (critical), escalated to incident channel
-
-## Sample Findings
-
-### Potential hardcoded secret
+### subprocess_popen_with_shell_equals_true
 - Severity: HIGH
 - Type: security
-- Repo: ai-code-auditor
-- File: `auditor/llm_client.py`:13
-- Source: heuristic
-- Description: Matched heuristic rule: hardcoded_secret
-- Recommendation: Move secrets to environment variables or a secret manager.
+- Repo: orders-api
+- File: `orders-api/orders_api/health.py`:5
+- Source: bandit
+- Description: subprocess call with shell=True identified, security issue.
+- Recommendation: Review and remediate this security finding.
 
-### Admin auth bypass fallback enabled
-- Severity: CRITICAL
-- Type: security
-- Repo: ai-code-auditor
-- File: `auditor/auth.py`:88
-- Source: llm+heuristic
-- Description: Fallback path allows admin access when token parsing fails.
-- Recommendation: Remove fallback and fail closed with explicit auth error.
-
-### Wildcard CORS in production profile
-- Severity: CRITICAL
-- Type: security
-- Repo: ai-code-auditor
-- File: `auditor/settings.py`:54
-- Source: heuristic
-- Description: `*` origin configured under production environment branch.
-- Recommendation: Restrict allowed origins and enforce environment validation.
-
-### Broad exception swallowing in pipeline checkpoint
+### hardcoded_sql_expressions
 - Severity: MEDIUM
-- Type: reliability
-- Repo: ai-code-auditor
-- File: `auditor/persistence.py`:142
-- Source: heuristic
-- Description: `except Exception` block logs and continues without checkpoint rollback.
-- Recommendation: Catch specific exceptions and fail pipeline stage on persistence errors.
+- Type: security
+- Repo: orders-api
+- File: `orders-api/orders_api/store.py`:2
+- Source: bandit
+- Description: Possible SQL injection vector through string-based query construction.
+- Recommendation: Review and remediate this security finding.
 
-### Duplicate request validation logic
-- Severity: MEDIUM
-- Type: architecture
-- Repo: ai-code-auditor
-- File: `auditor/repo_resolver.py`:31
-- Source: pattern_mining
-- Description: Validation branch duplicates logic implemented in `auditor/config.py`.
-- Recommendation: Extract shared validator to single utility module.
-
-### Debug print statement present
+### assert_used
 - Severity: LOW
-- Type: code_quality
-- Repo: ai-code-auditor
-- File: `cli.py`:47
-- Source: heuristic
-- Description: Matched heuristic rule: debug_print
-- Recommendation: Replace debug print with structured logging.
+- Type: security
+- Repo: orders-api
+- File: `orders-api/tests/test_pricing.py`:5
+- Source: bandit
+- Description: Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.
+- Recommendation: Review and remediate this security finding.
 
-## Reviewer Feedback
-- Security lead: "Critical auth fallback must be fixed before next release cut."
-- Platform lead: "Validation duplication should be resolved with shared utility extraction."
-- DevEx reviewer: "Low-severity noise is acceptable if critical/high trendline drops next run."
+### hashlib
+- Severity: HIGH
+- Type: security
+- Repo: billing
+- File: `billing/billing/receipts.py`:5
+- Source: bandit
+- Description: Use of weak MD5 hash for security. Consider usedforsecurity=False
+- Recommendation: Review and remediate this security finding.
 
-## Remediation Progress
-- Closed in this cycle: 6
-- In progress: 10
-- Not started: 8
-- Next checkpoint: run `ai-audit repo-run` after auth and CORS fixes land.
+### assert_used
+- Severity: LOW
+- Type: security
+- Repo: billing
+- File: `billing/tests/test_receipts.py`:5
+- Source: bandit
+- Description: Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.
+- Recommendation: Review and remediate this security finding.
+
+### Workaround comment: HACK: the gateway drops the first call after idle
+- Severity: LOW
+- Type: maintainability
+- Repo: billing
+- File: `billing/billing/retry.py`:5
+- Source: workaround
+- Description: A comment says the code around it works around a problem. Agents copy what is in the repo, so the workaround spreads unless the cause is fixed.
+- Recommendation: Fix the cause the comment names, then delete the workaround and the comment. If it must stay, say why it is permanent and mark the line `workaround: ok`.
+
+### request_without_timeout
+- Severity: MEDIUM
+- Type: security
+- Repo: storefront
+- File: `storefront/storefront/invoices.py`:9
+- Source: bandit
+- Description: Call to requests without timeout
+- Recommendation: Review and remediate this security finding.

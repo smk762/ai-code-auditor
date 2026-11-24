@@ -1,302 +1,279 @@
 # AI Code Auditor
 
-`ai-code-auditor` helps engineering teams catch risk early, surface architecture drift, and discover high-leverage refactors across multiple repositories.
+Scans a set of git repositories for bugs, security problems and structural drift, and writes each one as a work pack for a
+coding agent. When an agent submits a code fix for a bug or security pack, validation resolves the pack only if the patch
+includes a test that fails before it and passes after it, or a written waiver.
 
-## What It Does (and Why That's Awesome)
+![Packs board: nine open packs, one unverified, one resolved](docs/img/packs.png)
 
-Most audit tools tell you what is wrong in one repo.  
-This project gives you an ecosystem-wide intelligence layer you can run locally:
+The board after scanning three invented repos with no model, with the module cycle approved by hand. The pages below are real output from that scan
+([script](scripts/build_example_reports.py)):
 
-- Nightly repo audits for security, quality, and maintainability signals
-- Cross-repo ecosystem analysis with architecture and pattern detection
-- Copilot-style Q&A over your code graph and indexed code units
-- Shared-package extraction candidates to reduce duplication and churn
+| Report | What it shows |
+|---|---|
+| [Patch validation](reports/examples/patch_validation.example.md) | Three patches: one resolved its pack with a failing-then-passing test, one stayed unverified for lack of a test, one was rejected for breaking a test |
+| [Nightly findings](reports/examples/nightly_repo_report.example.md) | 8 findings: 2 high, 2 medium, 4 low, with file and line |
+| [Security findings](reports/examples/security_report.example.md) | The 7 of those that are security findings, 2 of them only `assert` in tests |
+| [Architecture violations](reports/examples/architecture_violations.example.md) | A UI importing its worker's package, and an HTTP call the rules don't allow |
+| [Extraction candidates](reports/examples/extraction_candidates.example.md) | One function duplicated in two repos |
 
-Why teams star this kind of tool:
+**Status:** runs nightly on one person's repos. The checked-in configuration is for that deployment, there is no packaged
+release, and [its own exit criteria](#how-it-checks-itself) are not met: agent PR reverts, for one, have no data yet.
 
-- **Faster decisions:** Ask impact questions before merging risky changes.
-- **Safer releases:** Catch high-risk findings nightly, not after incidents.
-- **Cleaner architecture:** Track violations and pattern drift over time.
-- **Real outputs, not vapor:** Reports and artifacts are written to disk every run.
+## From finding to resolved pack
 
-If this saves your team time, give it a star and share it with your platform/devex crew.
+```mermaid
+flowchart LR
+    S["Scan<br/>static tools + model review"] --> F[Finding]
+    F --> P["Pack<br/>brief, location, criteria"]
+    P --> A["Agent claims it<br/>and writes a patch"]
+    A --> V{"validate_patch<br/>evidence check"}
+    V -->|proven| R[Resolved]
+    V -->|"passes, not proven"| U["Unverified<br/>still open work"]
+    V -->|"checks fail"| X["Rejected<br/>pack not resolved"]
+    U --> A
+    X --> A
+```
 
-## Clone and Run
+1. **Scan.** Each night the configured repos are split into code units. Bandit and semgrep (when installed) and a model
+   review them. Units that haven't changed come from a cache.
+2. **Pack.** A finding becomes a pack: a short brief with its location, acceptance criteria and what "done" means.
+   Findings are matched across runs by repo, file, type and title, so a re-found issue reopens the same pack.
+3. **Patch.** An agent fetches a bundle for its repo, claims one pack and writes a fix. [AGENTS.md](AGENTS.md) has the flow.
+   The night conductor can also open draft PRs.
+4. **Evidence.** `POST /audit/validate_patch` applies the patch to a clean copy of the base branch and runs the project's
+   tests there. Failures the base already has don't count against it.
+5. **Close.** A bug or security pack needs a test that fails before the patch and passes after it. Other code changes need
+   tests to have run. A pass without that is `unverified`. A written waiver can stand in for a test; it is recorded and
+   counted.
+
+Packs whose issue is no longer reported are closed as `obsolete`, which means "not seen any more", not "fixed". A scan
+that couldn't review a file never counts as the issue being gone.
+
+### In progress: module-cycle packs
+
+A nightly scan finds Python modules inside one repo that import each other in a circle, including imports inside
+functions. This is work in progress ([#154](https://github.com/smk762/ai-code-auditor/issues/154)).
+
+| Part | State |
+|---|---|
+| Scan for cycles and private imports (`ai-audit structure`) | Working, Python only, no model calls |
+| Evidence check: the cycle is gone, none was added or moved, and the tests ran | Working; piloted on one cycle in this repo |
+| Approve or dismiss a cycle in the web UI; an approval must say what to move and creates one pack | Working, just added; too few packs to measure |
+| Suggested cuts | A hint only: in a hand-check all 13 cycles were real, but the suggested cut was in the right place for only 7 (public repos, 2026-11-24, [results](https://github.com/smk762/ai-code-auditor/issues/154)) |
+| Packs for private imports | Not built: they can be judged, but nothing creates them |
+| A CI rule that stops new cycles in other repos | Not built; this repo has its own test |
+
+A pack resolves only when none of its members is in any cycle, so a partial fix to a large cycle stays unverified.
+
+![Module cycles waiting for a decision](docs/img/module-cycles.png)
+
+*Synthetic repo.*
+
+## Quick start
+
+This scans one small repo with no model, no API key and no services: results go to SQLite and files. It needs git and
+Python 3.11 or newer. Installing uses PyPI; the scan makes no network calls other than one attempt to reach Redis on
+localhost. Two things on your machine would change that: semgrep on
+your `PATH` (the scan runs it), and a `GITHUB_TOKEN` or `GH_TOKEN` (the scan lists pull requests with it).
 
 ```bash
 git clone https://github.com/smk762/ai-code-auditor.git
 cd ai-code-auditor
-```
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e . bandit
 
-## Quick Start
+# A workspace with its own config, and a repo with one planted problem
+mkdir -p ../auditor-demo/config ../auditor-demo/sample && cd ../auditor-demo
+cat > sample/app.py <<'PY'
+import subprocess
 
-1. Create environment file:
-   - `cp .env.example .env`
-   - Update values in `.env` for your LAN services.
-2. Install dependencies:
-   - `python -m venv .venv && source .venv/bin/activate`
-   - `pip install -e .[dev]`
-3. Run DB migrations:
-   - `alembic upgrade head`
-4. Configure repositories in `config/ecosystem.yaml` (see [Ecosystem configuration](#ecosystem-configuration) below).
-   - Optional provider configs:
-     - `config/generator.yaml`
-     - `config/embedder.yaml`
 
-## Ecosystem configuration
-
-Repositories are listed under `repos` in `config/ecosystem.yaml`. Each entry needs a `name` and a `path`. Optional `subpath` limits scanning to a folder inside that repository (empty means the whole tree).
-
-**Local directory** — scan a clone on disk (relative or absolute). The current Git checkout is what gets scanned; `branch` in YAML is not applied.
-
-```yaml
+def ping(host):
+    return subprocess.call("ping -c1 " + host, shell=True)
+PY
+git -C sample init -q -b dev
+git -C sample add .
+git -C sample -c user.name=demo -c user.email=demo@example.invalid commit -qm init
+cat > config/ecosystem.yaml <<YAML
 repos:
-  - name: my-service
-    path: ../my-service
+  - name: sample
+    path: $PWD/sample
     provider: local
-    subpath: ""
-```
+YAML
 
-**Mounted path** (homelab share, bind-mount, NFS, etc.) — same as local; use the mountpoint path.
-
-```yaml
-repos:
-  - name: my-service
-    path: /mnt/ai-audit/my-service
-    provider: local
-    subpath: ""
-```
-
-**Remote (HTTPS)** — the tool clones or updates under `local_cache_path` (default `.cache/repos`). Use `branch` for the branch to check out. For private repositories, set `access_token_env` to an environment variable that holds a token (see `.env.example`).
-
-```yaml
-repos:
-  - name: my-service
-    path: https://github.com/org/my-service.git
-    branch: main
-    provider: remote
-    access_token_env: GITHUB_TOKEN
-    local_cache_path: .cache/repos
-    subpath: ""
-```
-
-## CLI Commands + Representative Responses
-
-### 1) Show available commands
-
-```bash
-ai-audit --help
-```
-
-Representative output:
-
-```text
-Usage: ai-audit [OPTIONS] COMMAND [ARGS]...
-
-Commands:
-  repo-run
-  ecosystem-run
-  ask
-  qa-benchmark
-  approve-extraction
-```
-
-### 2) Run a repo audit
-
-```bash
+export AI_AUDIT_LLM_CACHE_ONLY=1     # never call a model
+export AI_AUDIT_PACK_RAG_INGEST=0    # don't send packs to a search service
 ai-audit repo-run
+ai-audit packs
+ai-audit packs --repo sample --bundle
 ```
 
-Representative output:
+`ai-audit packs` lists two packs, one for `shell=True` (HIGH) and one for the `subprocess` import (LOW). `--bundle` prints
+the briefs an agent would get. Reports are in `reports/`. Warnings about `JWT_SECRET`, Redis, `GITHUB_TOKEN` and the base
+URL are expected. The final `trust eval` line shows every gate short of data, which is right for a first run.
 
-```text
-Repo audit completed.
-- findings: 24
-- critical: 2
-- high severity: 9
-- reports written:
-  - reports/nightly_repo_report.md
-  - reports/security_report.md
-```
+Use a fresh shell, or check that no `.env` sits in the clone: it is read automatically. To scan your own repo, change
+`path` to its absolute path.
 
-### 3) Run an ecosystem audit
+To add model review, use a local model with [Ollama](https://ollama.com):
 
 ```bash
-ai-audit ecosystem-run
+unset AI_AUDIT_LLM_CACHE_ONLY
+AI_AUDIT_LLM_PROVIDER=ollama AI_AUDIT_LLM_MODEL=<an installed model> ai-audit repo-run
 ```
 
-Representative output:
+or a cloud one, which sends the scanned code to that provider and costs money. Copy `config/generator.yaml` from the clone
+into the workspace's `config/` first, then set `AI_AUDIT_LLM_PROVIDER`, `AI_AUDIT_LLM_MODEL` and the provider's API key.
 
-```text
-Ecosystem audit completed.
-- repositories scanned: 4
-- code units indexed: 2418
-- architecture violations: 3
-- pattern proposals: 12
-- extraction candidates: 2
-- report: reports/ecosystem_report.md
-```
+Patch validation, nightly timers, Docker and several repos are in [docs/deployment.md](docs/deployment.md).
 
-### 4) Ask a cross-repo question (deep mode)
+## What data leaves the machine
+
+| Provider | Scan review | Night conductor |
+|---|---|---|
+| Ollama (local) | yes | with LiteLLM (`.[conductor]`) |
+| Anthropic | yes, and half-price batches | yes (default) |
+| OpenAI, xAI | yes | yes, also as fallbacks |
+| Any OpenAI-compatible endpoint | yes | no |
+
+The wiki builder and the finding classifier use Anthropic only. `AI_AUDIT_LLM_PROVIDER` picks the scan provider; the
+conductor's models and fallbacks are in `config/generator.yaml`.
+
+| Feature | What is sent, and where |
+|---|---|
+| Scan review | Each uncached code unit's source, its path, and a short description of the repo and its neighbours, to the scan provider |
+| Night conductor, PR review | Findings, code and diffs, to the conductor provider. **With LiteLLM installed, a failed call is retried on the configured fallbacks, so code can reach a second provider.** Empty `fallbacks` to prevent that |
+| Wiki builder | Source files and notes about them, to Anthropic |
+| Finding classifier | Finding text, to Anthropic, only once a classifier prompt has been measured and frozen |
+| "Ask" questions | The question and retrieved context (the wiki's pages and notes), to the scan provider |
+| Draft PRs, PR intel, merge polling | Branches, PR text and API queries, to GitHub |
+| Semgrep, if installed | Runs with `--config=auto`, which fetches rules from and reports metrics to semgrep.dev |
+| Patch validation | Runs the patch's code and installs its dependencies, with network access. API keys and service URLs are removed from its environment, but it is not a sandbox |
+| RAG ingest, webhooks | Packs, wiki text and status reports, to the URLs you configure. Pack ingest is on unless `AI_AUDIT_PACK_RAG_INGEST=0` |
+
+With Ollama on localhost, scan review sends no code off the machine.
+
+## Cost control
+
+- **Ledger.** Each Anthropic call on these paths is recorded with its token counts and priced from a table in
+  `auditor/spend_ledger.py`. A model missing from the table is charged at the dearest known rate. `ai-audit budget` shows it.
+- **Lanes and caps.** Spend is split into lanes, each with a monthly cap set by `AI_AUDIT_BUDGET_<LANE>_USD`, under an
+  overall `AI_AUDIT_BUDGET_TOTAL_USD`. The defaults are $190 in all: `audit` 15, `audit_batch` 100, `conductor` 80,
+  `wiki` 30, `classes` 5 (the lane caps add up to more than the total, which wins). Other lanes have only the total.
+- **Caching.** A unit is reviewed again only when its code, the prompt, the model or the effort changes, or its entry
+  expires. Batches run at half price, and Anthropic prompt caching covers the shared context.
+- **Pricing first.** `ai-audit repo-run --batch --estimate` and `ai-audit wiki build --dry-run` price a run without calling
+  a model.
+
+When a cap is reached: a synchronous scan falls back to simple pattern rules and records those files as unreviewed; a batch
+submits only what fits; a conductor task fails and says why; a wiki build stops. Nothing closes as a result.
+
+Caps apply to Anthropic calls only. OpenAI and xAI calls are not capped here. A cap is checked before each call, so calls
+already running can take a lane slightly over it. Set a limit in the provider's console too.
+
+## How it checks itself
+
+Every gate has a threshold and a minimum sample. Below the minimum it reports `insufficient`, never a pass. The exit
+criteria are every gate passing in two consecutive weeks and headline metrics not getting worse over four weekly snapshots.
+
+One deployment, evaluated 2026-11-23 18:32 UTC. Source: `ai-audit eval trust` (`reports/trust_eval.json`, which is not
+published). 12 gates passed and one lacked data.
+
+| Gate | Value | Needs | Sample (minimum) | Result |
+|---|---|---|---|---|
+| Resolved with no tests run, last 14 days | 2.5% | ≤ 5% | 2,394 (20) | pass |
+| Resolved on a waiver, last 14 days | 9.4% | ≤ 20% | 2,394 (20) | pass |
+| Seeded bugs the evidence check proved | 100% | 100% | 6 (5) | pass |
+| Cosmetic non-fixes wrongly accepted | 0% | 0% | 6 (5) | pass |
+| Resolved issues that came back | 2.6% | ≤ 5% | 2,789 (50) | pass |
+| Agent PRs reverted within 14 days | no data | ≤ 2% | 0 (20) | insufficient |
+| Findings the next scan of unchanged code repeats | 89.4% | ≥ 85% | 7,981 (500) | pass |
+| Obsolete packs that were reported again | 5.8% | ≤ 10% | 691 (20) | pass |
+| Finding classifier precision, held-out labels | 95.3% | ≥ 95% | 86 (30) | pass |
+| Finding classifier coverage, held-out labels | 86.0% | ≥ 80% | 100 (50) | pass |
+| Lint rules correct on their fixtures | 100% | 100% | 11 (5) | pass |
+| Architecture rules that fire on a seeded violation | 100% | 100% | 2 (1) | pass |
+| Seeded instances a class guard catches | 100% | 100% | 15 (8) | pass |
+
+The exit criteria were **not** met: neither of the last two weeks was fully green, and there were 2 of 4 weekly snapshots.
+
+What each kind of check does not prove:
+
+- **Trust metrics** show what happened after a resolution. An issue nobody reports again can still be there.
+- **Minimum samples** stop a pass on too little data. They are not confidence intervals; 6 of 6 is weak evidence.
+- **Held-out labels** are kept out of the classifier's prompt. Models being graded helped relabel them, so the scores
+  measure agreement, not ground truth.
+- **Seeded defects** are one-operator bugs that an existing test already catches. They test that the evidence check works,
+  not that it handles subtle or untested bugs.
+- **Evidence** shows that a test changed from failing to passing. It doesn't show that the test covers the whole issue.
+
+How far the conductor may go rests on the same metrics. Every repo and finding class starts at draft PRs. It can be promoted
+to ready-for-review PRs after 20 clean, evidenced PRs and 30 days, and a breach demotes it. Nothing merges automatically,
+and changes to auth, secrets, migrations or data deletion stay draft PRs.
+
+## Commands
+
+Generated from `cli.py`; a test fails when they differ. `ai-audit <command> --help` lists the options.
+
+<!-- cli:start (generated by scripts/update_readme_cli.py) -->
+| Command | What it does |
+|---|---|
+| `ai-audit repo-run` | Run nightly repo audit pipeline |
+| `ai-audit budget` | Show this budget month's Claude API spend by lane and model |
+| `ai-audit ecosystem-run` | Run ecosystem audit pipeline |
+| `ai-audit rest-run` | Night conductor rest session (scanners → Opus workers → draft PRs → status report) |
+| `ai-audit ask` | Ask ecosystem copilot a question |
+| `ai-audit search` | Semantic search over the audit RAG collection (wiki sections, packs) via rag-chat |
+| `ai-audit qa-benchmark` | Run benchmark dataset for precision/recall |
+| `ai-audit approve-extraction` | Approve an extraction candidate: writes its pack (same as the Approve button) |
+| `ai-audit repair` | Run agentic repair loop via rag-chat repair API |
+| `ai-audit diff-audit` | Audit only files touched by a diff |
+| `ai-audit packs` | List/search agent packs (world model + specialist coding packs) |
+| `ai-audit merge-refresh` | Lightweight merge-to-dev refresh: sync mirror → diff packs → RAG (debounced via API, or --now) |
+| `ai-audit merge-poll` | Poll GitHub API for dev tip changes across mirrors; enqueue merge-refresh for moved SHAs |
+| `ai-audit pr-intel` | Blocked-PR intel across mirrors: blockers, resolution path, spoken brief (read-only) |
+| `ai-audit pack-savings` | Estimated token savings from agent packs vs crawling, per repo (tracked over time) |
+| `ai-audit autonomy` | Trust-gated autonomy (#61): each (repo, finding class) level and why; --refresh moves them a step |
+| `ai-audit revalidate` | Re-check merged fixes resolved on a waiver or left unverified; records stronger evidence, never demotes |
+| `ai-audit test-env` | Can validate_patch run each project's tests? Collects tests in the validator's own envs, per repo (no tests run); reports missing test deps |
+| `ai-audit structure` | Module cycles and private imports inside each repo's dev (report-only, no LLM) |
+| `ai-audit eval` | Reliability evals (#63) |
+| `ai-audit eval trust` | Gates for the trust upgrade: what passes, fails, lacks data, or isn't built |
+| `ai-audit eval classes` | Score finding classifiers on the private gold set (#53) |
+| `ai-audit pr-summary` | Commit trailers and the PR-body table for packs a change fixes (#73) |
+| `ai-audit trust` | Trust metrics: false-resolve, reopen, recurrence, scan persistence, agent PR reverts (#52) |
+| `ai-audit wiki` | Generated per-repo wiki (DeepWiki-style): build or show status |
+| `ai-audit wiki build` | Build wiki pages (notes → drafts → check-and-fix) via the Batch API |
+| `ai-audit wiki export` | Gated public bundle for dragonhound.dev (public argus repos only; no API spend) |
+| `ai-audit wiki publish` | Commit the exported bundle to the private docs repo (bot identity) |
+| `ai-audit wiki refresh` | Rebuild stale pages (weekly at most per repo), then export + publish |
+| `ai-audit wiki ingest` | Send wiki sections to the audit RAG collection (rag-ingest) |
+| `ai-audit wiki status` | Show built repos, their source SHAs and the wiki lane budget |
+<!-- cli:end -->
+
+## Limitations
+
+- It is built around one deployment. Repo lists, service roles and scan context describe the author's repos until you
+  replace them, and some features need companion services that aren't in this repo.
+- Model review misses bugs and reports false ones, and repeated scans don't agree exactly.
+- Patch validation covers Python and TypeScript/JavaScript. Where a project's tests can't run, Python falls back to lint and
+  TypeScript is skipped; neither resolves a bug pack.
+- Validation executes the patch. Run it only on code you would run yourself, or isolate the host.
+- The structure scan is Python only, and the wiki builder reads only Python, JavaScript and TypeScript.
+- Read-only API pages have no authentication. Don't expose the port.
+- The metrics above come from one set of repos, with one person judging. Nobody has reproduced them.
+
+## Development
 
 ```bash
-ai-audit ask "If we rotate JWT signing keys and move to short-lived access tokens this sprint, which services, middleware contracts, and test suites will break first, and what is the safest migration order?" --deep --iterations 4 --context-profile deep --enable-subagents --agent-brief
+pip install -e ".[dev]"
+python -m pytest tests/ -q
+python scripts/update_readme_cli.py    # after changing cli.py
 ```
 
-Representative output:
+[CLAUDE.md](CLAUDE.md) lists the invariants and the test behind each. PRs go to `dev`.
 
-```text
-High-risk impact map:
-1) api-gateway auth middleware (token verification assumptions)
-2) identity-service session refresh flow (expiry/rotation contract mismatch)
-3) billing-service service-to-service token cache (stale key risk)
-4) integration and e2e suites asserting legacy token lifetime behavior
-Recommended migration order:
-1) dual-sign/dual-verify key rollout
-2) middleware contract update
-3) downstream service token refresh alignment
-4) test suite policy updates + audit rerun
-External Agent Brief:
-- objective, constraints, prioritized tasks, and verification checklist included
-```
+## License
 
-### 5) Run QA benchmark
-
-```bash
-ai-audit qa-benchmark --json
-```
-
-Representative output:
-
-```text
-{
-  "dataset": "qa/fixtures/benchmark.json",
-  "questions_total": 50,
-  "correct": 43,
-  "accuracy": 0.86,
-  "status": "pass"
-}
-```
-
-### 6) Approve an extraction candidate
-
-Usually from the Approve button on `/ui/architecture`; the CLI does the same:
-
-```bash
-ai-audit approve-extraction --candidate-id ext-b884b05a --target-module argus_cortex.hashing
-```
-
-Approving writes the candidate's agent pack (one per approved candidate; unapproved candidates have
-none) listing the copies to replace. The nightly run re-reads those copies and resolves the pack once
-every one is gone from `dev`. `--dismiss` keeps a candidate out of the list instead.
-
-### 7) Run legacy pipeline scripts directly (optional)
-
-```bash
-python pipelines/nightly_repo_audit.py
-python pipelines/ecosystem_audit.py
-```
-
-Representative output:
-
-```text
-Pipeline completed.
-- repo artifacts refreshed in reports/
-- graph rebuilt: graph/ecosystem_graph.db
-- embedding index refreshed: index/code_embeddings.faiss
-```
-
-### 8) Prepare a brief for an external/paid agent
-
-```bash
-ai-audit ask "We need an external agent to execute JWT key rotation safely across gateway, identity, and billing. Build a high-signal execution brief with migration order, risks, and verification gates." \
-  --context-profile deep \
-  --enable-subagents \
-  --agent-brief
-```
-
-Representative output:
-
-```text
-Potential blast radius touches repos: api-gateway, identity-service, billing-service.
-Context summary:
-- Semantic hits: 5
-- Report snippets: 3
-- Note snippets: 1
-- Context curated to prioritize direct evidence and avoid low-signal verbosity.
-
-External Agent Brief
-Objective: execute JWT key rotation safely across core services
-Primary repos in scope: api-gateway, identity-service, billing-service
-Constraints:
-- minimal high-signal context only
-- cite evidence for every critical claim
-Deliverables expected:
-- top risks with severity and blast radius
-- phased migration order and rollback points
-- PR checklist and verification plan
-```
-
-## Repo mirrors
-
-Scan set: all `smk762/argus-*` plus `agent-composer` and `voluptas` on branch **`dev`**. See [`ecosystem/ecosystem.md`](ecosystem/ecosystem.md) and [`config/repo_mirrors.yaml`](config/repo_mirrors.yaml).
-
-`ai-audit rest-run` syncs mirrors automatically before scanning. Manual: `bash scripts/sync_repo_mirrors.sh`. SSHFS is deprecated.
-
-## Docker
-
-**Yes — the `auditor` service is a batch job**. In production you usually:
-
-- Keep **`audit-api`** running (daemon) on Dragon `:8765` for mithrandir polls.
-- Run **`ai-audit rest-run`** on the rest-window timer ([`contrib/systemd/user/ai-audit-rest.timer`](contrib/systemd/user/ai-audit-rest.timer)).
-
-### Typical commands
-
-```bash
-cp .env.example .env
-
-# API only (good default for “always on”)
-docker compose up -d --build audit-api
-
-# Night conductor rest session (mirrors → scanners → workers → LATEST + webhook)
-ai-audit rest-run --force
-
-# Legacy one-off ecosystem governance pass
-docker compose run --rm --no-deps auditor
-```
-
-`audit-api` listens on port **8765**. Mithrandir: `GET /reports/mithrandir/LATEST.json`.
-
-At wrap-up the rest session POSTs the status envelope to mithrandir (`AI_AUDIT_MITHRANDIR_WEBHOOK_URL`) and to any
-extra targets in `AI_AUDIT_STATUS_WEBHOOKS`, a JSON list of `{"name", "url", "token_env"}` (an argus-scout webhook
-source, say). `token_env` names the variable holding that target's bearer token; a target whose variable is empty is
-skipped rather than sent without it. See `.env.example`.
-
-### Ecosystem repo paths in Docker
-
-`config/ecosystem.yaml` uses **absolute host paths** under `/home/smk` and `/home/smk/mirrors`. Bind-mount those prefixes in compose so the container sees the same trees.
-
-**Redis / DB from the container:** `REDIS_URL` / `DATABASE_URL` must point at an address the **container** can open (Jarrah stateful node `<STATEFUL_HOST>`, not `127.0.0.1` unless host networking).
-
-[Compose profiles](https://docs.docker.com/compose/how-tos/profiles/) are reserved for optional stacks (e.g. a future **`tests`** service); core services are not hidden behind profiles by default.
-
-## Generated Artifacts
-
-- `reports/nightly_repo_report.md`
-- `reports/security_report.md`
-- `reports/ecosystem_report.md`
-- `reports/architecture_violations.md`
-- `reports/pattern_proposals.md`
-- `reports/extraction_candidates.yaml`
-- `reports/extraction_candidates.md`
-- `graph/ecosystem_graph.db`
-- `index/code_embeddings.faiss`
-
-## Example Reports
-
-Preview realistic report formats before running your own:
-
-- [Nightly Repo Report Example](reports/examples/nightly_repo_report.example.md)
-- [Security Report Example](reports/examples/security_report.example.md)
-- [Ecosystem Report Example](reports/examples/ecosystem_report.example.md)
-- [Extraction Candidates Example](reports/examples/extraction_candidates.example.md)
+[MIT](LICENSE). Copyright (c) 2026 Dragonhound Labs.
