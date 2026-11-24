@@ -51,7 +51,8 @@ def guard_seeded(per_guard=((True, True),), age_days=1, proof="proven") -> dict:
 def test_all_built_gates_pass_on_good_numbers() -> None:
     g = by_id(build_gates(trust(), seeded(), None, {"n": 12, "held": 12, "rate": 1.0}, {"n": 6, "ok": 6, "rate": 1.0},
                           {"n": 2, "fired": 2, "rate": 1.0, "rules": []}, guard_seeded()))
-    live = {k: v.status for k, v in g.items() if v.status != "pending" and not k.startswith("classes.")}
+    live = {k: v.status for k, v in g.items() if v.status != "pending" and not k.startswith("classes.")
+            and k not in ("guards.dodge_recall", "guards.fix_silence")}  # no variants in this eval (#155)
     assert set(live.values()) == {"pass"}, live
     assert g["evidence.lint_only"].value == pytest.approx(1 / 24)
     assert not [k for k, v in g.items() if v.status == "pending"]  # every gate is built
@@ -104,7 +105,7 @@ def test_evaluate_marks_informational_gates_and_keeps_them_out_of_the_counts(tmp
     r = trust_eval.evaluate(tmp_path, record=False)
     g = {x["id"]: x for x in r["gates"]}["class_packs.lifecycle"]
     assert g["informational"] is True and "seeded recall" in g["note"] and g["status"] == "insufficient"
-    assert r["summary"]["informational"] == 1
+    assert r["summary"]["informational"] == len(trust_eval.INFORMATIONAL) == 3
     assert r["summary"]["insufficient"] == sum(1 for x in r["gates"]
                                                if x["status"] == "insufficient" and not x["informational"])
 

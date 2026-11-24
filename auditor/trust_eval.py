@@ -43,6 +43,9 @@ INFORMATIONAL: dict[str, str] = {
     # mostly weakly. 10 closures isn't reachable soon. Guards are judged by
     # guards.seeded_recall instead (#63): every planted instance of a guarded class caught.
     "class_packs.lifecycle": "informational: guards are judged by seeded recall (#63)",
+    # Variants of the seeds (#155): new, with few of them, so measured before they decide anything.
+    "guards.dodge_recall": "informational until measured (#155)",
+    "guards.fix_silence": "informational until measured (#155)",
 }
 
 
@@ -169,7 +172,7 @@ def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
                  .judge(ac.get("rate"), int(ac.get("n") or 0), note))
 
     # ── #63 seeded recall of proven class guards ──
-    from auditor.guard_seeded import recall_metric
+    from auditor.guard_seeded import recall_metric, variant_metric
 
     gs = guard_seeded or {}
     gs_fresh = bool(gs) and _age(gs.get("at")) <= SEEDED_MAX_AGE
@@ -180,6 +183,13 @@ def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
                       "Seeded instances of a guarded class that its proven guard's rule or proof test catches",
                       ">=", 1.0, max(2, 2 * rm["guards"]))
                  .judge(rm["rate"], rm["n"], gs_note))
+    # ── #155 variants of those seeds (informational) ──
+    for gid, kind, desc in (
+            ("guards.dodge_recall", "dodges", "Rewritten instances of a guarded class that its guard still catches"),
+            ("guards.fix_silence", "fixes", "Real fixes of a guarded class that its guard stays silent on")):
+        vm = variant_metric(gs if gs_fresh else None, kind)
+        gates.append(Gate(gid, "class packs", 155, desc, ">=", 1.0, 5)
+                     .judge(vm["rate"], vm["n"], vm["note"] if gs_fresh else gs_note))
     return gates
 
 

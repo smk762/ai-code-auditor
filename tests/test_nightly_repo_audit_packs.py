@@ -20,6 +20,7 @@ def test_batch_mode_restores_cache_only_after_the_repo_pass(tmp_path: Path, monk
     import auditor.pack_classes
     import auditor.pack_gc
     import auditor.revalidate
+    import auditor.structure
     import auditor.test_env_readiness
     import auditor.trust_eval
     import auditor.trust_metrics
@@ -69,6 +70,7 @@ def test_batch_mode_restores_cache_only_after_the_repo_pass(tmp_path: Path, monk
     monkeypatch.setattr(auditor.trust_metrics, "refresh_quietly", noop)
     monkeypatch.setattr(auditor.pack_classes, "run_quietly", classify)
     monkeypatch.setattr(auditor.class_packs, "run_quietly", noop)
+    monkeypatch.setattr(auditor.structure, "run_quietly", noop)
     monkeypatch.setattr(auditor.test_env_readiness, "run_quietly", noop)
     monkeypatch.setattr(auditor.revalidate, "run_quietly", noop)
     monkeypatch.setattr(auditor.trust_eval, "evaluate_quietly", noop)
