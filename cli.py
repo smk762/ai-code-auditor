@@ -53,11 +53,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     rest = sub.add_parser(
         "rest-run",
-        help="Night conductor rest session (scanners → Opus workers → draft PRs → mithrandir LATEST)",
+        help="Night conductor rest session (scanners → Opus workers → draft PRs → status report)",
     )
     rest.add_argument("--dry-run", action="store_true", help="Stub workers; still publish LATEST")
     rest.add_argument("--force", action="store_true", help="Run outside the rest window")
-    rest.add_argument("--no-webhook", action="store_true", help="Skip Jarrah companion webhook")
+    rest.add_argument("--no-webhook", action="store_true", help="Skip the companion status webhook")
     rest.add_argument("--no-rag", action="store_true", help="Skip slim RAG ingest")
     rest.add_argument("--no-draft-prs", action="store_true")
     rest.add_argument("--no-pr-review", action="store_true")

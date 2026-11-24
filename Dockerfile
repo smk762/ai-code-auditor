@@ -21,7 +21,7 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 
 WORKDIR /app
 
-COPY pyproject.toml README.md /app/
+COPY pyproject.toml README.md LICENSE /app/
 COPY auditor /app/auditor
 COPY conductor /app/conductor
 COPY ecosystem /app/ecosystem

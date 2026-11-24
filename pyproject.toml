@@ -3,6 +3,8 @@ name = "ai-code-auditor"
 version = "0.1.0"
 description = "Local-first multi-repo AI code auditor with governance and copilot."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
   "packaging>=23",  # requires-python matching for per-project test interpreters (#141)
@@ -46,7 +48,7 @@ dev = [
 ai-audit = "cli:main"
 
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=77.0"]  # SPDX license string
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
