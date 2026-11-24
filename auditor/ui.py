@@ -101,12 +101,13 @@ def _slug(text: str) -> str:
     return re.sub(r"[\s_]+", "-", s) or "section"
 
 
-def render_markdown(text: str) -> str:
+def render_markdown(text: str, *, id_prefix: str = "") -> str:
     """Render markdown to HTML that is safe to embed and CSP-neutral.
 
     Raw HTML in the source is escaped, unsafe link schemes are refused (markdown-it's
     ``validateLink``), table alignment becomes ``align-*`` classes instead of inline
-    ``style`` attributes, and headings get stable, de-duplicated ``id`` anchors.
+    ``style`` attributes, and headings get stable, de-duplicated ``id`` anchors, under *id_prefix* on a page
+    whose own ids a heading could match.
     """
     tokens: list[Token] = _md.parse(text or "")
     used: set[str] = set()  # ids emitted so far, so "Foo", "Foo", "Foo 1" can't collide
@@ -119,7 +120,7 @@ def render_markdown(text: str) -> str:
                 if m:
                     tok.attrSet("class", f"align-{m.group(1)}")
         elif tok.type == "heading_open" and i + 1 < len(tokens):
-            base = cand = _slug(tokens[i + 1].content)
+            base = cand = id_prefix + _slug(tokens[i + 1].content)
             n = 0
             while cand in used:
                 n += 1

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -100,6 +101,17 @@ def test_pack_page_renders_brief_and_embeds_safe_json(packs: Path) -> None:
     meta = json.loads(data)
     assert meta["status"] == "wontfix" and meta["history"][-1]["note"].startswith("</script>")
     assert ui_repos.render_pack_page(packs, "pack-nope") is None
+
+
+def test_pack_page_ids_are_unique_when_a_brief_heading_matches_a_page_id(tmp_path: Path) -> None:
+    p = _pack("pack-ids")
+    p.location["evidence"] = "x = 1"  # gives the brief an "Evidence" heading
+    p.narrative["description"] = "text\n\n## Status\n\n## History\n\n## Note"
+    write_pack(p, tmp_path)
+    page = ui_repos.render_pack_page(tmp_path, "pack-ids")
+    ids = re.findall(r'\sid="([^"]+)"', page)
+    assert "brief-evidence" in ids and "evidence" in ids
+    assert len(ids) == len(set(ids))
 
 
 # ── violations ───────────────────────────────────────────────────────────────

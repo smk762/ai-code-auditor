@@ -274,6 +274,7 @@ select, input[type="search"], input[type="text"], input[type="password"], textar
 :where(.page-pack) .status-form textarea { width: 100%; min-height: 60px; resize: vertical; }
 :where(.page-pack) .status-form .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 :where(.page-pack) .card.stacked { margin-top: 12px; }
+:where(.page-pack) #evidence li { overflow-wrap: anywhere; }
 /* ── pack_savings.html (body.page-pack-savings) ── */
 :where(.page-pack-savings) .chart-box { position: relative; height: 260px; }
 :where(.page-pack-savings) .legend i.dash { background: none !important; height: 0; border-top: 2px dashed; width: 14px; border-radius: 0; }
