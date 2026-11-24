@@ -30,6 +30,7 @@ def ui(repo: str = "agent-composer", path: str = "rag-ingest/app/main.py", line:
 def emit(out: Path, violations: list[RuleViolation], run: str, scanned: set[str] | None = None,
          **kw) -> dict:
     emit_packs_from_violations(violations, output_dir=out, run_id=run)
+    kw.setdefault("unread", {})
     repos = scanned if scanned is not None else {"argus-assay", "agent-composer", "argus-survey"}
     return pack_gc.close_unreported_architecture(out, architecture_findings(violations), repos, **kw)
 
@@ -123,3 +124,19 @@ def test_dry_run_changes_nothing(tmp_path: Path) -> None:
     assert rep["planned"] == 1 and rep["closed"] == 0
     assert load_pack(tmp_path, architecture_findings([call()])[0].id)["status"] == "open"
     assert not (tmp_path / pack_gc.ARCH_REPORT_NAME).exists()
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_a_repo_with_an_unread_file_closes_nothing_as_not_reported(tmp_path: Path, force: bool) -> None:
+    emit(tmp_path, [call(), ui()], "run-1")
+    unread = {"argus-assay": ["src/new_syntax.py"]}
+    rep = emit(tmp_path, [], "run-2", unread=unread, force=force)
+    assay, composer = (architecture_findings([v])[0].id for v in (call(), ui()))
+    assert load_pack(tmp_path, assay)["status"] == "open" and rep["unknown"] == [assay] and rep["unread"] == unread
+    assert load_pack(tmp_path, composer)["status"] == "obsolete"  # a repo read whole still closes
+    assert emit(tmp_path, [], "run-3")["closed"] == 1 and load_pack(tmp_path, assay)["status"] == "obsolete"
+
+
+def test_an_unread_repo_still_closes_duplicates(tmp_path: Path) -> None:
+    emit_packs_from_findings([finding_from_violation(call())], output_dir=tmp_path, kind="architecture", run_id="old")
+    assert emit(tmp_path, [call()], "run-1", unread={"argus-assay": ["x.py"]})["by_rule"] == {"duplicate": 1}

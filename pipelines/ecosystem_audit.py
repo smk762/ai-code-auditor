@@ -39,6 +39,7 @@ from ecosystem.arch_contracts import repo_dependencies
 from ecosystem.architecture_engine import ArchitectureEngine
 from ecosystem.graph_builder import GraphBuilder
 from ecosystem.call_graph_analyzer import analyze_call_graph, violations_from_edges
+from ecosystem.unread import unread_files
 from patterns.boundary_violation_detector import detect_boundary_violations
 from patterns.extraction_candidate_builder import collect_git_metrics, detect_duplicate_clusters
 from patterns.pattern_clusterer import cluster_patterns
@@ -230,6 +231,10 @@ def run() -> None:
             logger.info("Architecture / governance and report generation …")
 
             t3 = time.monotonic()
+            unread = unread_files(repo_files, repo_roots)
+            if unread:
+                meta.extra["unread_files"] = unread
+                logger.warning("files no architecture check could read: %s", unread)
             dependencies = repo_dependencies(repo_files, repo_roots, [r.name for r in cfg.repos])
             engine = ArchitectureEngine(graph=graph, rules=rules, dependencies=dependencies)
             violations = engine.evaluate()
@@ -286,10 +291,11 @@ def run() -> None:
                         cfg.output_dir,
                         architecture_findings(violations),
                         {name for name, files in repo_files.items() if files},
+                        unread=unread,
                         public_base_url=base,
                     )
                     logger.info("architecture pack gc: %s",
-                                {k: arch_gc[k] for k in ("planned", "closed", "by_rule", "held")})
+                                {k: arch_gc[k] for k in ("planned", "closed", "by_rule", "held", "unknown")})
                 from auditor.extraction import sync_packs
 
                 ext = sync_packs(cfg.output_dir, repo_paths, public_base_url=base, run_id=meta.run_id)
