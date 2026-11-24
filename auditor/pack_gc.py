@@ -414,7 +414,7 @@ ARCH_REPORT_NAME = "pack_gc_architecture.json"
 
 
 def plan_architecture(entries: list[dict[str, Any]], reported: list[Any], scanned_repos: set[str], *,
-                      force: bool = False) -> dict[str, Any]:
+                      unread_repos: set[str], force: bool = False) -> dict[str, Any]:
     """Which open architecture packs an ecosystem run no longer reports. Changes nothing.
 
     ``reported`` holds the run's architecture findings (``agent_pack.architecture_findings``),
@@ -423,7 +423,8 @@ def plan_architecture(entries: list[dict[str, Any]], reported: list[Any], scanne
     ``wontfix`` with ``duplicate_of``, the same as finding-pack dedupe), or no longer reported
     (``obsolete``; a later report reopens it). Only ``open`` packs that aren't duplicates are
     considered. Closing more than half of them, and more than ``HOLD_MIN``, as obsolete is held
-    unless ``force``: an empty or partial run looks the same as a fixed codebase.
+    unless ``force``: an empty or partial run looks the same as a fixed codebase. In *unread_repos*
+    (``ecosystem.unread``) silence proves nothing, so nothing is closed as no longer reported, even with ``force``.
     """
     from auditor.agent_pack import _LINE_SUFFIX
 
@@ -433,6 +434,7 @@ def plan_architecture(entries: list[dict[str, Any]], reported: list[Any], scanne
                   and (e.get("status") or "open") == "open" and not e.get("duplicate_of")
                   and str(e.get("repo") or "") in scanned_repos]
     closures: list[Closure] = []
+    unknown: list[str] = []
     for e in candidates:
         if e["id"] in reported_ids:
             continue
@@ -441,6 +443,8 @@ def plan_architecture(entries: list[dict[str, Any]], reported: list[Any], scanne
         if keeper:
             closures.append(Closure(e["id"], repo, str(e.get("file_path") or ""), title, "architecture",
                                     "duplicate", keeper))
+        elif repo in unread_repos:
+            unknown.append(e["id"])
         else:
             closures.append(Closure(e["id"], repo, str(e.get("file_path") or ""), title, "architecture",
                                     "not_reported", "the latest ecosystem run no longer reports this violation"))
@@ -450,11 +454,11 @@ def plan_architecture(entries: list[dict[str, Any]], reported: list[Any], scanne
         held = (f"would close {len(gone)} of {len(candidates)} open architecture packs as no longer "
                 f"reported (> {HOLD_SHARE:.0%}); rerun with force")
         closures = [c for c in closures if c.rule != "not_reported"]
-    return {"closures": closures, "held": held, "open_considered": len(candidates)}
+    return {"closures": closures, "held": held, "open_considered": len(candidates), "unknown": unknown}
 
 
 def close_unreported_architecture(output_dir: str | Path, reported: list[Any], scanned_repos: set[str], *,
-                                  force: bool = False, dry_run: bool = False,
+                                  unread: dict[str, list[str]], force: bool = False, dry_run: bool = False,
                                   public_base_url: str = "") -> dict[str, Any]:
     """Plan and (unless *dry_run*) apply ``plan_architecture``; writes ``pack_gc_architecture.json``.
     Each pack is re-checked under the pack lock, so one claimed since planning is left alone."""
@@ -469,7 +473,7 @@ def close_unreported_architecture(output_dir: str | Path, reported: list[Any], s
     )
 
     out = Path(output_dir)
-    p = plan_architecture(_index_entries(out), reported, scanned_repos, force=force)
+    p = plan_architecture(_index_entries(out), reported, scanned_repos, unread_repos=set(unread), force=force)
     closed: list[AgentCodingPack] = []
     if not dry_run and p["closures"]:
         now = datetime.now(UTC).isoformat()
@@ -498,7 +502,8 @@ def close_unreported_architecture(output_dir: str | Path, reported: list[Any], s
     report = {"at": datetime.now(UTC).isoformat(), "dry_run": dry_run, "force": force,
               "reported": len(reported), "open_considered": p["open_considered"],
               "planned": len(p["closures"]), "closed": len(closed), "by_rule": dict(by_rule),
-              "held": p["held"], "closures": [asdict(c) for c in p["closures"]]}
+              "held": p["held"], "unknown": p["unknown"], "unread": unread,
+              "closures": [asdict(c) for c in p["closures"]]}
     if not dry_run:
         atomic_write_text(out / ARCH_REPORT_NAME, json.dumps(report, indent=1))
     return report
