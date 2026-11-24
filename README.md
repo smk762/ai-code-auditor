@@ -6,8 +6,8 @@ includes a test that fails before it and passes after it, or a written waiver.
 
 ![Packs board: nine open packs, one unverified, one resolved](docs/img/packs.png)
 
-The board after scanning three invented repos with no model, with the module cycle approved by hand. The pages below are real output from that scan
-([script](scripts/build_example_reports.py)):
+The board after scanning three invented repos with no model, with the module cycle approved by hand. The pages below are
+real output from that scan ([script](scripts/build_example_reports.py)):
 
 | Report | What it shows |
 |---|---|
@@ -18,7 +18,11 @@ The board after scanning three invented repos with no model, with the module cyc
 | [Extraction candidates](reports/examples/extraction_candidates.example.md) | One function duplicated in two repos |
 
 **Status:** runs nightly on one person's repos. The checked-in configuration is for that deployment, there is no packaged
-release, and [its own exit criteria](#how-it-checks-itself) are not met: agent PR reverts, for one, have no data yet.
+release.
+
+**Current results** (one deployment, 2026-11-23, `ai-audit eval trust`): 12 of 13 gates pass and one has no data (agent PRs
+reverted, 0 of the 20 needed). 2.6% of 2,789 resolved issues came back; 2.5% of 2,394 resolutions in 14 days ran no tests
+and 9.4% were waived. The exit criteria are not met. [Every gate, and what they don't prove](#how-it-checks-itself).
 
 ## From finding to resolved pack
 
@@ -60,6 +64,7 @@ functions. This is work in progress ([#154](https://github.com/smk762/ai-code-au
 | Scan for cycles and private imports (`ai-audit structure`) | Working, Python only, no model calls |
 | Evidence check: the cycle is gone, none was added or moved, and the tests ran | Working; piloted on one cycle in this repo |
 | Approve or dismiss a cycle in the web UI; an approval must say what to move and creates one pack | Working, just added; too few packs to measure |
+| Agent-proposed notes: an agent can suggest what to move, and a fresh, high-confidence suggestion fills in the approval note | Working, just added; a person still approves, and nothing generates proposals on a schedule |
 | Suggested cuts | A hint only: in a hand-check all 13 cycles were real, but the suggested cut was in the right place for only 7 (public repos, 2026-11-24, [results](https://github.com/smk762/ai-code-auditor/issues/154)) |
 | Packs for private imports | Not built: they can be judged, but nothing creates them |
 | A CI rule that stops new cycles in other repos | Not built; this repo has its own test |
@@ -104,14 +109,17 @@ YAML
 
 export AI_AUDIT_LLM_CACHE_ONLY=1     # never call a model
 export AI_AUDIT_PACK_RAG_INGEST=0    # don't send packs to a search service
+export AI_AUDIT_TEST_ENV_CHECK=0     # skip checks for patch validation, which needs the API
+export AI_AUDIT_LOG_LEVEL=ERROR
 ai-audit repo-run
 ai-audit packs
 ai-audit packs --repo sample --bundle
 ```
 
 `ai-audit packs` lists two packs, one for `shell=True` (HIGH) and one for the `subprocess` import (LOW). `--bundle` prints
-the briefs an agent would get. Reports are in `reports/`. Warnings about `JWT_SECRET`, Redis, `GITHUB_TOKEN` and the base
-URL are expected. The final `trust eval` line shows every gate short of data, which is right for a first run.
+the briefs an agent would get. Reports are in `reports/`. Two notices are
+expected, about `JWT_SECRET` and `AI_AUDIT_PUBLIC_BASE_URL`: both are only for running the API. `ai-audit eval trust` will
+show every gate short of data, which is right for a first run.
 
 Use a fresh shell, or check that no `.env` sits in the clone: it is read automatically. To scan your own repo, change
 `path` to its absolute path.
