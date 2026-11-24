@@ -149,6 +149,15 @@ def make_patch(ws: Path, repo: str, edits: dict[str, tuple[str, str]]) -> str:
         return git(tree, "diff", "--cached")
 
 
+def brief(repo: str, where: str) -> str:
+    """The brief an agent gets for one pack, before any patch."""
+    from auditor.agent_pack import AgentCodingPack, list_packs, load_pack
+
+    pack = next(p for p in list_packs("reports", repo=repo, layer="specialist")
+                if where in p["file_path"] and p["severity"] == "HIGH")
+    return AgentCodingPack.from_dict(load_pack("reports", pack["id"])).to_brief_md()
+
+
 def validate(ws: Path) -> str:
     """Send each patch to the API; a markdown table of what it answered."""
     from fastapi.testclient import TestClient
@@ -203,6 +212,7 @@ def run(ws: Path) -> None:
         old.unlink()
     for name in ("nightly_repo_report", "security_report", "architecture_violations", "extraction_candidates"):
         publish(ws, (reports / f"{name}.md").read_text(encoding="utf-8"), f"{name}.example.md")
+    publish(ws, brief("orders-api", "health.py"), "agent_brief.example.md")
     publish(ws, validate(ws), "patch_validation.example.md")
 
 
