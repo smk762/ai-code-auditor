@@ -411,6 +411,14 @@ def _loop(graph: dict[str, set[str]]) -> list[tuple[str, str]]:
     return best
 
 
+def breaks_every_circle(edges: set[tuple[str, str]]) -> bool:
+    """No circle is left among these ``(importer, imported)`` pairs."""
+    graph: dict[str, set[str]] = defaultdict(set)
+    for a, b in edges:
+        graph[a].add(b)
+    return not _loop(graph)
+
+
 def _cuts(inside: dict[tuple[str, str], dict[str, Any]]) -> tuple[list[tuple[str, str]], bool]:
     """The fewest edges whose removal leaves no circle, then the fewest names to move, then the most
     lazy ones. The flag is False when the search was cut short (``_MAX_CUT_STEPS``) and the set may

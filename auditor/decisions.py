@@ -29,24 +29,24 @@ def locked(path: Path):
             fcntl.flock(fh, fcntl.LOCK_UN)
 
 
-def load_decisions(path: str | Path) -> dict[str, dict[str, Any]]:
-    """``{id: decision}``; a missing file is none. A malformed one raises ValueError."""
+def load_decisions(path: str | Path, key: str = "decisions") -> dict[str, dict[str, Any]]:
+    """``{id: entry}`` under *key*; a missing file is none. A malformed one raises ValueError."""
     p = Path(path)
     try:
         text = p.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
     data = json.loads(text) if text.strip() else {}
-    found = data.get("decisions") if isinstance(data, dict) else None
+    found = data.get(key) if isinstance(data, dict) else None
     if found is None:
         return {}
     if not isinstance(found, dict):
-        raise ValueError(f"{p}: 'decisions' must be an object keyed by id")  # noqa: TRY004 — bad data, not a bad call
+        raise ValueError(f"{p}: {key!r} must be an object keyed by id")  # noqa: TRY004 — bad data, not a bad call
     return {str(k): v for k, v in found.items() if isinstance(v, dict)}
 
 
-def save_decisions(path: Path, decisions: dict[str, dict[str, Any]]) -> None:
-    atomic_write_text(path, json.dumps({"decisions": decisions}, indent=2, sort_keys=True) + "\n")
+def save_decisions(path: Path, decisions: dict[str, dict[str, Any]], key: str = "decisions") -> None:
+    atomic_write_text(path, json.dumps({key: decisions}, indent=2, sort_keys=True) + "\n")
 
 
 def close_idle(output_dir: str | Path, pid: str, status: str, note: str) -> str | None:

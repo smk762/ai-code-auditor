@@ -33,6 +33,7 @@ POST /audit/extraction/{id}/decision  Approve or dismiss an extraction candidate
 DELETE /audit/extraction/{id}/decision  Withdraw that decision (auth)
 POST /audit/cycles/{id}/decision      Approve (with a note on what to move) or dismiss a module cycle (auth)
 DELETE /audit/cycles/{id}/decision    Withdraw that decision (auth)
+POST /audit/cycles/{id}/proposal      Store an agent's proposed fix for a cycle; decides nothing (auth)
 GET  /audit/runs.json                 All pipelines' runs + facets (pipeline, status filters)
 GET  /audit/runs/{run_id}/summary.json  Run summary with findings delta vs the previous run
 GET  /audit/findings.json             Filtered findings + severity × repo matrix for a run
@@ -1119,6 +1120,32 @@ def delete_cycle_decision(cycle_id: str) -> JSONResponse:
 
     return _decision_call(lambda: withdraw(_output_dir(), cycle_id, public_base_url=public_base_url()),
                           cycle_id, "cycle", decisions_path())
+
+
+class _Edge(BaseModel):
+    importer: str = Field(alias="from")
+    to: str
+
+
+class _CycleProposal(BaseModel):
+    edges_key: str  # from /audit/architecture.json: the imports this was written for
+    verdict: str  # fix | leave
+    confidence: str  # high | medium | low
+    note: str
+    author: str  # the model that wrote it
+    why: str = ""
+    remove: list[_Edge] = []
+    add: list[_Edge] = []
+
+
+@app.post("/audit/cycles/{cycle_id}/proposal", dependencies=[Depends(_require_mutating_auth)])
+def post_cycle_proposal(cycle_id: str, request: _CycleProposal) -> JSONResponse:
+    """Store an agent's proposed fix: it fills the approval note, and changes no decision or pack."""
+    from auditor.structure_packs import propose
+    from auditor.structure_proposals import proposals_path
+
+    return _decision_call(lambda: propose(_output_dir(), cycle_id, request.model_dump(by_alias=True)),
+                          cycle_id, "cycle proposal", proposals_path())
 
 
 @app.get("/ui/pack-savings", response_class=HTMLResponse)

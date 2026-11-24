@@ -186,13 +186,28 @@ async function showPrompt(c) {
 }
 
 let cview = "open", creviewing = "";
+function proposalNote(p) {
+  if (!p) return `<p class="hint">No agent has proposed a fix for this cycle. The hint isn't one.</p>`;
+  if (p.stale) return `<p class="hint">An agent's proposal is out of date: the cycle's imports changed since it was written.</p>`;
+  const list = (es) => es.map((e) => `${esc(e.from)} → ${esc(e.to)}`).join("<br>") || "none";
+  const lead = p.verdict === "leave" ? "suggests leaving this cycle alone"
+    : p.offered ? "proposed the note below: read it against the imports, then approve or edit it"
+    : `proposed a fix with ${esc(p.confidence)} confidence, so it isn't filled in`;
+  return `<fieldset><legend>Agent proposal · ${esc(p.author)}</legend>
+      <div>${esc(p.author)} ${lead}.</div>
+      ${p.offered ? "" : `<div>${esc(p.note)}</div>`}
+      <div class="muted">${esc(p.why)}</div>
+      ${p.verdict === "fix" ? `<div class="mono muted">Removes: ${list(p.remove)}</div><div class="mono muted">Adds: ${list(p.add)}</div>` : ""}
+    </fieldset>`;
+}
 function cycleForm(c) {
   const d = c.decision || {};
   return `<tr class="x-form"><td colspan="3"><form data-id="${esc(c.id)}">
     <fieldset><legend>Imports in the cycle</legend>
       ${c.edges.map((e) => `<div class="mono muted">${esc(e.sites[0] || e.from)} → ${esc(e.to)} <span class="muted">(${esc(e.names.join(", "))})${e.lazy ? " · inside a function" : ""}</span></div>`).join("")}
     </fieldset>
-    <label class="note">What to move <textarea name="note" rows="2" minlength="${int(data.cycles.note_min)}" placeholder="Needed to approve: which names belong in which module, and which import is the real dependency">${esc(d.note || "")}</textarea></label>
+    ${proposalNote(c.proposal)}
+    <label class="note">What to move <textarea name="note" rows="4" minlength="${int(data.cycles.note_min)}" placeholder="Needed to approve: which names belong in which module, and which import is the real dependency">${esc(d.note || (c.proposal?.offered ? c.proposal.note : ""))}</textarea></label>
     <div class="row">
       ${c.reported ? `<button class="primary" name="do" value="approved">${d.status === "approved" ? "Update approval" : "Approve"}</button>` : ""}
       ${d.status === "dismissed" ? "" : `<button class="secondary" name="do" value="dismissed" formnovalidate>Dismiss</button>`}
@@ -216,7 +231,8 @@ function renderCycles() {
       : (pk ? `<a class="status ${PACK_CLASS[pk.status] || ""}" href="/ui/packs/${encodeURIComponent(pk.id)}">${esc(pk.status.replace("_", " "))}</a> ` : "") +
         `<button class="secondary" data-review="${esc(c.id)}">Edit</button> <button class="secondary" data-withdraw="${esc(c.id)}">Withdraw</button>`;
     return `<tr><td><b>${esc(c.repo)}</b> · ${UI.plural(c.members.length, "module")}<div class="muted mono">${c.members.map(esc).join("<br>")}</div>
-        <div class="muted mono">${esc(c.id)}${state}</div>${c.decision?.note ? `<div class="muted">${esc(c.decision.note)}</div>` : ""}</td>
+        <div class="muted mono">${esc(c.id)}${state}</div>${c.decision?.note ? `<div class="muted">${esc(c.decision.note)}</div>` : ""}
+        ${!c.decision && c.proposal ? `<div class="muted">${c.proposal.stale ? "Agent proposal out of date" : c.proposal.offered ? "Agent proposal ready to review" : "Agent proposal needs a closer look"}</div>` : ""}</td>
       <td class="ev mono">${c.cuts.map((e) => `${esc(e.from)} → ${esc(e.to)} (${esc(e.names.slice(0, 4).join(", "))})`).join("<br>") || "—"}</td>
       <td class="acts">${acts}</td></tr>${creviewing === c.id ? cycleForm(c) : ""}`;
   }).join("") : `<tr><td colspan="3" class="empty">${cview === "open" ? "Nothing left to decide." : `Nothing ${VIEWS[cview].toLowerCase()} yet.`}</td></tr>`;
@@ -318,7 +334,10 @@ document.getElementById("cycles").addEventListener("click", async (e) => {
 });
 document.getElementById("cycles").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const f = e.target, status = e.submitter?.value || "approved", note = f.note.value.trim();
+  const f = e.target, status = e.submitter?.value || "approved";
+  const offered = data.cycles.cycles.find((c) => c.id === f.dataset.id)?.proposal;
+  let note = f.note.value.trim();
+  if (status === "dismissed" && offered?.offered && note === offered.note) note = "";  // the proposal is not a reason to dismiss
   if (status === "approved" && note.length < data.cycles.note_min) { cflash(`<span class="err">Say what to move (${int(data.cycles.note_min)} characters or more).</span>`); return; }
   f.querySelectorAll("button").forEach((x) => { x.disabled = true; });
   try {
