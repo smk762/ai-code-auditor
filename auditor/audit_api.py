@@ -1696,7 +1696,7 @@ def _request_pack_ids(request: "_ValidatePatchRequest") -> list[str]:
 class _ValidatePatchRequest(BaseModel):
     repo: str
     patch: str
-    timeout_s: int = 120
+    timeout_s: int = 300  # per test run; the slowest scanned suites take about 100 s on an idle host
     pack_id: str | None = None  # when set and validation passes with evidence, the pack is marked resolved
     # more packs one patch fixes: the suite runs once and each pack is judged on its own evidence
     pack_ids: list[str] = Field(default_factory=list, max_length=MAX_PACKS_PER_VALIDATION)
