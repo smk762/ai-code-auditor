@@ -12,14 +12,16 @@ import subprocess
 from typing import Any
 
 
-def run(cmd: list[str], *, timeout: float | None = None, check: bool = False,
+def run(cmd: list[str], *, input: str | bytes | None = None, timeout: float | None = None, check: bool = False,
         capture_output: bool = False, **kwargs: Any) -> subprocess.CompletedProcess:
     if capture_output:
         kwargs.setdefault("stdout", subprocess.PIPE)
         kwargs.setdefault("stderr", subprocess.PIPE)
+    if input is not None:
+        kwargs["stdin"] = subprocess.PIPE
     with subprocess.Popen(cmd, start_new_session=True, **kwargs) as proc:
         try:
-            out, err = proc.communicate(timeout=timeout)
+            out, err = proc.communicate(input, timeout=timeout)
         except subprocess.TimeoutExpired:
             kill_group(proc)
             out, err = proc.communicate()

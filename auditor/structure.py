@@ -25,6 +25,9 @@ a name two modules share resolves to the one nearest the importer, and to neithe
 ``run`` reads every mirror's ``origin/dev`` through git objects (never the working tree, never a
 write) into ``reports/structure.json``. A repo that can't be read has an ``error`` and no counts, and
 a file that doesn't parse is listed in ``unparsed``: neither may be read as clean (``complete``).
+Parsing happens in a child on ``AI_AUDIT_SCAN_PYTHON`` (the image bakes in a newer one than its own,
+because a file using newer syntax than the parser's is unreadable); this module stays stdlib-only so
+that interpreter needs no packages. Unset means this interpreter; set but unusable is an ``error``.
 It opens no packs itself (``structure_packs``: a person approves). ``judge`` is the evidence check for structural packs (#58): ``validate_patch`` scans
 dev and dev plus the patch, and the pack resolves only when the violation is really gone.
 """
@@ -551,16 +554,29 @@ def _with_skipped(r: dict[str, Any], skipped: list[str]) -> dict[str, Any]:
     return {**r, "unparsed": unparsed, "complete": not unparsed}
 
 
+def scan_python() -> str:
+    return os.getenv("AI_AUDIT_SCAN_PYTHON", "").strip() or sys.executable
+
+
 def scan_tree_isolated(root: Path, *, timeout_s: int = 120) -> dict[str, Any]:
     """``scan_tree`` in a child process: it is CPU-bound, and it parses untrusted source, which can
     crash an interpreter. Any failure is an ``error``, never an empty scan."""
+    return _in_child(str(root.resolve()), None, timeout_s)
+
+
+def scan_sources_isolated(sources: dict[str, str], *, timeout_s: int = 300) -> dict[str, Any]:
+    """``scan_sources`` in the same kind of child, with the same failures."""
+    return _in_child("-", json.dumps(sources), timeout_s)
+
+
+def _in_child(arg: str, stdin: str | None, timeout_s: int) -> dict[str, Any]:
     from auditor.proc import child_env
     from auditor.proc import run as proc_run
 
     try:
-        proc = proc_run([sys.executable, "-m", "auditor.structure", str(root.resolve())],
+        proc = proc_run([scan_python(), "-m", "auditor.structure", arg],
                         cwd=Path(__file__).resolve().parents[1], env=child_env(), capture_output=True, text=True,
-                        timeout=timeout_s)
+                        timeout=timeout_s, input=stdin)
         if proc.returncode != 0:
             return {"error": f"scan exited {proc.returncode}: {(proc.stderr or '')[-200:]}", "complete": False}
         data = json.loads(proc.stdout)
@@ -620,7 +636,8 @@ def scan_mirror(path: Path | None) -> dict[str, Any]:
         sha, sources, skipped = read_dev(path)
     except (Unreadable, OSError, subprocess.SubprocessError, ValueError) as exc:
         return {"error": str(exc)[:300], "complete": False}
-    return {"dev_sha": sha, **_with_skipped(scan_sources(sources), skipped)}
+    scan = scan_sources_isolated(sources)
+    return scan if scan.get("error") else {"dev_sha": sha, **_with_skipped(scan, skipped)}
 
 
 def run(output_dir: str | Path | None = None, *, mirrors_path: str | Path = "config/repo_mirrors.yaml",
@@ -669,5 +686,8 @@ def run_quietly(output_dir: str | Path | None = None, **kw: Any) -> dict[str, An
         return {"error": str(exc)[:300]}
 
 
-if __name__ == "__main__":  # scan_tree_isolated's child
-    print(json.dumps(scan_tree(Path(sys.argv[1]))))
+if __name__ == "__main__":  # _in_child's child
+    if sys.argv[1] == "-":
+        print(json.dumps(scan_sources(json.loads(sys.stdin.read()))))
+    else:
+        print(json.dumps(scan_tree(Path(sys.argv[1]))))

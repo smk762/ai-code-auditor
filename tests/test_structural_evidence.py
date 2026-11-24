@@ -89,6 +89,7 @@ def test_unknown_is_never_gone() -> None:
 
 
 def test_a_crashed_or_timed_out_scan_is_an_error(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AI_AUDIT_SCAN_PYTHON", raising=False)
     monkeypatch.setattr(sys, "executable", "/bin/false")
     assert structure.scan_tree_isolated(tmp_path)["error"]
     monkeypatch.undo()
