@@ -399,7 +399,7 @@ def render_pack_page(output_dir: str | Path, pack_id: str) -> str | None:
     return ui.render_page("pack.html", "/ui/packs", {
         "title": _html.escape(title),
         # the page header already shows the title, so drop the brief's own "# …" heading
-        "brief": ui.render_markdown(re.sub(r"\A# [^\n]*\n", "", pack.to_brief_md())),
+        "brief": ui.render_markdown(re.sub(r"\A# [^\n]*\n", "", pack.to_brief_md()), id_prefix="brief-"),
         # JSON for the page script; every "<" is escaped so the data can't end the <script> block.
         "data": json.dumps(meta).replace("<", "\\u003c"),
     })
