@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -200,3 +201,44 @@ def test_a_search_cut_short_still_clears_the_cycle_and_says_so(monkeypatch: pyte
     edges = _edges({a + b: 1 for a in "abcde" for b in "abcde" if a != b})
     cuts, smallest = structure._cuts(edges)
     assert smallest is False and _clears(edges, cuts)
+
+
+LOOP = {"app/__init__.py": "", "app/one/__init__.py": "from app.one.detect import go\n",
+        "app/one/detect.py": "from app.two.metrics import m\n\n\ndef go():\n    return m\n",
+        "app/one/leaf.py": "x = 1\n", "app/two/__init__.py": "",
+        "app/two/metrics.py": "def m():\n    from app.one.leaf import x\n    return x\n"}
+
+
+def test_a_cycle_through_a_package_init_is_found() -> None:
+    [c] = structure.scan_sources(LOOP)["cycles"]
+    assert c["members"] == ["app/one/__init__.py", "app/one/detect.py", "app/two/metrics.py"]
+    [e] = [e for e in c["edges"] if e["implicit"]]
+    assert (e["from"], e["to"], e["names"], e["lazy"]) == (
+        "app/two/metrics.py", "app/one/__init__.py", ["via app/one/leaf.py"], True)
+
+
+def test_the_loop_an_init_hides_breaks_at_run_time_once_the_import_is_top_level(tmp_path: Path) -> None:
+    eager = {**LOOP, "app/two/metrics.py": "from app.one.leaf import x\n\n\ndef m():\n    return x\n"}
+    for path, text in eager.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(text)
+    p = subprocess.run([sys.executable, "-c", "import app.two.metrics"], cwd=tmp_path, capture_output=True, text=True,
+                       check=False)
+    assert "circular import" in p.stderr  # what the scan now reports is real
+
+
+@pytest.mark.parametrize("change", [
+    {"app/two/metrics.py": "def m():\n    if TYPE_CHECKING:\n        from app.one.leaf import x\n"},
+    {"app/one/__init__.py": ""},  # the package no longer pulls its parts in
+    {"app/one/detect.py": "def go():\n    from app.one import leaf\n    return leaf\n"},  # its own package only
+])
+def test_an_init_alone_is_no_cycle(change: dict[str, str]) -> None:
+    assert structure.scan_sources({**LOOP, **change})["cycles"] == []
+
+
+def test_a_package_that_re_exports_is_run_too() -> None:
+    src = {"app/__init__.py": "", "app/one/__init__.py": "from app.core import x\nfrom app.one.detect import go\n",
+           "app/one/detect.py": "from app.user import u\n\n\ndef go():\n    return u\n", "app/core.py": "x = 1\n",
+           "app/user.py": "def u():\n    from app.one import x\n    return x\n"}
+    [c] = structure.scan_sources(src)["cycles"]
+    assert "app/one/__init__.py" in c["members"] and "app/core.py" not in c["members"]

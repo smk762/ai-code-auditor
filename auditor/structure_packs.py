@@ -8,7 +8,10 @@ records whether it was approved as written or edited. Dismissing one keeps it ou
 Decisions live in ``rules/structure_decisions.json`` (``AI_AUDIT_STRUCTURE_DECISIONS_PATH``), outside
 git: a private repo's paths are in them. An id is a hash of the repo and the sorted members. A cycle that changed is
 matched by members: one that shares two or more with an approved cycle is that cycle, and one inside
-a dismissed cycle stays dismissed. A dismissed cycle that gained a member is a new proposal.
+a dismissed cycle stays dismissed. A dismissed cycle that gained a member is a new proposal. So is a
+cycle an approval no longer covers (``_spent``): its pack is resolved, and either a scan of ``dev`` has
+since seen the cycle gone (``gone_at``) or the cycle has members the approval doesn't. Its old note
+describes work already done, so it needs a fresh approval.
 
 ``sync_packs`` (nightly, after a scan that finished) writes a missing approved pack, reopens an
 ``obsolete`` one whose cycle is back, closes an ``open`` one whose cycle the scan no longer finds (``obsolete``:
@@ -54,8 +57,23 @@ def _same(decision: dict[str, Any], repo: str, members: list[str]) -> bool:
     return now <= was if decision.get("status") == "dismissed" else len(now & was) > 1
 
 
-def rows(report: dict[str, Any] | None, decisions: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """Each reported cycle and each decision, one row per decision. ``reported`` is None when the
+def _resolved(output_dir: str | Path, decisions: dict[str, dict[str, Any]]) -> set[str]:
+    """Approved cycles whose pack is resolved."""
+    from auditor.agent_pack import load_pack
+
+    return {c for c, d in decisions.items() if d.get("status") == "approved"
+            and (load_pack(output_dir, pack_id(c)) or {}).get("status") == "resolved"}
+
+
+def _spent(d: dict[str, Any], members: list[str]) -> bool:
+    """A resolved approval that doesn't cover a cycle of *members*."""
+    return bool(d.get("gone_at")) or not set(members) <= set(d.get("members") or ())
+
+
+def rows(report: dict[str, Any] | None, decisions: dict[str, dict[str, Any]],
+         resolved: set[str]) -> list[dict[str, Any]]:
+    """Each reported cycle and each decision, one row per decision. *resolved*: ids whose pack is.
+    A row's ``was`` is the spent approval the cycle used to fall under. ``reported`` is None when the
     repo couldn't be read whole, so nothing is known about a cycle the scan doesn't list."""
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -63,22 +81,25 @@ def rows(report: dict[str, Any] | None, decisions: dict[str, dict[str, Any]]) ->
     for repo, r in sorted(repos.items()):
         for c in r.get("cycles") or []:
             own = cycle_id(repo, c["members"])
+            live = {k: d for k, d in decisions.items() if not (k in resolved and _spent(d, c["members"]))}
+            was = next((k for k in sorted(decisions, key=lambda k: (k != own, k)) if k not in live
+                        and _same(decisions[k], repo, c["members"])), None)
             # its own decision first, then an approved one it is part of, then a dismissed one it is inside
-            order = sorted(decisions, key=lambda k: (k != own, decisions[k].get("status") != "approved", k))
-            cid = next((k for k in order if k == own or _same(decisions[k], repo, c["members"])), own)
+            order = sorted(live, key=lambda k: (k != own, live[k].get("status") != "approved", k))
+            cid = next((k for k in order if k == own or _same(live[k], repo, c["members"])), own)
             if cid in seen:  # an approved cycle that came apart into several is one row
                 continue
             seen.add(cid)
             out.append({"id": cid, "repo": repo, "members": c["members"], "lazy_edges": c.get("lazy_edges"),
                         "edges": c.get("edges") or [], "cuts": c.get("cuts") or [], "reported": True,
-                        "cuts_smallest": c.get("cuts_smallest"), "decision": decisions.get(cid)})
+                        "cuts_smallest": c.get("cuts_smallest"), "decision": live.get(cid), "was": was if cid not in live else None})
     for cid, d in sorted(decisions.items()):
         if cid not in seen:
             r = repos.get(str(d.get("repo"))) or {}
             known = bool(r) and not r.get("error") and bool(r.get("complete"))
             out.append({"id": cid, "repo": d.get("repo"), "members": d.get("members") or [], "lazy_edges": None,
                         "edges": [], "cuts": [], "cuts_smallest": None, "reported": False if known else None,
-                        "decision": d})
+                        "decision": d, "was": None})
     return out
 
 
@@ -98,7 +119,8 @@ def propose(output_dir: str | Path, cid: str, proposal: dict[str, Any],
     p = Path(proposals_path())
     with locked(p):
         decisions = load_decisions(path or decisions_path())
-        row = next((r for r in rows(load_report(output_dir), decisions) if r["id"] == cid and r["reported"]), None)
+        row = next((r for r in rows(load_report(output_dir), decisions, _resolved(output_dir, decisions))
+                    if r["id"] == cid and r["reported"]), None)
         if row is None:
             return None
         entry = {**check(proposal, row["edges"], NOTE_MIN), "repo": row["repo"], "at": utc_now_iso()}
@@ -171,7 +193,8 @@ def decide(output_dir: str | Path, cid: str, status: str, *, note: str = "", pub
     p = Path(path or decisions_path())
     with locked(p), pack_lock(output_dir):
         decisions = load_decisions(p)
-        row = next((r for r in rows(load_report(output_dir), decisions) if r["id"] == cid), None)
+        row = next((r for r in rows(load_report(output_dir), decisions, _resolved(output_dir, decisions))
+                    if r["id"] == cid), None)
         if row is None:
             return None
         if status == "approved" and not row["reported"]:
@@ -224,16 +247,22 @@ def sync_packs(output_dir: str | Path, *, public_base_url: str = "", run_id: str
     from auditor.agent_pack import list_packs, load_pack, pack_lock, rebuild_index
 
     p = Path(path or decisions_path())
-    out = {"written": 0, "reopened": 0, "gone": 0, "unapproved": 0, "unknown": 0}
+    out = {"written": 0, "reopened": 0, "gone": 0, "unapproved": 0, "unknown": 0, "returned": 0}
+    changed = False
     with locked(p), pack_lock(output_dir):
         decisions = load_decisions(p)
-        by_id = {r["id"]: r for r in rows(load_report(output_dir), decisions)}
+        by_id = {r["id"]: r for r in rows(load_report(output_dir), decisions, _resolved(output_dir, decisions))}
         approved = {c: d for c, d in decisions.items() if d.get("status") == "approved"}
         for cid, d in approved.items():
             reported = by_id[cid]["reported"]
             status = (load_pack(output_dir, pack_id(cid)) or {}).get("status")
             if reported is None:
                 out["unknown"] += 1
+            elif by_id[cid]["decision"] is None:
+                out["returned"] += 1  # a proposal again: only a fresh approval reopens its pack
+            elif not reported and status == "resolved" and not d.get("gone_at"):
+                d["gone_at"] = utc_now_iso()  # the fix has merged
+                changed = True
             elif reported and status in (None, "obsolete"):
                 _write(output_dir, cid, d, ("obsolete",), "the cycle is on dev again",
                        public_base_url=public_base_url, run_id=run_id)
@@ -241,6 +270,8 @@ def sync_packs(output_dir: str | Path, *, public_base_url: str = "", run_id: str
             elif not reported and status == "open":
                 close_idle(output_dir, pack_id(cid), "obsolete", "the structure scan no longer finds this cycle on dev")
                 out["gone"] += 1
+        if changed:
+            save_decisions(p, decisions)
         wanted = {pack_id(c) for c in approved}
         for entry in list_packs(output_dir, kind=KIND, status="open", limit=1_000_000):
             pid = str(entry.get("id") or "")
@@ -263,7 +294,7 @@ def ui_data(output_dir: str | Path, path: str | Path | None = None) -> dict[str,
     report = load_report(output_dir)
     if report is None and not decisions:
         return None
-    out = rows(report, decisions)
+    out = rows(report, decisions, _resolved(output_dir, decisions))
     proposals = _proposals()
     for r in out:
         r["edges_key"] = edges_key(r["edges"])

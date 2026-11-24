@@ -167,3 +167,36 @@ def test_endpoints_need_auth_and_map_errors(out: Path, monkeypatch) -> None:
     assert client.delete(url, headers=auth).json()["pack_status"] == "obsolete"
     monkeypatch.setenv("AI_AUDIT_STRUCTURE_DECISIONS_PATH", "/proc/nope/s.json")
     assert client.post(url, json=body, headers=auth).status_code == 503
+
+
+def test_a_cycle_back_after_its_fix_merged_needs_a_fresh_approval(out: Path) -> None:
+    sp.decide(out, CID, "approved", note=NOTE)
+    update_pack_status(out, PID, "resolved")
+    sp.sync_packs(out)
+    assert _open(out) == []  # resolved, not merged yet: still that approval's work
+    _report(out, None)
+    sp.sync_packs(out)
+    _report(out, BASE)
+    assert _open(out) == []  # an unreadable repo is not a merge
+    _report(out, FIXED)
+    sp.sync_packs(out)
+    _report(out, BASE)
+    for _ in range(2):  # and it stays a proposal, whatever the nightly sync does
+        row = next(r for r in sp.ui_data(out)["cycles"] if r["id"] == CID)
+        assert _open(out) == [CID] and row["was"] == CID and row["reported"] and row["decision"] is None
+        assert sp.sync_packs(out)["returned"] == 1 and _status(out) == "resolved"
+    again = "Move go into app/c.py instead this time"
+    assert sp.decide(out, CID, "approved", note=again)["status"] == "open"
+    assert _open(out) == [] and "gone_at" not in json.loads(Path(sp.decisions_path()).read_text())["decisions"][CID]
+
+
+def test_a_bigger_cycle_than_a_resolved_approval_is_a_new_proposal(out: Path) -> None:
+    sp.decide(out, CID, "approved", note=NOTE)
+    update_pack_status(out, PID, "resolved")
+    _report(out, RING)
+    ring = sp.cycle_id("mono", ["app/a.py", "app/b.py", "app/c.py"])
+    row = next(r for r in sp.ui_data(out)["cycles"] if r["id"] == ring)
+    assert _open(out) == [ring] and row["was"] == CID
+    sp.decide(out, ring, "approved", note=NOTE)
+    assert load_pack(out, sp.pack_id(ring))["governance"]["structure"]["members"] == ["app/a.py", "app/b.py", "app/c.py"]
+    assert _status(out) == "resolved"

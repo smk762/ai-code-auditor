@@ -7,8 +7,10 @@
   an import inside a function counts (it is marked ``lazy``), and so do ``import_module("…")`` and
   ``__import__("…")`` of a literal name; a name re-exported by an ``__init__.py`` counts as a use of
   the module that defines it; a relay module becomes a member. What isn't counted: an import under
-  ``if TYPE_CHECKING`` (no runtime dependency), and a package's ``__init__.py`` with the modules
-  below it (importing its own parts is what an ``__init__`` is for).
+  ``if TYPE_CHECKING`` (no runtime dependency), and a module with the ``__init__.py`` of a package it
+  is inside. Importing from another package does count its ``__init__.py`` and that of every package
+  above it, because Python runs them first: such an edge is ``implicit`` unless the file also imports
+  it by name, and its names say which import runs it (``via <module>``).
 * ``private-import``: a ``_name`` another module defines, taken by ``from m import _name`` or used as
   ``m._name`` or ``getattr(m, "_name")``. Dunders and private *modules* (``pkg._impl``) don't count. A re-export of one is
   attributed to the module that defines it.
@@ -228,12 +230,10 @@ class Modules:
         return mod, self.find(f"{ref.module}.{ref.name}", importer) if ref.name else None
 
 
-def _parent_and_child(a: str, b: str) -> bool:
-    for x, y in ((a, b), (b, a)):
-        p = PurePosixPath(x)
-        if p.name == "__init__.py" and p.parent in PurePosixPath(y).parents:
-            return True
-    return False
+def _own_package(a: str, b: str) -> bool:
+    """*b* is the ``__init__.py`` of a package *a* is inside."""
+    p = PurePosixPath(b)
+    return p.name == "__init__.py" and p.parent in PurePosixPath(a).parents
 
 
 # ── the scan ─────────────────────────────────────────────────────────────────
@@ -331,6 +331,15 @@ def scan_sources(sources: dict[str, str]) -> dict[str, Any]:
     edges: dict[tuple[str, str], dict[str, Any]] = {}
     private: dict[str, dict[str, Any]] = {}
 
+    def add_edge(a: str, b: str, name: str, ref: Ref, *, implicit: bool) -> None:
+        if a == b or _own_package(a, b):
+            return
+        e = edges.setdefault((a, b), {"names": set(), "via": set(), "sites": [], "lazy": True, "implicit": True})
+        e["via" if implicit else "names"].add(name)
+        e["sites"].append(ref.line)
+        e["lazy"] = e["lazy"] and ref.lazy
+        e["implicit"] = e["implicit"] and implicit
+
     def add_private(user: str, owner: str, name: str, line: int) -> None:
         key = f"private-import:{user}->{owner}::{name}"
         entry = private.setdefault(key, {"key": key, "path": user, "defined_in": owner, "name": name, "lines": []})
@@ -343,26 +352,26 @@ def scan_sources(sources: dict[str, str]) -> dict[str, Any]:
             target, name = resolve(ref, path)
             if target is None:
                 continue
+            loaded = {target, mods.targets(ref, path)[0] or target}  # the package named may re-export the target
+            for init in {f"{d.as_posix()}/__init__.py" for m in loaded for d in PurePosixPath(m).parents} & set(parsed):
+                if init != target:
+                    add_edge(path, init, f"via {target}", ref, implicit=True)
             if not name and ref.bound:
                 bound[(ref.scope, ref.bound)] = target
             if target == path:
                 continue
             if _private(name):
                 add_private(path, target, name, ref.line)
-            if _parent_and_child(path, target):
-                continue
-            e = edges.setdefault((path, target), {"names": set(), "sites": [], "lazy": True})
-            e["names"].add(name or "(module)")
-            e["sites"].append(ref.line)
-            e["lazy"] = e["lazy"] and ref.lazy
+            add_edge(path, target, name or "(module)", ref, implicit=False)
         for base, name, line, scopes in src.attrs:
             target = next((bound[(s, base)] for s in (*reversed(scopes), 0) if (s, base) in bound), None)
             if target is not None and target != path and not _has_child(mods, target, name):
                 add_private(path, *origin(target, name)[:2], line)
 
     graph: dict[str, set[str]] = defaultdict(set)
-    for a, b in edges:
+    for (a, b), e in edges.items():
         graph[a].add(b)
+        e["names"] = e["names"] or e["via"]
     cycles = [_cycle(members, edges) for members in _components(graph)]
     for p in private.values():
         p["lines"].sort()
@@ -467,6 +476,7 @@ def _cycle(members: list[str], edges: dict[tuple[str, str], dict[str, Any]]) -> 
         "key": "module-cycle:" + ",".join(members), "members": members, "size": len(members),
         "lazy_edges": sum(v["lazy"] for v in inside.values()),
         "edges": [{"from": a, "to": b, "names": sorted(v["names"]), "lazy": v["lazy"],
+                   "implicit": v["implicit"],
                    "sites": [f"{a}:{n}" for n in sorted(set(v["sites"]))[:_MAX_SITES]]}
                   for (a, b), v in inside.items()],
         "cuts": [{"from": a, "to": b, "names": sorted(inside[a, b]["names"])} for a, b in cuts],
