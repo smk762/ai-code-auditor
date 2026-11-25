@@ -183,7 +183,7 @@ def decide(output_dir: str | Path, cid: str, status: str, *, note: str = "", pub
            path: str | Path | None = None) -> dict[str, Any] | None:
     """Approve or dismiss a cycle. None when it is neither reported nor decided; ValueError on a bad
     request; ``DecisionConflict`` when an agent holds its pack."""
-    from auditor.agent_pack import load_pack, pack_lock, rebuild_index
+    from auditor.agent_pack import load_pack, pack_lock, reindex_pack
 
     note = (note or "").strip()[:2000]
     if status not in DECISION_STATUSES:
@@ -220,14 +220,14 @@ def decide(output_dir: str | Path, cid: str, status: str, *, note: str = "", pub
             out = {"pack_id": pack_id(cid) if had else None, "status": "wontfix" if had else None}
         decisions[cid] = d
         save_decisions(p, decisions)
-        rebuild_index(output_dir, public_base_url=public_base_url)
+        reindex_pack(output_dir, pack_id(cid), public_base_url=public_base_url)
     return {"id": cid, "decision": status, **out}
 
 
 def withdraw(output_dir: str | Path, cid: str, *, public_base_url: str = "",
              path: str | Path | None = None) -> dict[str, Any] | None:
     """Undo a decision: the cycle is a proposal again and its pack (if idle) is obsolete."""
-    from auditor.agent_pack import pack_lock, rebuild_index
+    from auditor.agent_pack import pack_lock, reindex_pack
 
     p = Path(path or decisions_path())
     with locked(p), pack_lock(output_dir):
@@ -237,7 +237,7 @@ def withdraw(output_dir: str | Path, cid: str, *, public_base_url: str = "",
         had = close_idle(output_dir, pack_id(cid), "obsolete", "cycle approval withdrawn")
         del decisions[cid]
         save_decisions(p, decisions)
-        rebuild_index(output_dir, public_base_url=public_base_url)
+        reindex_pack(output_dir, pack_id(cid), public_base_url=public_base_url)
     return {"id": cid, "decision": None, "pack_status": "obsolete" if had else None}
 
 

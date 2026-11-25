@@ -795,6 +795,15 @@ def _upsert_index_entry(output_dir: str | Path, pack: AgentCodingPack, *, public
     upsert_index_entries(output_dir, [pack], public_base_url=public_base_url)
 
 
+def reindex_pack(output_dir: str | Path, pack_id: str, *, public_base_url: str = "") -> None:
+    """Bring one pack's INDEX.json entry in line with its file; a pack with no file changes nothing.
+    The caller holds ``pack_lock``."""
+    data = load_pack(output_dir, pack_id)
+    if data is not None:
+        _upsert_index_entry(output_dir, AgentCodingPack.from_dict(data, fallback_id=pack_id),
+                            public_base_url=public_base_url)
+
+
 def load_pack(output_dir: str | Path, pack_id: str) -> dict[str, Any] | None:
     path = pack_file_path(output_dir, pack_id)
     if not path.exists():
