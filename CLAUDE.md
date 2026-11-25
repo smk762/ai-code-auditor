@@ -17,6 +17,7 @@ here and in code. Don't add a rule to remember.
 | A pack resolved on another pack's test in a multi-pack `validate_patch` | `test_evidence::test_a_pack_never_resolves_on_another_packs_test`, `::test_for_pack_keeps_only_the_tests_naming_the_packs_module` |
 | Report a TS/JS change as passed when no check ran on it | `test_validate_node::test_missing_npm_skips_instead_of_passing`, `::test_failed_install_skips_instead_of_passing` |
 | Publish a wiki page that failed the opsec gate, redact one instead of refusing it, or export without the deny-list | `test_wiki_public::test_gate_refuses`, `::test_export_refuses_to_run_without_denylist`, `::test_publish_refuses_tampered_or_leaky_bundles` |
+| A private repo, violation, test-only or self-matching evidence, or a commit that isn't on `origin/dev` in the public topology, or one written after the opsec gate refused it | `test_topology_public::test_private_repos_and_ops_hosts_never_appear`, `::test_evidence_skips_tests_fixtures_and_our_own_catalogue`, `::test_a_mirror_off_origin_dev_stops_the_export`, `::test_gate_refusal_writes_nothing` |
 | "Notable findings" or internal INDEX data in the public bundle | `test_wiki_public::test_export_bundle` |
 | Keep a wiki claim whose citation is missing, out of range, or names nothing in the cited lines | `test_wiki::test_drop_failed_claims` |
 | Commit the opsec deny-list, the classes gold set, or anything quoting real findings | Location only: they live under `~/.config/ai-code-auditor/`, and `reports/_classes/` is gitignored. **UNENFORCED** for a copy placed elsewhere |
@@ -200,6 +201,10 @@ refuses a page outright; a repo with a refused page is left out whole. `wiki/pub
 private `smk762/argus-docs` as `argus-docs-bot`, only when the bundle hash changed. dragonhound-site deploys by direct
 upload and pins docs in `docs.lock.json`; a pin bump on its `dev` is the review gate. `wiki/refresh.py` (Sundays 04:30)
 rebuilds only pages whose cited lines changed, putting public pages first when the budget is short.
+
+`ai-audit wiki topology` (`auditor/topology_public.py`) writes the public topology through the same gate. Copy it to
+dragonhound-site's `src/data/topology.json`; a PR there is the review gate. It is a separate build from the internal
+`/ui/topology`, which names private repos and violations and is never copied.
 
 ## RAG
 

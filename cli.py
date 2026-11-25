@@ -408,6 +408,9 @@ def _build_parser() -> argparse.ArgumentParser:
     wke.add_argument("--denylist", default="", help="Private deny-list file (default: $AI_AUDIT_OPSEC_DENYLIST or "
                      "~/.config/ai-code-auditor/opsec-denylist.txt); the export won't run without one")
     wke.add_argument("--json", action="store_true", help="Print the export report as JSON")
+    wkm = wk_sub.add_parser("topology", help="Gated public topology (JSON) for dragonhound.dev/topology/ (public repos only; no API spend)")
+    wkm.add_argument("--out", default="", help="JSON file (default: <output_dir>/topology_public.json)")
+    wkm.add_argument("--denylist", default="", help="Private deny-list file (as for export)")
     wkp = wk_sub.add_parser("publish", help="Commit the exported bundle to the private docs repo (bot identity)")
     wkp.add_argument("--bundle", default="", help="Bundle directory (default: <output_dir>/wiki_public)")
     wkp.add_argument("--repo", default="smk762/argus-docs", help="Docs repo (owner/name or a git URL)")
@@ -459,6 +462,7 @@ def _run_search(args) -> None:
 
 def _run_wiki(args) -> None:
     import json as _json
+    from collections import Counter
 
     from auditor.config import load_ecosystem_config
     from auditor.spend_ledger import get_ledger
@@ -524,6 +528,16 @@ def _run_wiki(args) -> None:
               + (" and pushed" if res["pushed"] else "; not pushed (add --push)"))
         print("docs.lock.json for dragonhound-site:")
         print(_json.dumps(res["pin"], indent=2))
+        return
+    if args.wiki_command == "topology":
+        from pathlib import Path as _P
+
+        from auditor.topology_public import export as export_map
+
+        dest = _P(args.out or _P(out) / "topology_public.json")
+        data = export_map(dest, denylist_path=args.denylist or None)
+        kinds = Counter(n["kind"] for n in data["nodes"])
+        print(f"topology: {dest} ({kinds['repo']} repos, {kinds['service']} services, {len(data['edges'])} edges)")
         return
     if args.wiki_command == "export":
         from wiki.public import export
