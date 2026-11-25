@@ -345,7 +345,7 @@ def decide(output_dir: str | Path, candidate_id: str, status: str, *, target_rep
     """Approve or dismiss a candidate. *units* are ``repo:path:symbol`` keys to include (default:
     the suggested ones). Returns None when the candidate isn't in the latest report or decisions.
     Raises ValueError on a bad request and DecisionConflict when its pack is someone's work."""
-    from auditor.agent_pack import pack_lock, rebuild_index
+    from auditor.agent_pack import pack_lock, reindex_pack
 
     if status not in DECISION_STATUSES:
         raise ValueError(f"status must be one of {DECISION_STATUSES}")
@@ -390,14 +390,14 @@ def decide(output_dir: str | Path, candidate_id: str, status: str, *, target_rep
             out = {"pack_id": pid if had else None, "status": "wontfix" if had else None}
         decisions[candidate_id] = decision
         save_decisions(p, decisions)
-        rebuild_index(output_dir, public_base_url=public_base_url)
+        reindex_pack(output_dir, pack_id(candidate_id), public_base_url=public_base_url)
     return {"id": candidate_id, "decision": status, **out}
 
 
 def withdraw(output_dir: str | Path, candidate_id: str, *, public_base_url: str = "",
              path: str | Path | None = None) -> dict[str, Any] | None:
     """Undo a decision: the candidate is a plain proposal again and its pack (if idle) is obsolete."""
-    from auditor.agent_pack import pack_lock, rebuild_index
+    from auditor.agent_pack import pack_lock, reindex_pack
 
     p = Path(path or decisions_path())
     with locked(p), pack_lock(output_dir):
@@ -407,7 +407,7 @@ def withdraw(output_dir: str | Path, candidate_id: str, *, public_base_url: str 
         had = close_idle(output_dir, pack_id(candidate_id), "obsolete", "extraction approval withdrawn")
         del decisions[candidate_id]
         save_decisions(p, decisions)
-        rebuild_index(output_dir, public_base_url=public_base_url)
+        reindex_pack(output_dir, pack_id(candidate_id), public_base_url=public_base_url)
     return {"id": candidate_id, "decision": None, "pack_status": "obsolete" if had else None}
 
 

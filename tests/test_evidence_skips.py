@@ -62,9 +62,49 @@ def test_output_with_no_summary_is_unknown_not_zero() -> None:
     assert validator.merge_counts([one, one])["passed"] == 4
 
 
-def test_the_evidence_records_skips_and_its_verdict_is_unchanged() -> None:
-    tests = validator.pytest_counts("1 passed, 76 skipped in 1.00s")
-    pack = {"kind": "architecture"}
-    with_, without = (evidence.decide(pack, tool="pytest", changed=["a.py"], repro=None, tests=t) for t in (tests, None))
-    assert with_.evidence["tests"]["skipped"] == 76 and "tests" not in without.evidence
-    assert (with_.status, with_.kind) == (without.status, without.kind)
+PACKS = [({"kind": "architecture"}, ["a.py"], "tests"), ({"kind": "architecture"}, ["tests/test_a.py"], "test_only"),
+         ({"kind": "module_cycle"}, ["a.py"], "structure")]
+
+
+def _decide(pack: dict, changed: list[str], summary: str | None, tool: str = "pytest", **extra):
+    tests = None if summary is None else {**validator.pytest_counts(summary), **extra}
+    return evidence.decide(pack, tool=tool, changed=changed, repro=None, tests=tests,
+                           structure={"gone": True, "reason": "gone"} if pack["kind"] == "module_cycle" else None)
+
+
+@pytest.mark.parametrize(("pack", "changed", "kind"), PACKS)
+def test_a_run_where_nothing_passed_is_unverified(pack: dict, changed: list[str], kind: str) -> None:
+    for summary in ("76 skipped in 1.00s", "3 skipped, 1 xfailed in 1.00s"):
+        d = _decide(pack, changed, summary)
+        assert (d.status, d.kind) == ("unverified", "none") and "no test passed" in d.reason
+    d = _decide(pack, changed, "1 passed, 76 skipped in 1.00s")
+    assert (d.status, d.kind) == ("resolved", kind) and d.evidence["tests"]["skipped"] == 76
+
+
+@pytest.mark.parametrize(("pack", "changed", "kind"), PACKS)
+def test_unknown_counts_and_other_checks_still_count(pack: dict, changed: list[str], kind: str) -> None:
+    assert _decide(pack, changed, None).kind == kind  # no counts at all
+    assert _decide(pack, changed, "2 skipped in 1.00s", partial=True).kind == kind  # another run may have passed
+    assert _decide(pack, changed, "2 skipped in 1.00s", tool="pytest+npm_checks").kind == kind
+
+
+def test_an_all_skipped_run_takes_a_waiver_like_any_other_unverified_one() -> None:
+    tests = validator.pytest_counts("2 skipped in 1.00s")
+    d = evidence.decide({"kind": "architecture"}, tool="pytest", changed=["a.py"], repro=None, tests=tests,
+                        waiver="needs a GPU the validator does not have")
+    assert (d.status, d.kind) == ("resolved", "waiver")
+
+
+def test_geo_tools_reach_a_validated_test_without_its_environment() -> None:
+    """The wrappers name the data dirs themselves: child_env drops PROJ_DATA and GDAL_DATA."""
+    root = Path(__file__).resolve().parents[1]
+    wrap = (root / "docker/geo/wrap.sh").read_text()
+    assert all(f"{v}=" in wrap for v in ("PROJ_DATA", "GDAL_DATA", "PROJ_NETWORK"))
+    lock = [ln for ln in (root / "docker/geo/geo-linux-64.lock").read_text().splitlines() if ln.startswith("http")]
+    assert lock and all(ln.startswith("https://conda.anaconda.org/conda-forge/") and "#" in ln for ln in lock)
+
+
+def test_the_default_time_fits_a_suite_whose_tests_really_run() -> None:
+    from auditor.audit_api import _ValidatePatchRequest
+
+    assert _ValidatePatchRequest(repo="x", patch="").timeout_s >= 300  # atlas takes 96 s with GDAL, alone on the host
