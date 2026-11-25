@@ -89,11 +89,11 @@ def test_gold_uses_the_adjudicated_label(tmp_path: Path) -> None:
     rv._append(tmp_path, {"id": "b", "final": "data_integrity"})
     rv._append(tmp_path, {"id": "c", "second": "unclear"})
     rv._append(tmp_path, {"id": "c", "final": "unclear"})
-    rows = {r["id"]: r for r in fc.load_gold(tmp_path)}
+    rows = {r["id"]: r for r in rv.load_gold(tmp_path)}
     assert rows["b"]["label"] == "data_integrity" and rows["b"]["label_first"] == "resource_leak"
     assert "c" not in rows                                  # settled as unclear: no usable label
     assert rows["a"]["label"] == "ssrf"                     # never disputed: unchanged
-    assert {r["id"] for r in fc.load_gold(tmp_path, reviewed=False)} == {"a", "b", "c", "d"}
+    assert {r["id"] for r in rv.load_gold(tmp_path, reviewed=False)} == {"a", "b", "c", "d"}
     assert not list(tmp_path.glob("finding_classes_review*"))  # the review file is never read as gold
 
 

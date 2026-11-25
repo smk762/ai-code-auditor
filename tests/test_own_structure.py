@@ -5,7 +5,7 @@ from pathlib import Path
 
 from auditor import structure
 
-KNOWN = [{"auditor/finding_class.py", "auditor/finding_class_review.py"}]
+KNOWN: list[set[str]] = []  # none left; it stays empty
 
 
 def test_no_new_module_cycle_in_this_repo() -> None:

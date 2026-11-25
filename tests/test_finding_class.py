@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from auditor import finding_class as fc
+from auditor import finding_class_review as review
 from auditor import trust_eval
 
 
@@ -93,7 +94,7 @@ def test_evaluate_reports_precision_coverage_and_mistakes(tmp_path: Path, monkey
     eval_dir.mkdir()
     (eval_dir / "finding_classes_x.jsonl").write_text("\n".join(json.dumps(x) for x in rows))
     monkeypatch.setenv("AI_AUDIT_EVAL_DIR", str(eval_dir))
-    assert len(fc.load_gold()) == 5
+    assert len(review.load_gold()) == 5
     out = tmp_path / "reports"
     out.mkdir()
     g = {x.id: x for x in trust_eval.build_gates(None, None, trust_eval.classes_eval(out))}

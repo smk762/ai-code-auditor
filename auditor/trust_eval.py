@@ -266,10 +266,10 @@ def metrics_exit(trust_history: list[dict[str, Any]]) -> dict[str, Any]:
 
 def classes_eval(out: Path) -> dict[str, Any] | None:
     """Score the classifier on the private gold set (cheap: no model calls); None without one."""
-    from auditor import finding_class
+    from auditor import finding_class, finding_class_review
 
     try:
-        rows = finding_class.load_gold()
+        rows = finding_class_review.load_gold()
     except (OSError, ValueError) as exc:
         logger.warning("gold set unreadable: %s", exc)
         return None

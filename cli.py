@@ -624,7 +624,7 @@ def _run_eval_classes(args) -> None:
     if args.council:
         from auditor import finding_class_council as council
 
-        first = fc.load_gold(reviewed=False)
+        first = review.load_gold(reviewed=False)
         out = council.run(first, _output_dir_default(), Path(_output_dir_default()) / "agent_packs",
                           mode="sync" if args.sync else "batch", dry_run=args.dry_run)
         if args.dry_run:
@@ -637,7 +637,7 @@ def _run_eval_classes(args) -> None:
         print(f"details: {fc.eval_dir() / council.SUMMARY_NAME}")
         return
     if args.review or args.adjudicate:
-        first = fc.load_gold(reviewed=False)
+        first = review.load_gold(reviewed=False)
         if not first:
             raise SystemExit(f"No gold set under {fc.eval_dir()} (finding_classes_*.jsonl).")
         try:
@@ -647,7 +647,7 @@ def _run_eval_classes(args) -> None:
         print(f"\nsaved to {review.review_path()}" + (f" ({n} this session)" if n is not None else ""))
         _print_agreement(review.agreement(first, review.load_reviews()))
         return
-    rows = fc.load_gold()
+    rows = review.load_gold()
     if not rows:
         raise SystemExit(f"No gold set under {fc.eval_dir()} (finding_classes_*.jsonl).")
     reports = {"rules": fc.evaluate(rows)}
@@ -655,7 +655,7 @@ def _run_eval_classes(args) -> None:
     for model in [m.strip() for m in args.llm.split(",") if m.strip()]:
         from auditor import finding_class_llm as llm
 
-        system = llm.frozen_system(_output_dir_default(), fc.load_gold(reviewed=False))
+        system = llm.frozen_system(_output_dir_default(), review.load_gold(reviewed=False))
         out = llm.classify_rows(rows, model, _output_dir_default(), system=system,
                                 mode="sync" if args.sync else "batch", dry_run=args.dry_run)
         priced.append(out)
@@ -680,7 +680,7 @@ def _run_eval_classes(args) -> None:
         for s, d in rep["sets"].items():
             prec = "—" if d["precision"] is None else f"{d['precision']:.1%}"
             print(f"{name:<22} {s:<5} {d['n']:>4} {prec:>9} {d['coverage']:>8.1%}")
-    ag = review.agreement(fc.load_gold(reviewed=False), review.load_reviews())
+    ag = review.agreement(review.load_gold(reviewed=False), review.load_reviews())
     if ag["n"]:
         print()
         _print_agreement(ag)

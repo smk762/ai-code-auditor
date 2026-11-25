@@ -17,7 +17,6 @@ Only the ``test`` set, labelled blind after the rules were written, counts towar
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -117,20 +116,6 @@ def static_rule_id(finding_id: str, source: str) -> str:
 
 def eval_dir() -> Path:
     return Path(os.getenv("AI_AUDIT_EVAL_DIR") or Path.home() / ".config" / "ai-code-auditor" / "eval")
-
-
-def load_gold(directory: Path | None = None, *, reviewed: bool = True) -> list[dict[str, Any]]:
-    """Gold rows. With *reviewed*, a label a second labeller adjudicated replaces the first
-    (``finding_class_review``)."""
-    from auditor import finding_class_review as review
-
-    directory = directory or eval_dir()
-    rows: list[dict[str, Any]] = []
-    for p in sorted(directory.glob("finding_classes_*.jsonl")):
-        for line in p.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                rows.append(json.loads(line))
-    return review.apply_reviews(rows, review.load_reviews(directory)) if reviewed else rows
 
 
 def evaluate(rows: list[dict[str, Any]], *, tax: Taxonomy | None = None,
