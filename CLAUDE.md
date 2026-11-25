@@ -13,7 +13,7 @@ here and in code. Don't add a rule to remember.
 |---|---|
 | Write to a repo mirror or a configured scan path (validation, scans and the API only read them; draft PRs are built in a throwaway clone) | `:ro` mounts in `docker-compose.yml`; `test_validate_base::test_fetches_code_merged_after_the_nightly_sync_without_touching_the_mirror`; `git_ops.refuse_scan_source` in every branch/commit/push helper (`test_draft_pr_packs::test_git_writes_refuse_a_scan_source`, `::test_every_configured_mirror_and_repo_path_is_a_scan_source`, `::test_draft_pr_never_writes_the_source_checkout`); `test_guard_seeded::test_the_mirror_is_never_written` |
 | Mirror sync discarding a unique local commit | `test_mirror_sync::test_unique_local_commit_is_never_reset` |
-| Resolve a pack without evidence (lint-only, or a bug/security fix with no test that fails on `dev` and passes patched) | `test_evidence::test_decide`; the seeded-defect eval's control gate (`auditor/eval_seeded.py`) |
+| Resolve a pack without evidence (lint-only, or a bug/security fix with no test that fails on `dev` and passes patched, or tests that were all skipped) | `test_evidence::test_decide`, `test_evidence_skips::test_a_run_where_nothing_passed_is_unverified`; the seeded-defect eval's control gate (`auditor/eval_seeded.py`) |
 | A pack resolved on another pack's test in a multi-pack `validate_patch` | `test_evidence::test_a_pack_never_resolves_on_another_packs_test`, `::test_for_pack_keeps_only_the_tests_naming_the_packs_module` |
 | Report a TS/JS change as passed when no check ran on it | `test_validate_node::test_missing_npm_skips_instead_of_passing`, `::test_failed_install_skips_instead_of_passing` |
 | Publish a wiki page that failed the opsec gate, redact one instead of refusing it, or export without the deny-list | `test_wiki_public::test_gate_refuses`, `::test_export_refuses_to_run_without_denylist`, `::test_publish_refuses_tampered_or_leaky_bundles` |
@@ -116,7 +116,7 @@ version there too: a bug in such a helper can't show repro. That is deliberate (
 file would let a test-helper change manufacture the failure the code change is meant to earn), so a patch that only
 touches test files resolves as `test_only`, and a mixed patch whose proof needs the old helper takes a waiver.
 Other code changes need tests or npm checks to have run. Docs/config-only patches pass.
-The evidence records what the tests skipped (`tests`, `validator.pytest_counts`; no counts means unknown, not zero), and a skip changes no verdict. A `repro` can't rest on a skipped test; `tests`, `test_only` and `structure` can.
+The evidence records what the tests skipped (`tests`, `validator.pytest_counts`; no counts means unknown, not zero), and a run where nothing passed leaves the pack `unverified`. A `repro` can't rest on a skipped test; `tests`, `test_only` and `structure` can.
 `evidence_waiver` (≥ 20 chars) resolves anyway and is recorded. Fix commits carry `Pack:` / `Evidence:` trailers
 (`auditor/trailers.py`), which the trust metrics read from `git log`.
 

@@ -18,7 +18,8 @@ Evidence kind      Resolves when
                    would let a test-side change manufacture the dev failure, so that case needs a
                    waiver (a test-only patch resolves as ``test_only`` without this run).
 ``tests``          Other packs that change code: the project's tests (or npm checks) ran and
-                   passed. Lint alone is not enough.
+                   passed. Lint alone is not enough, and neither is a run where every
+                   test was skipped (the same goes for ``test_only`` and ``structure``).
 ``test_only``      The patch changes only tests (the fix *is* the test): those tests ran.
 ``non_code``       The patch changes only docs or config (no code, no tests).
 ``structure``      Structural packs (``module_cycle``, ``private_import``, #154): the scan finds the
@@ -414,9 +415,21 @@ class Decision:
     evidence: dict[str, Any]
 
 
-def tests_ran(tool: str) -> bool:
-    parts = set(tool.split("+"))
-    return bool(parts & {"pytest", "npm_checks", "npm_test", "go_test", "cargo_test"})
+def tests_ran(tool: str, tests: dict[str, Any] | None = None) -> bool:
+    """Something that can fail ran. A pytest run whose known counts (*tests*) show nothing passed is not
+    that: every test was skipped or expected to fail. Unknown or partial counts don't say so."""
+    parts = set(tool.split("+")) & {"pytest", "npm_checks", "npm_test", "go_test", "cargo_test"}
+    if tests and not tests.get("partial") and not tests.get("passed") and not tests.get("xpassed"):
+        parts.discard("pytest")
+    return bool(parts)
+
+
+def _nothing_passed(tests: dict[str, Any] | None) -> str:
+    """Why a pytest run doesn't count, or "" when it isn't the reason."""
+    if not tests or tests.get("partial") or tests.get("passed") or tests.get("xpassed"):
+        return ""
+    reasons = "; ".join(list(tests.get("skip_reasons") or {})[:3])
+    return f"no test passed ({tests.get('skipped', 0)} skipped{': ' + reasons if reasons else ''})"
 
 
 # File stems too common to tie a test to a pack on their own: ``tests`` importing ``main`` could be
@@ -491,7 +504,7 @@ def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproR
            tests: dict[str, Any] | None = None) -> Decision:
     """Resolved or unverified, for a validate_patch run that passed. *structure* is
     ``structure.judge``'s verdict; a structural pack without one is never resolved.
-    *tests* (``validator.pytest_counts``) is recorded, skips included, and changes no verdict yet."""
+    *tests* (``validator.pytest_counts``) is recorded, skips included; a run where nothing passed counts as no run."""
     ch = classify_changes(changed)
     ev: dict[str, Any] = {
         "tool": tool, "base_sha": base_sha, "changed": {k: len(v) for k, v in ch.items()},
@@ -511,7 +524,7 @@ def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproR
         ev["structure"] = verdict
         if verdict.get("gone") is not True:
             return done("unverified", "none", str(verdict.get("reason") or "the violation is still there"))
-        if tests_ran(tool):
+        if tests_ran(tool, tests):
             return done("resolved", "structure", f"{verdict.get('reason')}; tests ran and passed")
     if waiver:
         if len(waiver.strip()) < MIN_WAIVER_CHARS:
@@ -521,9 +534,9 @@ def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproR
     if not ch["code"] and not ch["tests"]:
         return done("resolved", "non_code", "docs/config-only change")
     if not ch["code"]:
-        if tests_ran(tool):
+        if tests_ran(tool, tests):
             return done("resolved", "test_only", "test-only change; the tests ran and passed")
-        return done("unverified", "none", "test-only change, but no tests ran (lint only)")
+        return done("unverified", "none", "test-only change, but " + (_nothing_passed(tests) or "no tests ran (lint only)"))
     if ev["needs_repro"]:
         if repro is not None and repro.repro:
             return done("resolved", "repro", f"{len(repro.repro)} test(s) fail on dev and pass with the fix: "
@@ -541,6 +554,6 @@ def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproR
             return done("unverified", "none", f"couldn't run the patch's tests on both trees: {why}")
         return done("unverified", "none", "none of the patch's tests fails on dev, so they don't show the bug: "
                     "make a test fail without the fix")
-    if tests_ran(tool):
+    if tests_ran(tool, tests):
         return done("resolved", "tests", "tests ran and passed")
-    return done("unverified", "none", "only lint ran: no tests or npm checks cover this change")
+    return done("unverified", "none", _nothing_passed(tests) or "only lint ran: no tests or npm checks cover this change")

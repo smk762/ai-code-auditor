@@ -1,0 +1,11 @@
+# GDAL, PDAL and PROJ for validate_patch: argus-atlas and argus-survey skip every test that needs them otherwise.
+# Debian has no pdal, and a GDAL too old for survey, so conda-forge is the source, as in argus-survey's own image.
+# Keep the versions in step with argus-survey's env/geo.yml. docker/geo/lock.sh resolves this into geo-linux-64.lock.
+name: validate-geo
+channels:
+  - conda-forge
+dependencies:
+  - pdal=2.10
+  - gdal=3.13  # with the Python scripts: atlas runs gdal2tiles.py
+  - proj=9.9
+  - untwine
