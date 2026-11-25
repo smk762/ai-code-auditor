@@ -22,6 +22,13 @@ def _validator_python_is_this_one(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _a_home_of_their_own(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``~`` in config never means the real home, and loads where there is none: in validate_patch's
+    container ``HOME`` is ``/`` and ``AI_AUDIT_HOST_HOME`` is stripped, so every test that loads the config failed."""
+    monkeypatch.setenv("AI_AUDIT_HOST_HOME", str(tmp_path_factory.mktemp("home")))
+
+
+@pytest.fixture(autouse=True)
 def _no_real_llm_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep tests from reading or writing the real review cache under index/."""
     monkeypatch.setenv("AI_AUDIT_LLM_CACHE", "0")
