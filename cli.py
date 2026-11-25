@@ -537,7 +537,7 @@ def _run_wiki(args) -> None:
         dest = _P(args.out or _P(out) / "topology_public.json")
         data = export_map(dest, denylist_path=args.denylist or None)
         kinds = Counter(n["kind"] for n in data["nodes"])
-        print(f"map: {dest} ({kinds['repo']} repos, {kinds['service']} services, {len(data['edges'])} edges)")
+        print(f"topology: {dest} ({kinds['repo']} repos, {kinds['service']} services, {len(data['edges'])} edges)")
         return
     if args.wiki_command == "export":
         from wiki.public import export
