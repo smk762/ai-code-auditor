@@ -260,6 +260,7 @@ Generated from `cli.py`; a test fails when they differ. `ai-audit <command> --he
 | `ai-audit wiki` | Generated per-repo wiki (DeepWiki-style): build or show status |
 | `ai-audit wiki build` | Build wiki pages (notes → drafts → check-and-fix) via the Batch API |
 | `ai-audit wiki export` | Gated public bundle for dragonhound.dev (public argus repos only; no API spend) |
+| `ai-audit wiki topology` | Gated public topology (JSON) for dragonhound.dev/topology/ (public repos only; no API spend) |
 | `ai-audit wiki publish` | Commit the exported bundle to the private docs repo (bot identity) |
 | `ai-audit wiki refresh` | Rebuild stale pages (weekly at most per repo), then export + publish |
 | `ai-audit wiki ingest` | Send wiki sections to the audit RAG collection (rag-ingest) |
