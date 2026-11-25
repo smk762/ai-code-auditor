@@ -159,3 +159,56 @@ def test_validations_over_the_cap_get_429_not_a_queue(monkeypatch) -> None:
     started.clear()
     release.set()
     assert client.post("/audit/validate_patch", json=body).status_code == 200  # the slot came back
+
+
+def _decision_reads(tmp_path: Path, monkeypatch, n_other: int) -> list[int]:
+    """Packs parsed by each approve, dismiss and withdraw, for a cycle and an extraction candidate."""
+    import yaml
+
+    from auditor import extraction, structure, structure_packs
+
+    root = tmp_path / f"d{n_other}"
+    out = root / "reports"
+    out.mkdir(parents=True)
+    monkeypatch.setenv("AI_AUDIT_PACK_RAG_INGEST", "0")
+    monkeypatch.setenv("AI_AUDIT_STRUCTURE_DECISIONS_PATH", str(root / "s.json"))
+    monkeypatch.setenv("AI_AUDIT_STRUCTURE_PROPOSALS_PATH", str(root / "p.json"))
+    for i in range(n_other):
+        write_pack(_mk_pack(f"pack-other-{i}"), out)
+    rebuild_index(out)
+    scan = structure.scan_sources({"a/__init__.py": "", "a/x.py": "from a.y import f\nL = 1\n",
+                                   "a/y.py": "def f():\n    from a.x import L\n    return L\n"})
+    (out / structure.REPORT_NAME).write_text(json.dumps({"repos": {"mono": scan}}))
+    from tests.test_extraction import NOW, _cand
+
+    (out / "extraction_candidates.yaml").write_text(yaml.safe_dump({"candidates": [_cand("ext-1", NOW)]}))
+    reads = {"n": 0}
+    real = agent_pack._load_yaml
+
+    def counting(text):
+        reads["n"] += 1
+        return real(text)
+
+    cid = structure_packs.cycle_id("mono", ["a/x.py", "a/y.py"])
+    path = str(root / "e.json")
+    calls = [lambda: structure_packs.decide(out, cid, "approved", note="Move L into a/limits.py, f is the real use"),
+             lambda: structure_packs.decide(out, cid, "dismissed"), lambda: structure_packs.withdraw(out, cid),
+             lambda: extraction.decide(out, "ext-1", "approved", path=path),
+             lambda: extraction.decide(out, "ext-1", "dismissed", path=path),
+             lambda: extraction.withdraw(out, "ext-1", path=path)]
+    costs = []
+    with monkeypatch.context() as m:
+        m.setattr(agent_pack, "_load_yaml", counting)
+        for call in calls:
+            reads["n"] = 0
+            assert call() is not None
+            costs.append(reads["n"])
+    by_id = {e["id"]: e["status"] for e in json.loads((out / "agent_packs" / "INDEX.json").read_text())["packs"]}
+    rebuilt = {e["id"]: e["status"] for e in rebuild_index(out)["packs"]}
+    assert by_id == rebuilt and by_id[structure_packs.pack_id(cid)] == "obsolete"  # the index is as a rebuild leaves it
+    return costs
+
+
+def test_a_decision_costs_the_same_at_any_pack_count(tmp_path: Path, monkeypatch) -> None:
+    few, many = (_decision_reads(tmp_path, monkeypatch, n) for n in (2, 40))
+    assert few == many
