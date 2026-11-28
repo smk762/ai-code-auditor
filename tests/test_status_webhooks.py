@@ -51,7 +51,7 @@ def test_mithrandir_still_gets_the_envelope_without_auth(posts, monkeypatch):
     calls, _ = posts
     monkeypatch.setenv("AI_AUDIT_MITHRANDIR_WEBHOOK_URL", "http://m:8400/api/companion/events")
     out = webhook.notify_mithrandir(status=STATUS)
-    assert out["sent"] is True and out["url"] == "http://m:8400/api/companion/events"
+    assert out["sent"] is True and out["url"] == "http://m:8400/…"  # the path may hold a credential
     (call,) = calls
     assert call["headers"] is None
     assert call["json"]["summary_one_liner"] == STATUS["summary_one_liner"]
@@ -93,7 +93,7 @@ def test_extra_target_gets_the_bearer_token_from_its_env(posts, monkeypatch):
         "sent": True,
         "skipped": False,
         "status_code": 200,
-        "url": "http://s:8402/api/events/ai-code-auditor",
+        "url": "http://s:8402/…",
     }
     (call,) = calls
     assert call["headers"] == {"Authorization": "Bearer s3cret"}
