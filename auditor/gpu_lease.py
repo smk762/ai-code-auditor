@@ -44,6 +44,7 @@ import contextlib
 import functools
 import ipaddress
 import logging
+import math
 import os
 import socket
 from collections.abc import Iterator
@@ -119,12 +120,18 @@ def _geometry(model: str) -> dict[str, Any] | None:
 
 
 def model_mb(model: str) -> int | None:
-    """The weights: layers x layer size. ``None`` when the model isn't in the config, which the broker reads as
-    "all of it is working set"."""
+    """The weights: layers x layer size, rounded up. ``None`` when the model isn't in the config or its geometry
+    lacks a positive ``num_layers`` or ``layer_size_mb``, which the broker reads as "all of it is working set"."""
     geo = _geometry(model)
     if geo is None:
         return None
-    return int(geo.get("num_layers", 0)) * int(geo.get("layer_size_mb", 0))
+    try:
+        layers, layer_mb = float(geo["num_layers"]), float(geo["layer_size_mb"])
+    except (KeyError, TypeError, ValueError):
+        return None  # incomplete or unreadable geometry: unknown, never "the weights cost nothing"
+    if not (layers > 0 and layer_mb > 0) or math.isinf(layers * layer_mb):
+        return None
+    return math.ceil(layers * layer_mb)  # a fractional layer size is multiplied, then rounded up once
 
 
 def vram_mb(model: str) -> int:
@@ -132,7 +139,10 @@ def vram_mb(model: str) -> int:
     geo = _geometry(model)
     if geo is None:
         return int(_footprints().get("default_vram_mb", 6000))
-    return (model_mb(model) or 0) + int(geo.get("overhead_mb", 0))
+    weights = model_mb(model)
+    if weights is None:  # unknown weights are never 0 MB: take the default, as for an unknown model
+        return max(int(_footprints().get("default_vram_mb", 6000)), int(geo.get("overhead_mb", 0)))
+    return weights + int(geo.get("overhead_mb", 0))
 
 
 # --- node URLs -----------------------------------------------------------------------------------------------------
