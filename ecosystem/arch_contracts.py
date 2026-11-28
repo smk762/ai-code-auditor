@@ -178,9 +178,23 @@ def _str_list(value: Any) -> list[str] | None:
     return value
 
 
+def _named(item: Any) -> bool:
+    """A mapping whose name is a non-empty string (a list or mapping there can't be a set member)."""
+    return isinstance(item, dict) and isinstance(item.get("name"), str) and bool(item["name"].strip())
+
+
 def validate(data: dict[str, Any], repos: set[str] | None) -> None:
     """Raise ValueError naming every rule that refers to an unknown role or repo, or can match nothing."""
     errors: list[str] = []
+
+    def repo_list(value: Any, where: str) -> list[Any]:
+        """The repos in *value*; a single name is not iterated a character at a time."""
+        if value is None or value == []:
+            return []
+        if not isinstance(value, list):
+            errors.append(f"{where} must be a list of repos, not {type(value).__name__} {value!r}")
+            return []
+        return value
 
     def repo_ok(name: Any, where: str) -> None:
         if repos is not None and name not in repos:
@@ -192,8 +206,7 @@ def validate(data: dict[str, Any], repos: set[str] | None) -> None:
         roles = []
     seen: set[str] = set()
     for i, item in enumerate(roles):
-        if not isinstance(item, dict) or not item.get("name") or not isinstance(item.get("role"), str) \
-                or not item["role"].strip():
+        if not _named(item) or not isinstance(item.get("role"), str) or not item["role"].strip():
             errors.append(f"service_roles[{i}]: needs a name and a role")
             continue
         if item["name"] in seen:
@@ -204,8 +217,8 @@ def validate(data: dict[str, Any], repos: set[str] | None) -> None:
 
     names: set[str] = set()
     for i, rule in enumerate(data.get("rules") or []):
-        if not isinstance(rule, dict) or not rule.get("name"):
-            errors.append(f"rules[{i}]: needs a name")
+        if not _named(rule):
+            errors.append(f"rules[{i}]: needs a name (a string)")
             continue
         rn = f"rule {rule['name']!r}"
         if rule["name"] in names:
@@ -215,7 +228,7 @@ def validate(data: dict[str, Any], repos: set[str] | None) -> None:
         if legacy:
             errors.append(f"{rn}: {', '.join(legacy)} match graph DEPENDS_ON edges, which the ecosystem run "
                           f"never builds, so the rule can match nothing; use `forbid` with from_roles/to_roles")
-        for repo in rule.get("applies_to") or []:
+        for repo in repo_list(rule.get("applies_to"), f"{rn} applies_to"):
             repo_ok(repo, f"{rn} applies_to")
         if ROLE_KEY not in rule and not legacy:
             unread = [k for k in UNEVALUATED_KEYS if k in rule]
@@ -254,7 +267,7 @@ def validate(data: dict[str, Any], repos: set[str] | None) -> None:
             continue
         where = f"domain_ownership[{d.get('domain', i)}]"
         repo_ok(d.get("owner"), f"{where} owner")
-        for repo in d.get("forbidden_in") or []:
+        for repo in repo_list(d.get("forbidden_in"), f"{where} forbidden_in"):
             repo_ok(repo, f"{where} forbidden_in")
 
     cg = data.get("call_graph_rules") or {}
