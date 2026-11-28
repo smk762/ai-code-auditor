@@ -334,6 +334,12 @@ def run() -> None:
         meta.add_error(str(exc))
         meta.finish("failed")
         raise
+    except BaseException as exc:
+        # KeyboardInterrupt / SystemExit (a SIGTERM handler, a cancelled worker): the run must
+        # still be recorded with a terminal status, not left looking like it is running.
+        meta.add_error(f"interrupted: {type(exc).__name__}")
+        meta.finish("cancelled")
+        raise
     finally:
         # Each cleanup step on its own: one failing (the DB being down is a likely cause of the
         # original failure too) must neither skip the rest nor replace the exception in flight.
