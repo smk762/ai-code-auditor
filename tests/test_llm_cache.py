@@ -177,6 +177,16 @@ def test_real_python_change_gets_a_new_key(variant: str) -> None:
     assert c.cache_key(_unit(variant)) != c.cache_key(_unit(PY))
 
 
+def test_python_normalisation_is_pinned() -> None:
+    """Cached reviews are keyed on this exact text: changing it re-reviews every unit."""
+    from auditor.llm_cache import normalise_code
+
+    assert normalise_code(PY, "python") == (
+        'def f ( a , b ) : <nl> <indent> if a : <nl> <indent> return call ( a , b ) # why <nl> '
+        '<dedent> return "x  y" <nl> <dedent>'
+    )
+
+
 def test_other_languages_ignore_whitespace_only() -> None:
     def ts(text: str) -> CodeUnit:
         return CodeUnit(id="t", repo="r", file_path="r/a.ts", symbol="a.ts", kind="file",
