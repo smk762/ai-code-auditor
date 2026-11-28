@@ -318,23 +318,27 @@ def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_pa
         for entry in idx.get("pages", []):
             if entry.get("slug") not in PUBLIC_PAGES or entry.get("stale"):
                 continue
+            title = entry.get("title")
+            if not isinstance(title, str) or not title.strip():
+                missing = True  # a page with no title can't be listed: the repo is left out, not the export
+                break
             try:
                 md = (base / entry["file"]).read_text(encoding="utf-8")
             except (OSError, KeyError, TypeError, UnicodeDecodeError):
                 missing = True  # a listed page that can't be read: the repo is left out, never half-shipped
                 break
             md = _MERMAID.sub("", md)  # diagrams are omitted until they are rendered to SVG at build time
-            hit = gate(md, denylist, private_names)
+            hit = gate(md, denylist, private_names) or gate(title, denylist, private_names)
             if hit:
                 report.refused.append(Refusal(name, entry["slug"], *hit))
                 refused = True
                 continue
             sha = entry.get("source_sha") or idx.get("source_sha")
             html = render_markdown(link_citations(md, f"{OWNER}/{name}", sha, getattr(repos[name], "subpath", "") or ""))
-            pages.append({"slug": entry["slug"], "title": entry["title"], "md": md, "html": html,
+            pages.append({"slug": entry["slug"], "title": title, "md": md, "html": html,
                           "source_sha": sha, "generated_at": entry.get("generated_at")})
         if missing:
-            report.skipped[name] = "a listed page could not be read (repo left out whole)"
+            report.skipped[name] = "a listed page could not be read or has no title (repo left out whole)"
             continue
         if refused:
             report.skipped[name] = "a page was refused by the opsec gate (repo left out whole)"
@@ -349,10 +353,43 @@ def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_pa
     # write the bundle from scratch so removed repos and pages disappear (--delete semantics), in a
     # staging sibling that replaces ``dest`` only once it has passed the final gate
     final = dest
+    _remove_stale_staging(final)
     dest = dest.parent / f".{final.name}.staging-{os.getpid()}"
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
+    try:
+        _write_bundle(dest, final, staged, report, denylist, private_names)
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)  # never leave a half-built (or gate-failed) staging dir
+        raise
+    report_path = Path(output_dir) / "wiki_public_report.json"  # outside the bundle: it quotes what leaked
+    report_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
+    return report
+
+
+def _remove_stale_staging(final: Path) -> None:
+    """Remove staging dirs left by earlier exports to *final* whose process is gone (a crash or
+    kill mid-build); a live process's staging dir is left alone."""
+    if not final.parent.is_dir():
+        return
+    for p in final.parent.glob(f".{final.name}.staging-*"):
+        pid = p.name.rsplit("-", 1)[-1]
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        try:
+            os.kill(int(pid), 0)
+            continue  # still running
+        except ProcessLookupError:
+            pass
+        except OSError:
+            continue  # exists, just not ours to signal
+        shutil.rmtree(p, ignore_errors=True)
+
+
+def _write_bundle(dest: Path, final: Path, staged: dict[str, dict[str, Any]], report: ExportReport,
+                  denylist: list[str], private_names: list[str]) -> None:
+    """Write the bundle into the staging dir *dest*, gate it, and swap it in for *final*."""
     manifest: dict[str, Any] = {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                                 "generator": GENERATOR, "repos": {}}
     hashes: dict[str, str] = {}
@@ -379,15 +416,16 @@ def export(output_dir: str | Path, out: str | Path | None = None, *, denylist_pa
     # final belt-and-braces pass over everything written (the bundle must never ship a gate failure)
     for f in dest.rglob("*"):
         if f.is_file() and (hit := gate(f.read_text(encoding="utf-8"), denylist, private_names)):
-            shutil.rmtree(dest)
             raise RuntimeError(f"opsec gate failed on the written bundle ({f.name}: {hit[0]}); bundle removed")
     _check_replaceable(final)  # still only a previous bundle (or nothing) after the build
     old = final.parent / f".{final.name}.old-{os.getpid()}"
     if final.exists():
         os.replace(final, old)
-    os.replace(dest, final)
+    try:
+        os.replace(dest, final)
+    except BaseException:
+        if old.exists() and not final.exists():
+            os.replace(old, final)  # put the previous bundle back rather than leave none
+        raise
     if old.exists():
         shutil.rmtree(old)
-    report_path = Path(output_dir) / "wiki_public_report.json"  # outside the bundle: it quotes what leaked
-    report_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
-    return report
