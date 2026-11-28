@@ -104,6 +104,8 @@ class Closure:
 class Mirror:
     """Read-only facts about a repo's ``origin/dev`` (else ``HEAD``) in its local mirror."""
 
+    _files_failed = False  # ls-tree failed: the listing is unknown
+
     def __init__(self, path: Path | None):
         self.path = path if path and (path / ".git").exists() else None
         self.ref = ""
@@ -117,20 +119,30 @@ class Mirror:
 
     def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
         # Decode leniently: a Latin-1 or binary blob must not raise out of ``lines()``.
-        return subprocess.run(["git", *args], cwd=self.path, capture_output=True, encoding="utf-8",
-                              errors="replace", timeout=60, check=False)
+        # A stalled mirror (timeout) or no git binary reads as a failed command, so every caller
+        # takes its "can't read" branch instead of the GC run crashing.
+        try:
+            return subprocess.run(["git", *args], cwd=self.path, capture_output=True, encoding="utf-8",
+                                  errors="replace", timeout=60, check=False)
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            logger.warning("pack gc: git %s failed in %s: %s", args[0] if args else "", self.path, exc)
+            return subprocess.CompletedProcess(["git", *args], 1, "", str(exc))
 
     @property
     def ok(self) -> bool:
         return bool(self.path and self.ref)
 
-    def files(self) -> set[str]:
+    def files(self) -> set[str] | None:
+        """The paths on the ref; None when listing them failed (unknown, never "every file gone")."""
         if not self.ok:  # never run git in the process CWD or against the index
             return set()
-        if self._files is None:
+        if self._files is None and not self._files_failed:
             # -z: without it, paths with non-ASCII bytes, quotes or newlines come back C-quoted
             r = self._git("ls-tree", "-r", "-z", "--name-only", self.ref)
-            self._files = set(filter(None, r.stdout.split("\0"))) if r.returncode == 0 else set()
+            if r.returncode == 0:
+                self._files = set(filter(None, r.stdout.split("\0")))
+            else:
+                self._files_failed = True
         return self._files
 
     def lines(self, path: str) -> list[str] | None:
@@ -145,7 +157,8 @@ class Mirror:
     def last_change(self, path: str) -> datetime | None:
         if not self.ok:
             return None
-        r = self._git("log", "-1", "--format=%cI", self.ref, "--", path)
+        # literal: a path holding ``*``, ``?``, ``[`` or a leading ``:`` is a file, not a glob or magic
+        r = self._git("--literal-pathspecs", "log", "-1", "--format=%cI", self.ref, "--", path)
         try:
             return datetime.fromisoformat(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
         except ValueError:
@@ -242,10 +255,11 @@ def plan(packs: list[PackView], scans: list[Scan], mirrors: dict[str, Mirror], *
             "wontfix_considered": sum(n for (_, st), n in considered.items() if st == "wontfix")}
 
 
-def _file_gone(p: PackView, files: set[str]) -> bool:
+def _file_gone(p: PackView, files: set[str] | None) -> bool:
     """The pack's file is not on the ref. When its path can't be anchored to the repo root, a file on
-    the ref that the path ends with may be the one it means, so the pack is kept (#171)."""
-    if p.path in files:
+    the ref that the path ends with may be the one it means, so the pack is kept (#171). A listing
+    that failed (None) proves nothing."""
+    if files is None or p.path in files:
         return False
     if p.path_anchored:
         return True
@@ -450,8 +464,11 @@ def plan_architecture(entries: list[dict[str, Any]], reported: list[Any], scanne
                                     "not_reported", "the latest ecosystem run no longer reports this violation"))
     held = ""
     gone = [c for c in closures if c.rule == "not_reported"]
-    if not force and len(gone) > HOLD_MIN and len(gone) > HOLD_SHARE * len(candidates):
-        held = (f"would close {len(gone)} of {len(candidates)} open architecture packs as no longer "
+    # The share is of the packs that could close as no longer reported: ones in unread repos and
+    # duplicates can't, and counting them would let a partial run in a read repo slip under the hold.
+    eligible = len(candidates) - len(unknown) - sum(c.rule == "duplicate" for c in closures)
+    if not force and len(gone) > HOLD_MIN and len(gone) > HOLD_SHARE * eligible:
+        held = (f"would close {len(gone)} of {eligible} open architecture packs as no longer "
                 f"reported (> {HOLD_SHARE:.0%}); rerun with force")
         closures = [c for c in closures if c.rule != "not_reported"]
     return {"closures": closures, "held": held, "open_considered": len(candidates), "unknown": unknown}
