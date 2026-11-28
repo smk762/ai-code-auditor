@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Providers whose endpoint speaks POST /v1/chat/completions (OpenAI, DeepSeek, Qwen, vLLM, …).
 OPENAI_CHAT_PROVIDERS = {"openai", "openai-compatible", "xai"}
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_FENCE_RE = re.compile(r"```[A-Za-z0-9_-]*[ \t]*\n(.*?)```", re.DOTALL)
 
 
 def _transient(exc: Exception) -> bool:
@@ -498,25 +499,45 @@ def _anthropic_base_url(endpoint: str) -> str | None:
     return (endpoint or "").strip().rstrip("/").removesuffix("/v1/messages") or None
 
 
+def _array_in(value: Any) -> list[Any] | None:
+    """``value`` if it is a list; for a wrapper object, its ``findings`` list, else its first list value."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        if isinstance(value.get("findings"), list):
+            return value["findings"]
+        return next((v for v in value.values() if isinstance(v, list)), None)
+    return None
+
+
 def _extract_json_array(raw: str) -> Any:
-    """Parse a JSON array from model output, tolerating <think> blocks and ``` fences."""
+    """Parse a JSON array from model output, tolerating <think> blocks, ``` fences, prose and a
+    wrapper object such as ``{"findings": [...], "notes": []}``."""
     text = _THINK_RE.sub("", raw).strip()
-    try:
-        whole = json.loads(text)
-    except json.JSONDecodeError:
-        whole = None
-    if isinstance(whole, list):
-        return whole
-    # Not an array as a whole (prose, fences, or a wrapper such as {"findings": [...]}):
-    # take the outermost [...] span.
-    start, end = text.find("["), text.rfind("]")
-    if start == -1 or end <= start:
-        return None
-    try:
-        found = json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-    return found if isinstance(found, list) else None
+    for candidate in [text, *_FENCE_RE.findall(text)]:
+        try:
+            found = _array_in(json.loads(candidate.strip()))
+        except json.JSONDecodeError:
+            continue
+        if found is not None:
+            return found
+    # Prose around the array: decode a JSON value at each "[" rather than slicing from the first
+    # "[" to the last "]", which spans other brackets ("items[0]", a second array, trailing text).
+    # Prefer an array of objects (findings), then an empty one, then any array.
+    decoder = json.JSONDecoder()
+    arrays: list[list[Any]] = []
+    pos = text.find("[")
+    while pos != -1:
+        try:
+            value, _ = decoder.raw_decode(text, pos)
+        except json.JSONDecodeError:
+            value = None
+        if isinstance(value, list):
+            if value and all(isinstance(v, dict) for v in value):
+                return value
+            arrays.append(value)
+        pos = text.find("[", pos + 1)
+    return next((a for a in arrays if not a), arrays[0] if arrays else None)
 
 
 def _parse_findings_json(raw: str, unit: CodeUnit) -> list[Finding] | None:
