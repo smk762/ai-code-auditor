@@ -501,7 +501,10 @@ def judge_child(child: Any, proof: dict[str, Any], scans: list[Any], mirror: Any
     tied = [(h, names) for h in pre if (names := rule_attributed(h, lines, finding_text, child.snippet or ""))]
     if not tied:
         return "unattributed", "the guard's rule didn't fire on this finding's code before the guard"
-    now = mirror.lines(child.path) if child.path in mirror.files() else []
+    files = mirror.files()
+    if files is None:
+        return "wait", "can't list the files on dev"
+    now = mirror.lines(child.path) if child.path in files else []
     if now is None:
         return "wait", "can't read the file on dev"
     dev = runner("\n".join(now) + "\n", child.path, rule) if now else []

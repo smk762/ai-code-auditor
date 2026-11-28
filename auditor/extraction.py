@@ -12,7 +12,8 @@ outside git beside the approved rules, because the API writes them.
 **Ids.** The proposer numbers candidates by rank, so ``ext-shar-005`` named a different cluster
 on another night. ``stabilize_ids`` gives each candidate the id of the earlier candidate or
 decision sharing most of its units (``repo:path:symbol``, Jaccard ≥ ``MATCH_MIN``), else a hash
-of its units, and records the units per id in ``reports/extraction_ids.json``.
+of its units, and records the units per id in ``reports/extraction_ids.json``. An id no candidate
+matched is kept there for ``IDS_KEEP_DAYS``, so a cluster one partial run missed gets it back.
 
 **Progress.** A unit is a copy of the logic in one file. Each sync re-reads the selected units
 from the mirrors: a copy whose file no longer defines the symbol is ``gone``. The pack lists what
@@ -33,7 +34,9 @@ import json
 import logging
 import os
 import re
+import subprocess
 from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -44,12 +47,16 @@ from auditor.decisions import DecisionConflict as DecisionConflict
 from auditor.decisions import close_idle, locked, save_decisions
 from auditor.decisions import load_decisions as read_decisions
 from auditor.fsutil import atomic_write_text
+from auditor.repo_paths import rel_path as _repo_rel_path
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TARGET = "argus-cortex"
 MATCH_MIN = 0.5
 IDS_FILE = "extraction_ids.json"
+# An id no candidate matched is kept this long, so a cluster missing from one partial run gets its
+# old id back when it returns.
+IDS_KEEP_DAYS = 90
 DECISION_STATUSES = ("approved", "dismissed")
 # Statuses the nightly sync resolves once every copy is gone (``unknown`` never counts as gone).
 _WORKING = frozenset({"open", "claimed", "in_progress", "unverified"})
@@ -66,11 +73,8 @@ def decisions_path() -> str:
 
 def rel_path(repo: str, path: str) -> str:
     """A unit path relative to its repo (candidates carry absolute mirror paths)."""
-    p = str(path).replace("\\", "/")
-    marker = f"/{repo}/"
-    if marker in p:
-        return p.rsplit(marker, 1)[1]
-    return p.lstrip("/")
+    # The first ``/{repo}/`` is the checkout root: a package named after the repo must survive.
+    return _repo_rel_path(repo, str(path).replace("\\", "/"))
 
 
 def units_of(candidate: dict[str, Any]) -> list[dict[str, str]]:
@@ -115,9 +119,11 @@ def stabilize_ids(candidates: list[dict[str, Any]], output_dir: str | Path,
     """Give each candidate a stable id (in place) and record the units per id. Returns *candidates*."""
     ids_path = Path(output_dir) / IDS_FILE
     known: dict[str, set[str]] = {}
+    seen: dict[str, str] = {}
     try:
         raw = json.loads(ids_path.read_text(encoding="utf-8"))
         known = {k: set(v) for k, v in (raw.get("ids") or {}).items() if isinstance(v, list)}
+        seen = {k: str(v) for k, v in (raw.get("last_seen") or {}).items() if k in known}
     except (OSError, ValueError, AttributeError):
         pass
     for cid, d in (decisions or {}).items():  # a decision's units win: they're what was approved
@@ -139,13 +145,21 @@ def stabilize_ids(candidates: list[dict[str, Any]], output_dir: str | Path,
         if cid is None:
             cid = "ext-" + hashlib.sha1("\n".join(sorted(mine[i])).encode()).hexdigest()[:8]
             n = 2
-            while cid in used or cid in record:  # the same unit set twice: keep both, distinctly
+            while cid in used or cid in record or cid in known:  # the same unit set twice: keep both, distinctly
                 cid = f"{cid.rsplit('~', 1)[0]}~{n}"
                 n += 1
         used.add(cid)
         c["id"] = cid
         record[cid] = sorted(mine[i])
-    atomic_write_text(ids_path, json.dumps({"updated_at": utc_now_iso(), "ids": record}, indent=1) + "\n")
+    now = utc_now_iso()
+    last_seen = {cid: now for cid in record}
+    cutoff = (datetime.now(UTC) - timedelta(days=IDS_KEEP_DAYS)).isoformat()
+    for k, keys in known.items():  # unmatched this run: keep, so a cluster back from a partial run keeps its id
+        if k not in record and seen.get(k, now) >= cutoff:
+            record[k] = sorted(keys)
+            last_seen[k] = seen.get(k, now)
+    atomic_write_text(ids_path, json.dumps({"updated_at": now, "ids": record, "last_seen": last_seen},
+                                           indent=1) + "\n")
     return candidates
 
 
@@ -157,9 +171,8 @@ COPY_RISK_DAYS = 90
 def _agent_touches(repo_paths: dict[str, str | Path], prs: list[dict[str, Any]],
                    since_days: int = COPY_RISK_DAYS) -> dict[tuple[str, str], set[str]]:
     """(repo, repo-relative path) -> the agent PR urls whose commits changed it, from one
-    ``git log`` per mirror over the last *since_days*. Reads only."""
-    import subprocess
-
+    ``git log`` per mirror over the last *since_days*. Reads only. A mirror git can't read (a
+    timeout, no git binary) is skipped, like one whose log fails."""
     by_sha: dict[str, str] = {}
     for pr in prs or []:
         for sha in [*(pr.get("commit_shas") or []), pr.get("merge_sha") or ""]:
@@ -169,18 +182,38 @@ def _agent_touches(repo_paths: dict[str, str | Path], prs: list[dict[str, Any]],
     for repo, root in repo_paths.items():
         if not (Path(root) / ".git").exists():
             continue
-        r = subprocess.run(["git", "-C", str(root), "log", f"--since={since_days}.days", "--name-only",
-                            "--format=@%H", "--no-renames"], capture_output=True, text=True, check=False, timeout=120)
+        # -z: paths come back verbatim (no C-quoting of non-ASCII), and the NUL before each sha
+        # marks a commit header no path can be mistaken for (a path may start with "@").
+        try:
+            r = subprocess.run(["git", "-C", str(root), "log", f"--since={since_days}.days", "--name-only",
+                                "--format=%x00%H", "--no-renames", "-z"], capture_output=True, encoding="utf-8",
+                               errors="surrogateescape", check=False, timeout=120)
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            logger.info("copy risk: no git log for %s: %s", repo, exc)
+            continue
         if r.returncode != 0:
             logger.info("copy risk: no git log for %s: %s", repo, (r.stderr or "")[:200])
             continue
-        cur = ""
-        for line in r.stdout.splitlines():
-            if line.startswith("@"):
-                cur = by_sha.get(line[1:], "")
-            elif line and cur:
-                out.setdefault((repo, line), set()).add(cur)
+        for sha, path in _log_files(r.stdout):
+            if cur := by_sha.get(sha, ""):
+                out.setdefault((repo, path), set()).add(cur)
     return out
+
+
+def _log_files(stdout: str) -> Iterable[tuple[str, str]]:
+    """``(sha, path)`` pairs from ``git log -z --name-only --format=%x00%H``: each commit is a NUL,
+    its sha, a NUL, then its paths (the first after a newline), each NUL-terminated."""
+    sha, header, first = "", True, False
+    for tok in stdout.split("\0"):
+        if not tok:
+            header = True
+        elif header:
+            sha, header, first = tok.strip(), False, True
+        else:
+            path = tok[1:] if first and tok.startswith("\n") else tok
+            first = False
+            if path:
+                yield sha, path
 
 
 def annotate_copy_risk(candidates: list[dict[str, Any]], repo_paths: dict[str, str | Path],
@@ -274,11 +307,14 @@ def build_pack(cid: str, decision: dict[str, Any], copies: list[dict[str, Any]],
                  + "): check they can take an argus-cortex dependency before migrating them; leave them out if not."]
     base = public_base_url.rstrip("/")
     pid = pack_id(cid)
-    first = left[0] if left else (copies[0] if copies else {})
+    # The pack's repo is the target, so its location may only name a file there (a copy already in
+    # the target); a consumer's copy would point at a path the target doesn't have.
+    first = next((c for c in left if c["repo"] == target), None) or {}
+    score = decision.get("score")
     return AgentCodingPack(
         work_item_id=pid,
         kind="extraction",
-        priority={"severity": "MEDIUM", "score": float(decision.get("score") or 0.6)},
+        priority={"severity": "MEDIUM", "score": float(0.6 if score is None else score)},
         repo={"name": target, "path": "", "base_branch": "dev"},
         location={"file_path": str(first.get("path") or ""), "line": 0, "symbol": symbol,
                   "code_snippet": "", "evidence": "\n".join(copy_lines)[:2000]},
@@ -424,11 +460,13 @@ def sync_packs(output_dir: str | Path, repo_paths: dict[str, str | Path], *, pub
     )
 
     p = Path(path or decisions_path())
-    decisions = load_decisions(p)
-    approved = {cid: d for cid, d in decisions.items() if d.get("status") == "approved"}
-    wanted = {pack_id(c) for c in approved}
     out = {"refreshed": 0, "closed": 0, "resolved": 0, "left": {}}
     with pack_lock(output_dir):
+        # Read under the lock ``decide`` writes under: an approval landing while this waited is seen,
+        # so its fresh pack isn't closed as unapproved.
+        decisions = load_decisions(p)
+        approved = {cid: d for cid, d in decisions.items() if d.get("status") == "approved"}
+        wanted = {pack_id(c) for c in approved}
         for cid, d in approved.items():
             res = _write_approved(output_dir, cid, d, repo_paths, public_base_url, run_id)
             out["refreshed"] += 1

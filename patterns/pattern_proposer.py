@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import hashlib
 import os
 
 from auditor.contracts import PatternProposal
@@ -39,7 +40,7 @@ def propose_extraction_candidates(
     embed_min = _float_env("AI_AUDIT_DUP_EMBED_MIN", 0.78)
     sig_min = _float_env("AI_AUDIT_DUP_SIG_MIN", 0.60)
     candidates: list[dict] = []
-    for idx, cluster in enumerate(duplicate_clusters, start=1):
+    for cluster in duplicate_clusters:
         units = cluster.get("units", [])
         repos = cluster.get("repos", [])
         if len(repos) < 2:
@@ -94,7 +95,7 @@ def propose_extraction_candidates(
         risks = _risk_notes(units)
         candidates.append(
             {
-                "id": f"ext-{domain[:4]}-{idx:03d}",
+                "id": _candidate_id(domain, cluster, units),
                 "title": f"Extract {symbol} ({len(repos)} repos)",  # where it goes is the approver's call
                 "domain": domain,
                 "priority": priority,
@@ -120,6 +121,14 @@ def propose_extraction_candidates(
         )
 
     return sorted(candidates, key=lambda item: item["extraction_score"], reverse=True)
+
+
+def _candidate_id(domain: str, cluster: dict, units: list) -> str:
+    """An id from the cluster's content, never its position: a cluster added, dropped or reordered
+    on another night must not hand its id (and a decision keyed on it) to a different cluster."""
+    key = str(cluster.get("cluster_id") or "") or "\n".join(
+        sorted(f"{u.repo}:{u.file_path}:{u.symbol}" for u in units))
+    return f"ext-{domain[:4]}-{hashlib.sha1(key.encode('utf-8')).hexdigest()[:10]}"
 
 
 def _findings_counter(audit_findings: list[dict]) -> Counter:
