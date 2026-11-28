@@ -1945,6 +1945,10 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
         failure_summary: list[str] — compact LLM-ready failure lines (≤20).
         raw_output:      str  — last 2000 chars of runner output.
         skipped_reason:  str  — non-empty when validation was skipped.
+        base_failures:   per project, every test id that fails or errors on the base tree too, or only
+                         flaked: ``{label: {failed, errored, flaky}}``, and for an npm check
+                         ``{label: {checks: {script: [error ids]}}}``. Not counted against the patch;
+                         the notes in ``raw_output`` abbreviate these lists.
         pack:            with ``pack_id``: ``{id, updated, status, evidence, reason}``. A pass resolves
                          the pack only with evidence (``auditor/evidence.py``): a failing-then-passing
                          test for bug/security packs, tests for other code changes. Otherwise the pack
@@ -2093,6 +2097,7 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
             "raw_output":      val_result.raw_output[-2000:],
             "skipped_reason":  val_result.skipped_reason,
             "tests":           val_result.tests,
+            "base_failures":   val_result.base_failures,
         }
         from auditor import equivalence
 
