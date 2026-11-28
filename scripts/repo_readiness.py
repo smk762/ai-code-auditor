@@ -369,6 +369,23 @@ def issue_body(name: str, snap_sha: str, gi: dict, pre: dict, rev: dict | None, 
     return "\n".join(L)
 
 
+def _new_run_dir(base: Path) -> Path:
+    """A fresh run directory (with its issues/ subdir) under *base*. Two runs started in the same
+    second get distinct directories (a -2, -3 … suffix) rather than crashing or sharing one."""
+    base.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    n = 1
+    while True:
+        run = base / (stamp if n == 1 else f"{stamp}-{n}")
+        try:
+            run.mkdir()
+        except FileExistsError:
+            n += 1
+            continue
+        (run / "issues").mkdir()
+        return run
+
+
 def main() -> int:
     global MODEL, EFFORT
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -385,8 +402,7 @@ def main() -> int:
     repos = [r for r in load_ecosystem_config().repos if r.enabled
              and (args.repos == "all" or r.name in args.repos.split(","))]
     vis = json.loads(Path(args.visibility).read_text()) if args.visibility else {}
-    run = ROOT / "reports" / "repo_readiness" / datetime.now().strftime("%Y%m%d-%H%M%S")
-    (run / "issues").mkdir(parents=True)
+    run = _new_run_dir(ROOT / "reports" / "repo_readiness")
     snapdir = Path(args.snapshot_dir)
     cl = anthropic.Anthropic(max_retries=4) if args.llm else None
 
@@ -398,12 +414,15 @@ def main() -> int:
         return repo.name, snap["sha"], gi, pre, rev
 
     rows = []
+    failed: dict[str, str] = {}
     with ThreadPoolExecutor(args.concurrency) as pool:
-        for fut in as_completed([pool.submit(work, r) for r in repos]):
+        futures = {pool.submit(work, r): r.name for r in repos}
+        for fut in as_completed(futures):
             try:
                 name, sha, gi, pre, rev = fut.result()
-            except Exception as exc:  # noqa: BLE001
-                print(f"  ! {exc}", flush=True)
+            except Exception as exc:  # noqa: BLE001 — recorded as an ERROR row and a non-zero exit
+                failed[futures[fut]] = f"{type(exc).__name__}: {exc}"
+                print(f"  ! {futures[fut]}: {failed[futures[fut]]}", flush=True)
                 continue
             public = vis.get(name) == "PUBLIC" and name.startswith("argus-")
             (run / f"{name}.json").write_text(json.dumps({"sha": sha, "git": gi, "prechecks": pre, "review": rev}, indent=1))
@@ -427,11 +446,16 @@ def main() -> int:
                  f"{rev.get('readme_freshness', '–') if rev else '–'} | {nf} ({hi}) | {len(pre['opsec'])} | "
                  f"{len(pre['undocumented_env'])}/{pre['env_vars']} | {len(pre['undocumented_routes'])}/{pre['routes']} | "
                  f"{pre['module_docstring_pct'] if pre['module_docstring_pct'] is not None else '–'}% | {len(pre['oversize_in_tree'])} |")
+    for name in sorted(failed):
+        err = " ".join(failed[name].split()).replace("|", "\\|")
+        L.append(f"| {name} | ERROR: {err} |" + " |" * 9)
     L.append(f"\nLLM review: {MODEL} @ {EFFORT}, full source at origin/dev. Cost ${total:.2f}.")
+    if failed:
+        L.append(f"\n**{len(failed)} repo(s) failed and were not audited:** {', '.join(sorted(failed))}.")
     (run / "summary.md").write_text("\n".join(L) + "\n")
     print("\n".join(L))
     print(f"\nrun dir: {run}")
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
