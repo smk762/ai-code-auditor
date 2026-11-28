@@ -452,8 +452,11 @@ def _module_pattern(pack: dict[str, Any]) -> re.Pattern[str] | None:
     if stem.lower() in GENERIC_STEMS or len(stem) < 4:
         if not parent:
             return None
-        par, st = re.escape(parent), re.escape(stem)  # repair.models, repair/models, from x.repair import models
-        return re.compile(rf"\b{par}[./]{st}\b|^\s*from\s+[\w.]*\b{par}\s+import\s+[^\n#]*\b{st}\b", re.M)
+        # repair.models, repair/models, from x.repair import models, and the wrapped
+        # from x.repair import (\n    models,\n) a formatter writes for a long import list
+        par, st = re.escape(parent), re.escape(stem)
+        return re.compile(rf"\b{par}[./]{st}\b|^\s*from\s+[\w.]*\b{par}\s+import\s+"
+                          rf"(?:[^\n#(]*\b{st}\b|\((?:[^)#]|#[^\n]*\n)*?\b{st}\b)", re.M)
     return re.compile(rf"\b{re.escape(stem)}\b")
 
 
