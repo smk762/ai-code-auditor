@@ -59,3 +59,16 @@ def test_node_checks_run_without_host_secrets(host_secrets) -> None:
 
     env = _env(Path("/tmp/npm-cache"))
     assert not set(SECRETS) & set(env) and env["npm_config_cache"] == "/tmp/npm-cache" and env["CI"] == "1"
+
+
+def test_the_child_always_has_a_user_name(monkeypatch) -> None:
+    # The container's uid has no passwd entry: getpass.getuser() in a test (torch's inductor, at import)
+    # raised unless USER or LOGNAME named someone.
+    from auditor.proc import child_env
+
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("LOGNAME", raising=False)
+    env = child_env()
+    assert env["USER"] == env["LOGNAME"] == "validate"
+    monkeypatch.setenv("USER", "smk")
+    assert child_env()["USER"] == "smk"

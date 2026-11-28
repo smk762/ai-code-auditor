@@ -43,6 +43,10 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && node --version && npm --version
 
+# Where GitHub's runners have it: a test that runs `python3` with PATH cut to /usr/bin:/bin (argus-lightbox's
+# lens-backend stubs) otherwise fails only here, with exit 127.
+RUN ln -s /usr/local/bin/python3 /usr/bin/python3
+
 # Wrappers only, so nothing else in the conda env (its python, curl, openssl) is ever on PATH.
 COPY --from=geo /opt/geo /opt/geo
 COPY --from=geo /opt/geo-bin/ /usr/local/bin/

@@ -73,5 +73,9 @@ def child_env(**extra: str) -> dict[str, str]:
     """A minimal env for a child that runs audited code (tests, installs, checks): the allowlist
     above from the host env, the locale's ``LC_*``, then *extra*."""
     env = {k: v for k, v in os.environ.items() if k in _CHILD_ENV_KEEP or k.startswith("LC_")}
+    # The container's uid has no passwd entry, so getpass.getuser() raises unless these name someone
+    # (torch's inductor calls it at import: argus-echo's miso tests errored at collection only here).
+    for key in ("USER", "LOGNAME"):
+        env.setdefault(key, "validate")
     env.update(extra)
     return env

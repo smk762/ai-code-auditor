@@ -463,14 +463,53 @@ def project_root(tree: Path, rel_path: str) -> Path:
 def ci_test_extras(root: Path) -> list[str]:
     """Extras the repo's CI installs for its tests, from the nearest ``.github/workflows`` at or
     above *root*: argus-ci's ``test-extras`` input, extras a step installs (``.[a,b]``), and
-    :data:`ALL_EXTRAS` for ``--all-extras``. [] when none is set."""
+    :data:`ALL_EXTRAS` for ``--all-extras``. [] when none is set.
+
+    Only jobs that run tests count. argus-proof's ``score-imports`` job installs ``.[score]`` (torch,
+    transformers) only to check that it imports; its tests run without it, and with it its scorers
+    think they can run and download models, failing 24 tests that pass in CI."""
     found: list[str] = []
     for text in _workflow_texts(root):
-        for m in [*_CI_TEST_EXTRAS_RE.finditer(text), *_CI_INSTALL_EXTRAS_RE.finditer(text)]:
-            found += [e.strip() for e in m.group(1).split(",") if e.strip()]
-        if _CI_ALL_EXTRAS_RE.search(text):
-            found.append(ALL_EXTRAS)
+        for job in _workflow_jobs(text):
+            if not _CI_RUNS_TESTS_RE.search(job):
+                continue
+            for m in [*_CI_TEST_EXTRAS_RE.finditer(job), *_CI_INSTALL_EXTRAS_RE.finditer(job)]:
+                found += [e.strip() for e in m.group(1).split(",") if e.strip()]
+            if _CI_ALL_EXTRAS_RE.search(job):
+                found.append(ALL_EXTRAS)
     return list(dict.fromkeys(found))
+
+
+# A job that runs tests: pytest itself, a make/tox/nox target, or argus-ci's python-ci.yml (its test-extras input).
+_CI_RUNS_TESTS_RE = re.compile(r"\bpytest\b|\bmake\s+test\b|\b(?:tox|nox)\b|^\s*test-extras:", re.MULTILINE)
+_JOBS_LINE_RE = re.compile(r"^jobs:\s*(?:#.*)?$")
+
+
+def _workflow_jobs(text: str) -> list[str]:
+    """The text of each job under a workflow's top-level ``jobs:``, by indentation; the whole text
+    when it has no ``jobs:`` block."""
+    lines = text.splitlines()
+    start = next((i for i, ln in enumerate(lines) if _JOBS_LINE_RE.match(ln)), None)
+    if start is None:
+        return [text]
+    jobs: list[list[str]] = []
+    indent = None
+    for ln in lines[start + 1:]:
+        bare = ln.lstrip(" ")
+        if not bare or bare.startswith("#"):
+            if jobs:
+                jobs[-1].append(ln)
+            continue
+        depth = len(ln) - len(bare)
+        if depth == 0:
+            break  # the next top-level key
+        if indent is None:
+            indent = depth
+        if depth == indent:
+            jobs.append([])
+        if jobs:
+            jobs[-1].append(ln)
+    return ["\n".join(j) for j in jobs]
 
 
 # Loose tests (#102): a repo with no project marker (argus-ci) keeps test_*.py next to the code it
@@ -885,7 +924,8 @@ def stub_version_files(root: Path) -> list[str]:
     hatch-vcs (``[tool.hatch.build.hooks.vcs] version-file``) and setuptools-scm (``version_file`` /
     ``write_to``) write that module at build time and it is gitignored, so a clean tree lacks it
     and any ``from pkg._version import ...`` fails, pushing validation to lint-only. Paths outside
-    *root* are ignored. Returns the paths written, relative to *root*."""
+    *root* are ignored. The project's own ``.dist-info`` is stubbed too (:func:`_stub_dist_info`).
+    Returns the paths written, relative to *root*."""
     import tomllib
 
     try:
@@ -908,7 +948,37 @@ def stub_version_files(root: Path) -> list[str]:
         except OSError:
             continue
         written.append(rel)
+    if (info := _stub_dist_info(root, data)) is not None:
+        written.append(info)
     return written
+
+
+def _stub_dist_info(root: Path, data: dict) -> str | None:
+    """Metadata for *root*'s project, so ``importlib.metadata`` finds it as CI's install would.
+
+    The venv never installs the project (tests import the tree through PYTHONPATH), so a test that
+    reads its own installed version or entry points failed only here: argus-cortex's health body
+    reported ``0.0.0+unknown``. *root* is on PYTHONPATH, where importlib looks for ``*.dist-info``."""
+    project = _table(data.get("project"))
+    name = project.get("name")
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):
+        return None
+    version = project.get("version") if isinstance(project.get("version"), str) else "0.0.0+validate"
+    info = root / f"{canonicalize_name(name).replace('-', '_')}-{version}.dist-info"
+    if any(root.glob("*.dist-info")):
+        return None  # the tree ships its own, or an earlier run wrote one
+    groups = {"console_scripts": _table(project.get("scripts")), "gui_scripts": _table(project.get("gui-scripts")),
+              **{g: _table(eps) for g, eps in _table(project.get("entry-points")).items()}}
+    entry_points = "".join(f"[{g}]\n" + "".join(f"{k} = {v}\n" for k, v in eps.items()) + "\n"
+                           for g, eps in groups.items() if eps)
+    try:
+        info.mkdir()
+        (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding="utf-8")
+        if entry_points:
+            (info / "entry_points.txt").write_text(entry_points, encoding="utf-8")
+    except OSError:
+        return None
+    return info.name
 
 
 _COUNT_RE = re.compile(r"\b(\d+) (passed|failed|skipped|xfailed|xpassed|errors?)\b")
