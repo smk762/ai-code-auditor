@@ -252,3 +252,14 @@ def test_packs_suggest_the_npm_project_checks_for_a_ts_file(tmp_path: Path) -> N
     assert cmds == ["cd web && npm ci", "cd web && npm run -s typecheck",
                     "cd web && npm run -s test -- --passWithNoTests"]  # the fixture's script says "vitest"
     assert suggest_test_commands(tmp_path, "app/x.py")[0] == "pytest"
+
+
+def test_node_test_runner_failures_are_keyed_by_name_not_timing(tmp_path: Path) -> None:
+    # node --test's TAP: each run's duration_ms differs, so reading its lines as ids made every run "new".
+    def run(ms: str) -> str:
+        return ("# Subtest: iceland: bundle matches\nnot ok 4 - iceland: bundle matches\n  ---\n"
+                f"  duration_ms: {ms}\n  location: '{tmp_path}/test/parity.test.mjs:51:3'\n  ...\n"
+                "ok 2 - fits Pages # SKIP\n    not ok 1 - inner case\nnot ok 5 - later # TODO not yet\n"
+                f"1..5\n# fail 2\n# duration_ms {ms}\n")
+    assert error_ids("test", run("0.14"), tmp_path) == error_ids("test", run("41.26"), tmp_path)
+    assert sorted(error_ids("test", run("0.14"), tmp_path)) == ["iceland: bundle matches", "inner case"]

@@ -56,6 +56,10 @@ _NPM_DEFAULT_TEST = "no test specified"
 _TSC_RE = re.compile(r"^(?P<file>\S.*?)\(\d+,\d+\): error (?P<code>TS\d+): (?P<msg>.*)$", re.MULTILINE)
 _ESLINT_ROW_RE = re.compile(r"^\s+\d+:\d+\s+error\s+(?P<msg>.*?)\s{2,}(?P<rule>\S+)\s*$")
 _VITEST_FAIL_RE = re.compile(r"^\s*FAIL\s+(?P<id>\S.*?)\s*$", re.MULTILINE)
+# node:test's TAP reporter (`node --test`): a failing test or subtest, indented by depth. A `# TODO` failure doesn't
+# fail the run. Its YAML blocks carry `duration_ms: 0.14` with no unit, so the plain-lines fallback read a new id
+# into every run: argus-realms' arena tests failed every patch as "new test errors" that were only timings.
+_TAP_FAIL_RE = re.compile(r"^\s*not ok \d+ (?:- )?(?P<id>.*?)\s*$", re.MULTILINE)
 _TIMING_RE = re.compile(r"\b\d+(?:\.\d+)?\s?m?s\b")
 _ENV_GAP_RE = re.compile(r"(sh: \d+: \S+: not found|command not found|env: .?node.?: No such file)")
 
@@ -376,6 +380,10 @@ def error_ids(script: str, output: str, root: Path) -> Counter:
     fails = [m["id"] for m in _VITEST_FAIL_RE.finditer(text)]
     if fails:
         ids.update(fails)
+        return ids
+    tap = [m["id"] for m in _TAP_FAIL_RE.finditer(text) if not re.search(r"#\s*TODO\b", m["id"], re.IGNORECASE)]
+    if tap:
+        ids.update(re.sub(r"\s+#\s*SKIP\b.*$", "", i, flags=re.IGNORECASE) for i in tap)
         return ids
     # anything else (a drift check): its output lines, timings dropped
     ids.update(ln for ln in (_TIMING_RE.sub("", x).strip() for x in text.splitlines()) if ln)
