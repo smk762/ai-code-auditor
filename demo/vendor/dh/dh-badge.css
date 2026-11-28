@@ -1,0 +1,13 @@
+/*! dh-badge v1.2.12 | Demo-state badges (vocabulary in shared/README.md). Requires dh-tokens.css. */
+.dh-badge {
+  display: inline-flex; align-items: center; gap: var(--dh-space-1);
+  padding: 2px var(--dh-space-2); border-radius: var(--dh-radius-pill);
+  border: 1px solid var(--dh-demo-border);
+  background: var(--dh-demo-tint); color: var(--dh-demo-ink);
+  font: var(--dh-weight-semibold) var(--dh-text-xs)/1.4 var(--dh-font);
+  white-space: nowrap;
+}
+/* Recorded: the default (.dh-badge alone). */
+.dh-badge--sample  { background: var(--dh-warn-tint);    color: var(--dh-warn-ink);    border-color: transparent; }
+.dh-badge--browser { background: var(--dh-success-tint); color: var(--dh-success-ink); border-color: transparent; }
+.dh-badge--off     { background: transparent;            color: var(--dh-muted);       border-style: dashed; }

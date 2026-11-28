@@ -53,3 +53,4 @@ index/llm_spend.db*
 # Approved architecture rules (the Approve button / approve-extraction): local, merged on load
 rules/*
 !rules/.gitkeep
+demo/out/
