@@ -101,11 +101,13 @@ def _fetchable_url(url: str, top: Path) -> str:
 
 def _git(*args: str, cwd: Path | None = None, git_dir: Path | None = None,
          timeout: float | None = 30, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    """git with *cwd* as its directory and, when given, *git_dir* as its repository. Both may be
+    set: *cwd* is then the work tree, never the auditor's own current directory."""
     cmd = ["git"]
-    if git_dir is not None:
-        cmd += ["--git-dir", str(git_dir)]
-    elif cwd is not None:
+    if cwd is not None:
         cmd += ["-C", str(cwd)]
+    if git_dir is not None:  # absolute: git reads a relative one against -C
+        cmd += ["--git-dir", str(Path(git_dir).absolute())]
     return subprocess.run([*cmd, *args], capture_output=True, text=True, timeout=timeout,
                           env={**os.environ, **_GIT_ENV, **(env or {})})
 
@@ -185,7 +187,8 @@ def resolve_base(repo_path: Path, *, branch: str = "dev", output_dir: str | Path
         return _mirror_base(top, prefix, branch, f"cache dir {root} unusable: {exc}")
     key = f"{top.name}-{hashlib.sha1(str(top).encode()).hexdigest()[:8]}"
     cache = root / f"{key}.git"
-    stamp = root / f".{key}.fetched"
+    # one stamp per branch: a fetch of dev says nothing about how old the cached origin/main is
+    stamp = root / f".{key}.{hashlib.sha1(branch.encode()).hexdigest()[:8]}.fetched"
     ttl = _float_env("AI_AUDIT_VALIDATE_FETCH_TTL_S", 60)
     timeout = _float_env("AI_AUDIT_VALIDATE_FETCH_TIMEOUT_S", 20) or 20  # 0 would mean no bound
     remote_ref = f"refs/remotes/origin/{branch}"
@@ -310,18 +313,40 @@ def export_tree(base: BaseRef, repo_path: Path, dest: Path) -> None:
         assert proc.stdout is not None
         try:
             with tarfile.open(fileobj=proc.stdout, mode="r|") as tar:
-                tar.extractall(dest, filter="data")  # "data" refuses absolute paths, .. and links out of dest
-        except (tarfile.TarError, OSError):
-            proc.kill()
-            if proc.wait() != 0:  # git's own error explains an empty or cut-off stream
+                tar.extractall(dest, filter=_skip_escaping_links)
+        except (tarfile.TarError, OSError) as exc:
+            # A git that exited non-zero on its own explains an empty or cut-off stream. One still
+            # writing is killed, and its -9 is not a git failure: the extraction error is the cause.
+            try:
+                rc = proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                raise exc from None
+            if rc > 0:
                 err.seek(0)
                 raise RuntimeError(f"git archive {base.ref} failed: "
-                                   f"{err.read().decode(errors='replace').strip()[:300]}") from None
+                                   f"{err.read().decode(errors='replace').strip()[:300]}") from exc
             raise
         if proc.wait() != 0:
             err.seek(0)
             raise RuntimeError(f"git archive {base.ref} failed: {err.read().decode(errors='replace').strip()[:300]}")
     attach_head(base, dest)
+
+
+def _skip_escaping_links(member, path: str):
+    """tarfile's ``data`` filter (no absolute paths, no ``..``, no links out of *path*), except that
+    a link it refuses is left out rather than aborting the export, as :func:`_drop_escaping_links`
+    does for a plain copy."""
+    import tarfile
+
+    try:
+        return tarfile.data_filter(member, path)
+    except tarfile.FilterError:
+        if member.issym() or member.islnk():
+            logger.info("validate_patch: link %s leads out of the tree; left out", member.name)
+            return None
+        raise
 
 
 def _drop_escaping_links(dest: Path) -> None:

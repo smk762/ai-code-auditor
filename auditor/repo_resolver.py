@@ -21,8 +21,9 @@ BRANCH_PREFERENCE: tuple[str, ...] = ("dev", "main", "master")
 GIT_LOCAL_TIMEOUT_S = 60
 GIT_NETWORK_TIMEOUT_S = 600
 
-# A cache directory name: one path segment, so ``cache_root / name`` stays inside the cache.
-_SAFE_REPO_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+# A cache directory name: one path segment, so ``cache_root / name`` stays inside the cache, and
+# starting with a letter or digit, so it is never ``.``/``..`` or (with a cache path of ``.``) an option.
+_SAFE_REPO_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # The userinfo of a URL (``https://user:token@host``), masked in error text.
 _URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@")
 

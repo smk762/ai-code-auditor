@@ -71,6 +71,7 @@ def test_release_merge_commit_passes_even_after_dev_moves_on(repo: Path) -> None
     git(repo, "checkout", "-q", "dev")
     commit(repo, "c.txt", "3")
     git(repo, "checkout", "-q", "main")
+    assert run_main_tree(repo) == 0  # dev ahead of the release merge: main's tree is an older dev's
     git(repo, "merge", "-q", "--no-ff", "-m", "Merge pull request: second release", "dev")
     assert run_main_tree(repo) == 0
 
