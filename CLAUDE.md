@@ -33,6 +33,7 @@ here and in code. Don't add a rule to remember.
 | Record a class guard by a sha prefix (a mistyped one waits as `pending` forever, like an unsynced mirror) | `test_class_packs::test_record_guard_validates` |
 | A class guard closing a child its rule never fired on, a noqa-waived hit counting as gone, or a silence-only closure counting toward `class_packs.lifecycle` | `test_class_packs::test_child_closes_only_when_its_rule_hit_is_gone`, `::test_a_waived_hit_is_not_a_closure`, `::test_rule_hits_ignores_noqa_and_never_reads_a_failure_as_clean`, `::test_lifecycle_gate_counts_rule_attributed_closures_only` |
 | Write a finding class onto a pack without all three models agreeing, or with an unmeasured prompt | `test_pack_classes::test_consensus_needs_every_model`, `::test_no_frozen_prompt_skips` |
+| The write-time guard hook counting as evidence or writing a pack, blocking an edit when it can't run, showing an unproven guard's rule, reading a failed check or a commit as a fix, or installing where its settings file (a host path) could be committed | `test_guard_hook::test_nothing_that_resolves_or_closes_packs_reads_the_hook`, `::test_the_hook_never_writes_a_pack`, `::test_a_rule_that_cannot_run_shows_nothing_and_exits_zero`, `::test_an_unproven_guards_rule_is_never_loaded`, `::test_an_unavailable_or_partial_run_never_reads_as_a_fix`, `::test_a_hit_counts_as_handled_only_when_the_whole_file_count_falls`, `::test_install_refuses_the_hook_when_it_cannot_keep_it_out_of_git` |
 | A gate passing below its minimum sample | `test_trust_eval::test_failing_and_insufficient`, `::test_stale_or_missing_seeded_eval_is_insufficient`, `test_guard_seeded::test_min_sample_scales_with_proven_guards`, `::test_stale_or_missing_results_are_insufficient` |
 | Count a guard seed as caught or missed when the guard's check already fails on the unplanted export, or count an unproven guard toward `guards.seeded_recall` | `test_guard_seeded::test_a_check_that_already_fails_unplanted_is_invalid_not_a_miss`, `::test_no_proven_guards_is_insufficient`, `::test_a_rule_that_cannot_run_makes_the_seed_invalid` |
 | Count a guard seed's variant (`dodges`, `fixes`) toward `guards.seeded_recall`, or a dodge of a seed the guard missed | `test_guard_seeded::test_a_missed_dodge_leaves_seeded_recall_alone`, `::test_a_dodge_of_a_seed_the_guard_misses_is_not_counted` |
@@ -125,7 +126,7 @@ The evidence records what the tests skipped (`tests`, `validator.pytest_counts`;
 **Trust** (epic #64). `auditor/trust_metrics.py` measures whether agent fixes can be trusted, and every trust-upgrade
 change is judged against it. `auditor/trust_eval.py` defines the gates: below its minimum sample a gate is
 `insufficient`, never a pass. The exit criteria are every gate that isn't pending or informational (`INFORMATIONAL`: today
-`class_packs.lifecycle`, `guards.dodge_recall` and `guards.fix_silence`, so guards are judged by `guards.seeded_recall`) passing in each of the last two ISO weeks,
+`class_packs.lifecycle`, `guards.dodge_recall`, `guards.fix_silence` and `guards.write_time`, so guards are judged by `guards.seeded_recall`) passing in each of the last two ISO weeks,
 with headline metrics not worse over 4 weekly snapshots. `auditor/eval_seeded.py` tests the evidence bar against
 planted bugs in real mirrors, and `auditor/guard_seeded.py` plants each guarded class's seeds (`config/guard_seeds.yaml`)
 in a scratch export to measure every proven class guard's recall (`guards.seeded_recall`); both refresh weekly inside
@@ -151,6 +152,17 @@ only when all three models agree, the class has a guard, and the frozen prompt i
 own rule (`--guard --rule ruff:B905,…`) fired on the child's code just before the guard, by shared identifiers, never
 line numbers, and no longer fires on `dev`, noqa ignored. The scan's silence alone closes nothing. A guard with no
 static rule closes no children, and semantic fixes go through `validate_patch` (`auditor/class_packs.py`).
+
+**Write-time guard hook** (`auditor/guard_hook.py`, `ai-audit guard-check`). A Claude Code `PostToolUse` hook on
+`Edit|Write|MultiEdit` runs the suite guard rules and every proven class guard's ruff rule (from any repo that proved it)
+on the edited `.py` file, and shows the agent the hits on lines in its `git diff -U0 HEAD` (all lines for a new file), so
+baselined debt stays quiet. About 2–3 s per edit, no tokens unless it finds something. It is advice: exit 2 puts the hits
+in front of the agent, anything going wrong exits 0, and nothing that resolves or closes packs reads it.
+`install_agent_pack_awareness.sh` merges it into each repo's untracked `.claude/settings.local.json`, running this venv's
+interpreter with `-I` (so a target repo's own `auditor` package can't shadow ours), and adds that file to
+`.git/info/exclude`; `--no-guard-hook` skips it. Each run appends whole-file hit counts to
+`reports/guard_hook_history.jsonl`; the informational `guards.write_time` gate is the share of shown hits gone by the next
+check of the same file, comparing whole-file counts so a commit (which empties the diff) or a reworded line isn't a fix.
 
 **Suite rules** (#55, `auditor/suite_rules.py`). The lint catalogue lives in argus-ci (`suite-rules/`), not here. The
 scanner runs argus-ci's own `check.py` on the catalogue exported from the mirror's `origin/dev`, so its findings match

@@ -67,7 +67,13 @@ curl -X POST "$B/audit/validate_patch" -H 'Content-Type: application/json' \
 
 Give up on a pack with `status: wontfix` (+ `note`). Other repos get this flow via
 `bash scripts/install_agent_pack_awareness.sh` (idempotent `AGENTS.md` section +
-`.cursor/rules/agent-coding-packs.mdc`; `--dry-run`, `--repo NAME`; local files only, no git).
+`.cursor/rules/agent-coding-packs.mdc` + the write-time guard hook in the untracked `.claude/settings.local.json`;
+`--dry-run`, `--repo NAME`, `--no-guard-hook`; local files only, no git).
+
+**Write-time guard hook.** In Claude Code, after each edit to a `.py` file the hook runs the suite's proven
+deterministic rules on it and reports hits on the lines you changed ("Guard rules flagged …"). Fix the line, or add a
+`# noqa: <code>` / `# nosemgrep: <id>` with the reason, as CI would ask. It is advice only: it never claims, resolves or
+proves a pack, so `validate_patch` is still the evidence. `ai-audit guard-check --file <path>` runs it by hand.
 
 ### Search the wiki and packs
 

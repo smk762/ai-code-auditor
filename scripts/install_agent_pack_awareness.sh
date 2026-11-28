@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Install agent-pack awareness (AGENTS.md section + .cursor/rules/agent-coding-packs.mdc)
+# Install agent-pack awareness (AGENTS.md section + .cursor/rules/agent-coding-packs.mdc + the write-time
+# guard hook in .claude/settings.local.json)
 # into local checkouts listed in config/ecosystem.yaml. Local files only; no git commits.
 #
-#   bash scripts/install_agent_pack_awareness.sh [--dry-run] [--repo NAME] [--api-base URL] [--force]
+#   bash scripts/install_agent_pack_awareness.sh [--dry-run] [--repo NAME] [--api-base URL] [--force] [--no-guard-hook]
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
