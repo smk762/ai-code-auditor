@@ -172,8 +172,8 @@ _orig = io.open
 def _open(file, mode="r", *args, **kwargs):
     if _on[0] and not any(c in str(mode) for c in "wax+"):
         try:
-            p = os.path.realpath(os.fspath(file))
-        except TypeError:  # a file descriptor
+            p = os.fsdecode(os.path.realpath(os.fspath(file)))
+        except (TypeError, ValueError):  # a file descriptor, or a path that can't be decoded
             p = ""
         if p.startswith(_ROOT + os.sep):
             _seen.add(os.path.relpath(p, _ROOT))
@@ -295,11 +295,16 @@ def proven_guards(packs_from: Path, statuses: tuple[str, ...] = ("proven",)) -> 
         d = _read_pack_yaml(p) or {}
         if d.get("kind") != KIND:
             continue
-        gov = d.get("governance") or {}
+        gov = d.get("governance")
+        guards = gov.get("class_guard") if isinstance(gov, dict) else None
+        if not isinstance(guards, dict):
+            continue
         cls = str(gov.get("class_id") or "")
-        for repo, rec in sorted((gov.get("class_guard") or {}).items()):
-            if isinstance(rec, dict) and (rec.get("proof") or {}).get("status") in statuses:
-                out.append((str(d["work_item_id"]), cls, repo, rec))
+        pid = str(d.get("work_item_id") or p.stem)
+        for repo, rec in sorted(guards.items()):
+            proof = rec.get("proof") if isinstance(rec, dict) else None
+            if isinstance(proof, dict) and proof.get("status") in statuses:
+                out.append((pid, cls, str(repo), rec))
     return out
 
 
@@ -374,9 +379,24 @@ def eval_guard(pack: str, cls: str, repo: str, rec: dict[str, Any], mirror: Path
     return g
 
 
+def _through_symlink(root: Path, rel: str) -> bool:
+    """Whether *rel* under *root*, or a directory between them, is a symlink, or resolves outside
+    *root*."""
+    p = root
+    for part in Path(rel).parts:
+        p = p / part
+        if p.is_symlink():
+            return True
+    return not (root / rel).resolve().is_relative_to(root.resolve())
+
+
 def _check_seed(seed: Seed, clean: Path, work: Path, site: str, tests: list[str], rule: dict[str, Any] | None,
                 runner: Any, rule_runner: Any) -> SeedResult:
     r = SeedResult(seed=seed.id, file=site, code="\n".join([*seed.imports, "...", seed.code.rstrip()]))
+    if _through_symlink(clean, site):
+        # reading or writing it would follow the link, possibly out of the export (into the mirror)
+        r.status, r.note = "invalid", f"the plant site {site} is (or is under) a symlink"
+        return r
     src = (clean / site).read_text(encoding="utf-8")
     planted_src, first, last = plant(src, seed)
     r.lines = [first, last]
@@ -401,13 +421,17 @@ def _check_seed(seed: Seed, clean: Path, work: Path, site: str, tests: list[str]
     def fresh() -> Path | None:
         shutil.rmtree(planted, ignore_errors=True)
         shutil.copytree(clean, planted, symlinks=True)
+        if _through_symlink(planted, site):  # copytree keeps links: never write through one
+            raise ValueError(f"refusing to plant through a symlink: {site}")
         (planted / site).write_text(planted_src, encoding="utf-8")
         return planted
 
     # The runner's "patched" side is the clean export and its "before" side the planted one, so
     # ``repro`` is exactly the tests that pass clean and fail with the seed.
-    res = runner(clean, fresh, tests)
-    shutil.rmtree(planted, ignore_errors=True)
+    try:
+        res = runner(clean, fresh, tests)
+    finally:
+        shutil.rmtree(planted, ignore_errors=True)
     clean_out = getattr(res, "patched", {}) or {}
     failing = sorted(t for t, s in clean_out.items() if s not in ("passed", "skipped"))
     if not clean_out or failing:
