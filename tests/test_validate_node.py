@@ -167,6 +167,7 @@ def test_errors_already_on_the_base_branch_dont_count(tmp_path: Path) -> None:
     assert r.passed and r.tool == "npm_checks", r.raw_output
     assert "typecheck fails on the base branch too" in r.raw_output
     assert "test fails on the base branch too" in r.raw_output
+    assert set(r.base_failures["web"]["checks"]) == {"typecheck", "test"}  # the whole list, by check
 
     _write(patched / "web", {"src/a.ts": "export const a = 'BAD';\n"})  # a new error on top of the old one
     r = validate_patch_tree(_Repo(), patched, ["web/src/a.ts"], cache_dir=tmp_path / "v",

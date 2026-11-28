@@ -250,3 +250,20 @@ def test_a_subtest_failure_already_on_dev_does_not_block_the_patch(tmp_path: Pat
     notes: list[str] = []
     res = validator._against_base(root, root, lambda: tmp_path / "base", Path(sys.executable), 60, res, ".", notes)
     assert res.passed and "fail on the base branch too" in " ".join(notes), (res.raw_output, notes)
+
+
+def test_every_base_failure_is_listed_whole(tmp_path: Path, monkeypatch) -> None:
+    # The notes cut the list at 400 chars, and the response keeps only raw_output's last 2000: argus-proof's
+    # 24 failures on dev showed as six. base_failures carries every id.
+    (tmp_path / "base").mkdir()
+    ids = [f"tests/test_cli.py::test_a_rather_long_name_for_case_{i:02d}" for i in range(24)]
+    out = "".join(f"FAILED {t} - boom\n" for t in ids) + "ERROR tests/test_env.py::test_setup - no gpu\n"
+    out += "24 failed, 1 error, 3 passed in 1.0s\n"
+    monkeypatch.setattr(validator, "_run_project_tests", lambda *a, **k: ("ran", _failing(out)))
+    notes: list[str] = []
+    res = validator._against_base(tmp_path, tmp_path, lambda: tmp_path / "base", Path(sys.executable), 30,
+                                  _failing(out), "svc", notes)
+    assert res.passed
+    assert res.base_failures == {"svc": {"failed": sorted(ids), "errored": ["tests/test_env.py::test_setup"]}}
+    note = next(n for n in notes if "fail on the base branch too" in n)
+    assert "24 test(s)" in note and "all listed in base_failures" in note and len(note) < 600

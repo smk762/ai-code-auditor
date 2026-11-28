@@ -1108,12 +1108,14 @@ def validate_patch_tree(
     duration += sum(r.duration_ms for _, r in ran)
     note = "\n".join(notes)
     tests = merge_counts([r.tests for _, r in ran if r.tool == "pytest"])
+    base_failures = {lbl: lists for _, r in ran for lbl, lists in r.base_failures.items()}
     failed = [(lbl, r) for lbl, r in ran if not r.passed]
     if failed:
         return ValidationResult(
             passed=False, tool=tool, duration_ms=duration,
             errors=[e for _, r in failed for e in r.errors],
             raw_output="\n".join(f"== {lbl}\n{r.raw_output}" for lbl, r in failed)[-_OUTPUT_LIMIT:], tests=tests,
+            base_failures=base_failures,
         )
     parts = []
     if py_labels := [lbl for lbl, r in ran if r.tool == "pytest"]:
@@ -1134,9 +1136,9 @@ def validate_patch_tree(
         reason = "; ".join(skip_reasons)
         return ValidationResult(passed=False, tool="skipped", duration_ms=duration, errors=[],
                                 raw_output="\n".join(x for x in (reason, head, note) if x)[-_OUTPUT_LIMIT:],
-                                skipped_reason=reason[:1000], tests=tests)
+                                skipped_reason=reason[:1000], tests=tests, base_failures=base_failures)
     return ValidationResult(
-        passed=True, tool=tool, duration_ms=duration, errors=[], tests=tests,
+        passed=True, tool=tool, duration_ms=duration, errors=[], tests=tests, base_failures=base_failures,
         raw_output="\n".join(x for x in (head, note) if x)[-_OUTPUT_LIMIT:],
     )
 
@@ -1258,16 +1260,23 @@ def _against_base(
     if new:
         res.raw_output = (f"new failures from this patch: {', '.join(new)}\n" + res.raw_output)[-_OUTPUT_LIMIT:]
         return res
+    both = patched & already
+    errored = sorted(both & set(_ERRORED_ID_RE.findall(res.raw_output)) & set(_ERRORED_ID_RE.findall(base_res.raw_output)))
+    failed = sorted(both - set(errored))
     if flaky:
         notes.append(f"{label}: {len(flaky)} test(s) failed only with the patch but passed on a rerun (flaky), "
-                     f"not counted: {', '.join(flaky)[:400]}")
-    both = patched & already
-    errored = both & set(_ERRORED_ID_RE.findall(res.raw_output)) & set(_ERRORED_ID_RE.findall(base_res.raw_output))
+                     f"not counted: {_abbreviated(flaky)}")
     if errored:
         notes.append(f"{label}: {len(errored)} test(s) error on the base branch too (likely the test env, "
-                     f"not the repo), not counted: {', '.join(sorted(errored))[:400]}")
-    if failed := both - errored:
-        notes.append(f"{label}: {len(failed)} test(s) fail on the base branch too, not counted: "
-                     f"{', '.join(sorted(failed))[:400]}")
+                     f"not the repo), not counted: {_abbreviated(errored)}")
+    if failed:
+        notes.append(f"{label}: {len(failed)} test(s) fail on the base branch too, not counted: {_abbreviated(failed)}")
+    lists = {k: v for k, v in (("failed", failed), ("errored", errored), ("flaky", flaky)) if v}
     return ValidationResult(passed=True, tool="pytest", duration_ms=duration, errors=[], raw_output=res.raw_output,
-                            tests=res.tests)
+                            tests=res.tests, base_failures={label: lists} if lists else {})
+
+
+def _abbreviated(ids: list[str], limit: int = 400) -> str:
+    """*ids* for a note, cut at *limit* chars with a pointer to the whole list in ``base_failures``."""
+    text = ", ".join(ids)
+    return text if len(text) <= limit else text[:limit].rsplit(", ", 1)[0] + ", … (all listed in base_failures)"

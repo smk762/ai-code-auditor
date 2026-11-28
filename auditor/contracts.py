@@ -146,6 +146,10 @@ class ValidationResult:
     raw_output: str      # truncated stdout + stderr
     skipped_reason: str = ""
     tests: dict = field(default_factory=dict)  # pytest counts and skips (validator.pytest_counts); empty for other tools
+    # per project label: every test id that fails or errors on the base tree too, or only flaked ({"failed": [...],
+    # "errored": [...], "flaky": [...]}), and for npm {"checks": {script: [error ids]}}; not counted against the
+    # patch, and listed whole (the notes abbreviate)
+    base_failures: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)

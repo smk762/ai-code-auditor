@@ -407,7 +407,8 @@ def _against_base(script: str, args: list[str], root: Path, tree: Path, base_tre
         return res
     notes.append(f"{label}: {script} fails on the base branch too ({sum(patched.values())} error(s)), not counted")
     return ValidationResult(passed=True, tool=TOOL, duration_ms=res.duration_ms + base_res.duration_ms,
-                            errors=[], raw_output=res.raw_output)
+                            errors=[], raw_output=res.raw_output,
+                            base_failures={label: {"checks": {script: sorted(patched)}}})
 
 
 def _env_gap_is_the_cause(root: Path, script: str, output: str) -> bool:
@@ -496,11 +497,13 @@ def validate_node_projects(
             out.unvalidated.append(f"{label}: none of its checks could run")
             continue
         failed = [(s, r) for s, r in results if not r.passed]
+        checks = {s: ids for _, r in results for s, ids in r.base_failures.get(label, {}).get("checks", {}).items()}
         merged = ValidationResult(
             passed=not failed, tool=TOOL, duration_ms=sum(r.duration_ms for _, r in results),
             errors=[f"{label} {s}: {e}" for s, r in failed for e in r.errors][:10],
             raw_output=("\n".join(f"-- {label} npm run {s}\n{r.raw_output}" for s, r in failed)
                         if failed else ", ".join(s for s, _ in results))[-_OUTPUT_LIMIT:],
+            base_failures={label: {"checks": checks}} if checks else {},
         )
         out.ran.append((label, merged))
     out.syntax_only = bool(out.ran) and all(lbl == "node --check" for lbl, _ in out.ran)
