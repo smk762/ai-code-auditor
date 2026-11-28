@@ -11,6 +11,10 @@ import signal
 import subprocess
 from typing import Any
 
+# How long output is still collected after the group was killed. A daemon that left the group
+# (setsid, a double fork) keeps the pipes open, and reading them to EOF would wait on it forever.
+_DRAIN_TIMEOUT_S = 5.0
+
 
 def run(cmd: list[str], *, input: str | bytes | None = None, timeout: float | None = None, check: bool = False,
         capture_output: bool = False, **kwargs: Any) -> subprocess.CompletedProcess:
@@ -24,7 +28,14 @@ def run(cmd: list[str], *, input: str | bytes | None = None, timeout: float | No
             out, err = proc.communicate(input, timeout=timeout)
         except subprocess.TimeoutExpired:
             kill_group(proc)
-            out, err = proc.communicate()
+            try:
+                out, err = proc.communicate(timeout=_DRAIN_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                out = err = None  # what was read so far is dropped: the pipes are closed unread
+                for pipe in (proc.stdout, proc.stderr):
+                    if pipe is not None:
+                        pipe.close()
+                proc.wait()
             raise subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err) from None
         except BaseException:
             kill_group(proc)
