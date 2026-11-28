@@ -4,6 +4,11 @@ Scans a set of git repositories for bugs, security problems and structural drift
 coding agent. When an agent submits a code fix for a bug or security pack, validation resolves the pack only if the patch
 includes a test that fails before it and passes after it, or a written waiver.
 
+**Demo:** [auditor.dragonhound.dev](https://auditor.dragonhound.dev/) replays one real nightly run on a public repo: every
+finding, the work pack it became, the fix, and the evidence that resolved it, including the findings that were wrong.
+The [write-up](https://dragonhound.dev/updates/2026-11-28-auditor-one-night/) walks through the same night. The demo is
+rebuilt from [`demo/`](https://github.com/smk762/ai-code-auditor/tree/dev/demo) by `python demo/build.py`.
+
 ![Packs board: nine open packs, one unverified, one resolved](docs/img/packs.png)
 
 The board after scanning three invented repos with no model, with the module cycle approved by hand. The pages below are

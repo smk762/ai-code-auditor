@@ -1,0 +1,196 @@
+/*! dh-tokens v1.2.12 | sha256:84e53f176d9380d4b06f19b8f15df73c76d4cba2031cc86dd5481873163250e8
+ * Dragonhound Labs shared design tokens. Source of truth: dragonhound-site/shared/.
+ * Do not edit a vendored copy; change the source, bump the version, run scripts/sync-shared.mjs.
+ * The checksum covers everything after this header comment (see shared/README.md).
+ */
+
+/* ---------- Light (default) ---------- */
+:root {
+  /* Neutrals */
+  --dh-bg: #fbfbf9;
+  --dh-surface: #ffffff;
+  --dh-surface-2: #eef3f4;      /* chips, tags, hover wells */
+  --dh-text: #1c1f22;           /* 16.0:1 on bg */
+  --dh-muted: #5b636b;          /* 5.9:1 on bg, 5.4:1 on surface-2 */
+  --dh-border: #e2e4e0;         /* decorative only, not a state indicator */
+
+  /* Brand accent: links, buttons, icons. A product may override --dh-accent/--dh-on-accent only. */
+  --dh-accent: #1d5f74;         /* 7.1:1 on surface */
+  --dh-on-accent: #ffffff;
+
+  /* Highlight: card hover/focus border and glow, logo outline trace */
+  --dh-highlight: #003366;
+  /* Focus ring colour (3:1 minimum against bg and surface) */
+  --dh-focus: #003366;          /* 12.2:1 on bg */
+
+  /* Status: fill (icons, borders; >= 3:1 on bg), ink (text; >= 4.5:1 on its -tint, on a 20% mix of the fill
+     over bg or surface, and on bg/surface themselves; see README), tint (background) */
+  --dh-success: #15803d; --dh-success-ink: #14532d; --dh-success-tint: #e7f3ec;
+  --dh-warn: #b45309;    --dh-warn-ink: #7a4f00;    --dh-warn-tint: #fdf3dc;
+  --dh-danger: #b91c1c;  --dh-danger-ink: #7f1d1d;  --dh-danger-tint: #fdecec;
+
+  /* Demo-state badge (neutral base; see dh-badge.css and README for the four labels) */
+  --dh-demo-ink: #3f474f; --dh-demo-tint: #eef0f1; --dh-demo-border: #c9ced3;
+
+  /* Pipeline stage colours (Argus): the single eye in each Argus package mark (>= 3:1 on bg; see brand/ in argus-cortex) */
+  --dh-stage-data: #1d5f74; --dh-stage-training: #b33a2a; --dh-stage-apps: #8f6210; --dh-stage-foundation: #2a4a7a;
+
+  /* Categorical palette for facets and series (1.2.0): blue, orange, green, red, magenta, olive, sky, slate.
+     Fill >= 3:1 on bg and surface; -ink >= 5.5:1 on its -tint (20% fill over surface) and on bg/surface.
+     Chosen for separation under deuteranopia, protanopia and tritanopia; still pair colour with a label. */
+  --dh-cat-1: #214f8d; --dh-cat-1-ink: #25518c;
+  --dh-cat-2: #a35f0e; --dh-cat-2-ink: #7f4701;
+  --dh-cat-3: #03795f; --dh-cat-3-ink: #015e49;
+  --dh-cat-4: #ae0321; --dh-cat-4-ink: #833433;
+  --dh-cat-5: #920c62; --dh-cat-5-ink: #7c345a;
+  --dh-cat-6: #9a8c0d; --dh-cat-6-ink: #635901;
+  --dh-cat-7: #2386ac; --dh-cat-7-ink: #035e7c;
+  --dh-cat-8: #29313b; --dh-cat-8-ink: #464f5b;
+
+  /* Elevation */
+  --dh-shadow-color: rgb(0 0 0 / .10);
+  --dh-glow: transparent;       /* soft highlight halo; on in dark mode where a 1px ring is too faint */
+  --dh-shadow-1: 0 1px 2px var(--dh-shadow-color);
+  --dh-shadow-hover: 0 8px 24px var(--dh-shadow-color), 0 0 0 1px var(--dh-highlight), 0 0 18px -4px var(--dh-glow);
+
+  color-scheme: light;
+}
+
+/* ---------- Dark: system default unless data-theme="light"; data-theme="dark" forces it ---------- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --dh-bg: #121416;
+    --dh-surface: #1a1d20;
+    --dh-surface-2: #20292d;
+    --dh-text: #e6e8ea;
+    --dh-muted: #9aa3ab;          /* 7.2:1 on bg, 5.8:1 on surface-2 */
+    --dh-border: #2b3035;
+    --dh-accent: #6fb7cc;         /* 7.5:1 on surface */
+    --dh-on-accent: #0d1214;
+    --dh-highlight: #1a4d80;      /* 2.1:1 on bg: decorative, never the only focus cue */
+    --dh-focus: #4a86c4;          /* lighter tint of the highlight: 4.8:1 on bg, 4.4:1 on surface */
+    --dh-success: #4cc27a; --dh-success-ink: #a7e8bd; --dh-success-tint: #132a1c;
+    --dh-warn: #e0a84f;    --dh-warn-ink: #f0c36a;    --dh-warn-tint: #2e2716;
+    --dh-danger: #f07a7a;  --dh-danger-ink: #fbb4b4;  --dh-danger-tint: #2e1618;
+    --dh-demo-ink: #c5ccd2; --dh-demo-tint: #23282d; --dh-demo-border: #3a4148;
+    --dh-stage-data: #6fb7cc; --dh-stage-training: #e57a64; --dh-stage-apps: #e8b54e; --dh-stage-foundation: #8eacdc;
+    --dh-cat-1: #7daff4; --dh-cat-1-ink: #a9cdff;
+    --dh-cat-2: #ffddb9; --dh-cat-2-ink: #ffd4a7;
+    --dh-cat-3: #049763; --dh-cat-3-ink: #75cfa1;
+    --dh-cat-4: #ff9f9b; --dh-cat-4-ink: #febfbb;
+    --dh-cat-5: #c069a9; --dh-cat-5-ink: #f1a7db;
+    --dh-cat-6: #9fa448; --dh-cat-6-ink: #c7cd77;
+    --dh-cat-7: #d0f2ff; --dh-cat-7-ink: #abe9ff;
+    --dh-cat-8: #c2cfdc; --dh-cat-8-ink: #cad8e5;
+    --dh-shadow-color: rgb(0 0 0 / .45);
+    --dh-glow: var(--dh-highlight);
+    --dh-shadow-hover: 0 8px 24px var(--dh-shadow-color), 0 0 18px -4px var(--dh-glow);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --dh-bg: #121416;
+  --dh-surface: #1a1d20;
+  --dh-surface-2: #20292d;
+  --dh-text: #e6e8ea;
+  --dh-muted: #9aa3ab;
+  --dh-border: #2b3035;
+  --dh-accent: #6fb7cc;
+  --dh-on-accent: #0d1214;
+  --dh-highlight: #1a4d80;
+  --dh-focus: #4a86c4;
+  --dh-success: #4cc27a; --dh-success-ink: #a7e8bd; --dh-success-tint: #132a1c;
+  --dh-warn: #e0a84f;    --dh-warn-ink: #f0c36a;    --dh-warn-tint: #2e2716;
+  --dh-danger: #f07a7a;  --dh-danger-ink: #fbb4b4;  --dh-danger-tint: #2e1618;
+  --dh-demo-ink: #c5ccd2; --dh-demo-tint: #23282d; --dh-demo-border: #3a4148;
+  --dh-stage-data: #6fb7cc; --dh-stage-training: #e57a64; --dh-stage-apps: #e8b54e; --dh-stage-foundation: #8eacdc;
+  --dh-cat-1: #7daff4; --dh-cat-1-ink: #a9cdff;
+  --dh-cat-2: #ffddb9; --dh-cat-2-ink: #ffd4a7;
+  --dh-cat-3: #049763; --dh-cat-3-ink: #75cfa1;
+  --dh-cat-4: #ff9f9b; --dh-cat-4-ink: #febfbb;
+  --dh-cat-5: #c069a9; --dh-cat-5-ink: #f1a7db;
+  --dh-cat-6: #9fa448; --dh-cat-6-ink: #c7cd77;
+  --dh-cat-7: #d0f2ff; --dh-cat-7-ink: #abe9ff;
+  --dh-cat-8: #c2cfdc; --dh-cat-8-ink: #cad8e5;
+  --dh-shadow-color: rgb(0 0 0 / .45);
+  --dh-glow: var(--dh-highlight);
+  --dh-shadow-hover: 0 8px 24px var(--dh-shadow-color), 0 0 18px -4px var(--dh-glow);
+  color-scheme: dark;
+}
+
+/* ---------- Scheme-independent ---------- */
+:root {
+  /* Type: one system-first family, one mono */
+  --dh-font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --dh-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --dh-text-2xs: .75rem;      /* 12 */
+  --dh-text-xs: .8125rem;     /* 13: badges, strip, fine print */
+  --dh-text-sm: .875rem;      /* 14: captions, meta */
+  --dh-text-md: .9375rem;     /* 15: nav, card body, buttons */
+  --dh-text-base: 1rem;       /* 16: body */
+  --dh-text-lg: 1.0625rem;    /* 17: lede */
+  --dh-text-xl: 1.125rem;     /* 18: h3 */
+  --dh-text-2xl: 1.25rem;     /* 20 */
+  --dh-text-3xl: 1.5rem;      /* 24: h2 */
+  --dh-text-display: clamp(1.6rem, 4.5vw, 2.4rem); /* h1 */
+  --dh-leading: 1.6;
+  --dh-leading-tight: 1.2;
+  --dh-weight-bold: 700;
+  --dh-weight-semibold: 600;
+
+  /* Space: 4 px base */
+  --dh-space-1: 4px;
+  --dh-space-2: 8px;
+  --dh-space-3: 12px;
+  --dh-space-4: 16px;
+  --dh-space-5: 20px;
+  --dh-space-6: 24px;
+  --dh-space-8: 32px;
+  --dh-space-10: 40px;
+  --dh-space-12: 48px;
+  --dh-space-16: 64px;
+
+  /* Radius */
+  --dh-radius-sm: 6px;        /* chips, code */
+  --dh-radius-md: 8px;        /* buttons, icon buttons, inputs */
+  --dh-radius-lg: 10px;       /* cards, panels */
+  --dh-radius-xl: 14px;       /* sheets, dialogs */
+  --dh-radius-pill: 999px;    /* badges, tags */
+
+  /* Focus ring: outline: var(--dh-focus-ring); outline-offset: var(--dh-focus-offset); */
+  --dh-focus-width: 2px;
+  --dh-focus-ring: var(--dh-focus-width) solid var(--dh-focus);
+  --dh-focus-offset: 3px;
+
+  /* Motion */
+  --dh-dur-fast: .15s;        /* colour, background */
+  --dh-dur: .2s;              /* border, shadow, lift */
+  --dh-dur-slow: .35s;        /* image zoom */
+  --dh-dur-draw: 1.3s;        /* one-off reveals (logo trace) */
+  --dh-ease: cubic-bezier(.25, .1, .25, 1);   /* = ease */
+  --dh-ease-out: cubic-bezier(0, 0, .58, 1);  /* = ease-out, entering */
+  --dh-ease-in: cubic-bezier(.42, 0, 1, 1);   /* = ease-in, leaving */
+  /* Movement is expressed through these, so reduced motion turns it off in one place */
+  --dh-lift: -3px;            /* card hover translateY */
+  --dh-zoom: 1.04;            /* image zoom inside a hovered card */
+
+  /* Categorical tints: 20% of the fill over the surface, in both schemes (text on them uses --dh-cat-N-ink) */
+  --dh-cat-1-tint: color-mix(in srgb, var(--dh-cat-1) 20%, var(--dh-surface));
+  --dh-cat-2-tint: color-mix(in srgb, var(--dh-cat-2) 20%, var(--dh-surface));
+  --dh-cat-3-tint: color-mix(in srgb, var(--dh-cat-3) 20%, var(--dh-surface));
+  --dh-cat-4-tint: color-mix(in srgb, var(--dh-cat-4) 20%, var(--dh-surface));
+  --dh-cat-5-tint: color-mix(in srgb, var(--dh-cat-5) 20%, var(--dh-surface));
+  --dh-cat-6-tint: color-mix(in srgb, var(--dh-cat-6) 20%, var(--dh-surface));
+  --dh-cat-7-tint: color-mix(in srgb, var(--dh-cat-7) 20%, var(--dh-surface));
+  --dh-cat-8-tint: color-mix(in srgb, var(--dh-cat-8) 20%, var(--dh-surface));
+
+  /* Layout */
+  --dh-max: 1080px;
+  --dh-gutter: 16px;
+  --dh-strip-h: 30px;
+}
+
+/* Reduced motion: no movement; colour/opacity fades keep their durations. */
+@media (prefers-reduced-motion: reduce) {
+  :root { --dh-lift: 0px; --dh-zoom: 1; --dh-dur-draw: 0s; }
+}

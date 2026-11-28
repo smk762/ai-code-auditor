@@ -1,0 +1,47 @@
+# The run auditor.dragonhound.dev replays (#199): argus-scout's nightly scan of 2026-11-23 and the PR that closed it.
+#
+# scripts/record_demo_tape.py reads this, the packs in reports/agent_packs/ and the scout mirror, and writes
+# demo/tape/tape.json. Every pack listed here is on the tape, whatever its outcome: nothing is dropped to improve
+# the numbers. A resolved pack must name the commit that fixed it; a wontfix pack may name one when the PR changed
+# its code anyway. The PR's commits carry no Pack: trailers, hence this map.
+
+repo: argus-scout
+run_id: repo-audit-20261123173003585766
+scanned_sha: 9b717517542b42f47f3a4b5cd56357b549ecb7c4  # the run's extra.scanned_code for this repo
+started_at: "2026-11-23T17:30:03Z"
+pr:
+  number: 34
+  title: Fix 22 ai-code-auditor findings (nightly)
+  merged_at: "2026-11-24T08:13:55Z"
+
+packs:
+  # Bug fixes, each proven by a test that fails on dev and passes with the fix
+  pack-argus-scout-ca6b593168: d9f93cad4c
+  pack-argus-scout-5788f71138: 9df9c6f045
+  pack-argus-scout-42dfbd5968: 2024ed9c31
+  pack-argus-scout-944ecfe58d: "3499007409"
+  pack-argus-scout-c6d19f9a0e: 9950a85166
+  pack-argus-scout-ad39f0501a: 7a206369dc
+  pack-argus-scout-10aba10fe5: e3c421c2fe
+  pack-argus-scout-b60f3a5333: 6826e07318
+  pack-argus-scout-1a719e2ef4: 952e91d8ab
+  pack-argus-scout-a68c90e24f: b30d4ed520
+  pack-argus-scout-d275aedae4: df4f3be8e3
+  # Test hardening: a stronger test passes on dev's source too, so these resolve as test_only or on a waiver
+  pack-argus-scout-e04237c3bd: cac61f0b6c
+  pack-argus-scout-e1db9cea92: 10dc6dafff
+  pack-argus-scout-239b7fc36e: 693944b9fa
+  pack-argus-scout-cb0e01f72f: 693944b9fa
+  pack-argus-scout-b0c187fe94: 32938f23c1
+  pack-argus-scout-cf1ff2d150: 140405ffeb
+  pack-argus-scout-f9789080b7: f6f9eb43c4
+  pack-argus-scout-78dca44a97: 1edc8a61d2
+  pack-argus-scout-ad6c20807f: 3c79645a2a
+  pack-argus-scout-21a1e29c60: 3c79645a2a
+  pack-argus-scout-d8389fac68: 1cf66db972
+  # Wrong findings, marked wontfix with a note
+  pack-argus-scout-055aeb376d: null
+  pack-argus-scout-942e61c428: null
+  pack-argus-scout-4363779650: null
+  pack-argus-scout-9532cc866a: null
+  pack-argus-scout-efbbba4fc9: a9bdf3a310

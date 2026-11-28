@@ -1,0 +1,118 @@
+/*! dh-strip v1.2.12 | Dragonhound Labs family bar. Requires dh-tokens.css. Works without JS.
+ * Current site: data-dh-site="<site>" on <html> or on the .dh-strip; the rules below show it without JS,
+ * and dh-theme.js adds aria-current="page" to that link. A hand-set aria-current still works.
+ * Label suffix: data-dh-label="<key>" on <html> or on the .dh-strip picks one of the suffixes in the pasted HTML
+ * (keys in dh-strip.mjs labelSuffixes, e.g. "browser"); without it the default "recorded output" shows. */
+.dh-strip {
+  box-sizing: border-box;
+  display: flex; align-items: center; gap: var(--dh-space-3);
+  height: var(--dh-strip-h); padding: 0 var(--dh-gutter);
+  background: var(--dh-surface); color: var(--dh-muted);
+  border-bottom: 1px solid var(--dh-border);
+  font: var(--dh-text-xs)/1 var(--dh-font);
+  white-space: nowrap;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; /* last resort on very narrow screens */
+  position: relative; /* contains the visually hidden name and suffix (absolute below 1168 px): without it they escape the
+                        scroll box and widen the page whenever the bar's content is a few px wider than the screen */
+}
+.dh-strip::-webkit-scrollbar { display: none; }
+.dh-strip a {
+  color: inherit; text-decoration: none; border-radius: var(--dh-radius-sm);
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 24px; padding: 0 var(--dh-space-1); /* 24 px target (WCAG 2.5.8) */
+  transition: color var(--dh-dur-fast) var(--dh-ease);
+}
+.dh-strip a:hover { color: var(--dh-text); }
+.dh-strip a:focus-visible { outline: var(--dh-focus-ring); outline-offset: -1px; color: var(--dh-text); }
+.dh-strip-home { color: var(--dh-text) !important; font-weight: var(--dh-weight-semibold); margin-left: calc(-1 * var(--dh-space-1)); }
+.dh-strip-mark { width: 18px; height: 18px; flex: none; fill: currentColor; }
+.dh-strip-links { display: flex; gap: var(--dh-space-1); margin: 0; padding: 0 0 0 var(--dh-space-3); list-style: none; border-left: 1px solid var(--dh-border); }
+.dh-strip-links a[aria-current],
+/* @generated from dh-strip.mjs (npm run shared:stamp) */
+:root[data-dh-site="lightbox"] .dh-strip:not([data-dh-site]) .dh-strip-links a[data-dh-site="lightbox"],
+.dh-strip[data-dh-site="lightbox"] .dh-strip-links a[data-dh-site="lightbox"],
+:root[data-dh-site="studio"] .dh-strip:not([data-dh-site]) .dh-strip-links a[data-dh-site="studio"],
+.dh-strip[data-dh-site="studio"] .dh-strip-links a[data-dh-site="studio"],
+:root[data-dh-site="atlas"] .dh-strip:not([data-dh-site]) .dh-strip-links a[data-dh-site="atlas"],
+.dh-strip[data-dh-site="atlas"] .dh-strip-links a[data-dh-site="atlas"],
+:root[data-dh-site="cull"] .dh-strip:not([data-dh-site]) .dh-strip-links a[data-dh-site="cull"],
+.dh-strip[data-dh-site="cull"] .dh-strip-links a[data-dh-site="cull"],
+:root[data-dh-site="realms"] .dh-strip:not([data-dh-site]) .dh-strip-links a[data-dh-site="realms"],
+.dh-strip[data-dh-site="realms"] .dh-strip-links a[data-dh-site="realms"],
+:root[data-dh-site="safelight"] .dh-strip:not([data-dh-site]) .dh-strip-links a[data-dh-site="safelight"],
+.dh-strip[data-dh-site="safelight"] .dh-strip-links a[data-dh-site="safelight"],
+:root[data-dh-site="assay"] .dh-strip:not([data-dh-site]) .dh-strip-links a[data-dh-site="assay"],
+.dh-strip[data-dh-site="assay"] .dh-strip-links a[data-dh-site="assay"],
+:root[data-dh-site="sightline"] .dh-strip:not([data-dh-site]) .dh-strip-links a[data-dh-site="sightline"],
+.dh-strip[data-dh-site="sightline"] .dh-strip-links a[data-dh-site="sightline"],
+:root[data-dh-site="mask"] .dh-strip:not([data-dh-site]) .dh-strip-links a[data-dh-site="mask"],
+.dh-strip[data-dh-site="mask"] .dh-strip-links a[data-dh-site="mask"],
+:root[data-dh-site="quarry"] .dh-strip:not([data-dh-site]) .dh-strip-links a[data-dh-site="quarry"],
+.dh-strip[data-dh-site="quarry"] .dh-strip-links a[data-dh-site="quarry"],
+:root[data-dh-site="proof"] .dh-strip:not([data-dh-site]) .dh-strip-links a[data-dh-site="proof"],
+.dh-strip[data-dh-site="proof"] .dh-strip-links a[data-dh-site="proof"],
+:root[data-dh-site="iris"] .dh-strip:not([data-dh-site]) .dh-strip-links a[data-dh-site="iris"],
+.dh-strip[data-dh-site="iris"] .dh-strip-links a[data-dh-site="iris"],
+:root[data-dh-site="retina"] .dh-strip:not([data-dh-site]) .dh-strip-links a[data-dh-site="retina"],
+.dh-strip[data-dh-site="retina"] .dh-strip-links a[data-dh-site="retina"]
+/* @end */ { color: var(--dh-text); font-weight: var(--dh-weight-semibold); box-shadow: inset 0 -2px 0 var(--dh-accent); border-radius: 0; }
+.dh-strip-label { margin: 0 0 0 auto; padding-left: var(--dh-space-3); color: var(--dh-muted); }
+/* @generated label suffixes from dh-strip.mjs (npm run shared:stamp) */
+:root[data-dh-label="browser"] .dh-strip:not([data-dh-label]) .dh-strip-more[data-dh-label="browser"],
+.dh-strip[data-dh-label="browser"] .dh-strip-more[data-dh-label="browser"] { display: inline; }
+:root[data-dh-label="browser"] .dh-strip:not([data-dh-label]) .dh-strip-more[data-dh-label="recorded"],
+.dh-strip[data-dh-label="browser"] .dh-strip-more[data-dh-label="recorded"] { display: none; }
+/* @end */
+/* Phones and tablets (below 1168 px since 1.2.12: thirteen links, the current one semibold, and the longest suffix need 1158 px in
+ * Chromium with DejaVu Sans, a wide system font; 1112 px in 1.2.11, 1072 px in 1.2.10, 1024 px in 1.2.8, 968 px in 1.2.7, 880 px in 1.2.5, 720 px in 1.2.4):
+ * the mark carries "Dragonhound Labs" (kept for screen readers), the label shortens. */
+@media (max-width: 1167px) {
+  .dh-strip { gap: var(--dh-space-2); }
+  .dh-strip-name, .dh-strip-more {
+    position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
+  .dh-strip-links { padding-left: var(--dh-space-2); }
+}
+/* Phones (below 856 px since 1.2.12: the thirteen links need 846 px in DejaVu Sans; 800 px in 1.2.11, 768 px in 1.2.10, 720 px in 1.2.8, 664 px in 1.2.7, 600 px in 1.2.5): the links no longer fit, so the link list scrolls sideways on its own while the
+ * mark and "Live demo" stay put. Where scroll-driven animations exist, the edges fade only while there is more to
+ * scroll that way (no fade when the list fits); elsewhere the list is clipped at the edge. dh-theme.js scrolls the
+ * current site's link into view. */
+@media (max-width: 855px) {
+  .dh-strip-links {
+    flex: 0 1 auto; min-width: 0;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain;
+  }
+  .dh-strip-links::-webkit-scrollbar { display: none; }
+  @supports (animation-timeline: scroll()) {
+    .dh-strip-links {
+      /* the first 1 px is the divider (border-left), kept solid */
+      mask-image: linear-gradient(to right, #000 0 1px, #0000 1px, #000 calc(1px + var(--dh-strip-fade-l)),
+        #000 calc(100% - var(--dh-strip-fade-r)), #0000 100%);
+      animation: dh-strip-edges linear both;
+      animation-timeline: scroll(self inline);
+    }
+  }
+}
+@property --dh-strip-fade-l { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --dh-strip-fade-r { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@keyframes dh-strip-edges {
+  from { --dh-strip-fade-l: 0px; --dh-strip-fade-r: 24px; }
+  15% { --dh-strip-fade-l: 24px; }
+  85% { --dh-strip-fade-r: 24px; }
+  to { --dh-strip-fade-l: 24px; --dh-strip-fade-r: 0px; }
+}
+/* Narrow phones (320-419 px): tighter spacing shows more of the list. Links keep at least 24 px of width
+ * ("Iris" is the shortest). */
+@media (max-width: 419px) {
+  .dh-strip { gap: var(--dh-space-1); padding: 0 var(--dh-space-2); }
+  .dh-strip-links { gap: 0; padding-left: var(--dh-space-1); }
+  .dh-strip-links a { padding: 0 3px; }
+  .dh-strip-label { padding-left: var(--dh-space-1); }
+}
+/* Below 360 px (320 px phones): 12 px text and 2 px link padding. "Iris" would be 22 px: min-width holds it at 24. */
+@media (max-width: 359px) {
+  .dh-strip { font-size: .75rem; }
+  .dh-strip-links a { padding: 0 2px; min-width: 20px; justify-content: center; } /* content box: 24 px with the padding */
+}
+@media print { .dh-strip { display: none; } }
