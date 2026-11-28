@@ -84,8 +84,12 @@ RUN pip install --no-cache-dir . ruff uv==0.11.9
 ARG SEMGREP_VERSION=1.180.0
 RUN uv venv --no-cache /opt/semgrep \
     && uv pip install --no-cache --python /opt/semgrep/bin/python semgrep==${SEMGREP_VERSION} \
-    && ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep \
-    && chmod -R a+rX /opt/semgrep && semgrep --version
+    && chmod -R a+rX /opt/semgrep
+# semgrep writes ~/.semgrep (its log, settings) before doing anything, and the container's HOME is / (unwritable
+# for its uid): it crashed with a traceback, exit 1, which argus-ci's check.py read as "no hits". The wrapper gives
+# it a writable home when HOME isn't one, and keeps it off the network (no metrics, no version check).
+COPY docker/semgrep.sh /usr/local/bin/semgrep
+RUN chmod 755 /usr/local/bin/semgrep && su nobody -s /bin/sh -c 'HOME=/ semgrep --version'
 
 # The structure scan parses with this one: a file using syntax newer than the parser is unreadable to it
 # (auditor/structure.py). Never below TEST_PYTHONS' newest. It runs no packages, and no patch's tests.
