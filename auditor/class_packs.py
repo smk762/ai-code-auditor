@@ -427,13 +427,24 @@ def rule_hits(source: str, path: str, rule: dict[str, Any]) -> list[RuleHit] | N
         return None
     if r.returncode not in (0, 1) or not isinstance(data, list):
         return None
+    # A file ruff couldn't parse was never checked: its diagnostic has no rule code (null, E999, or
+    # "invalid-syntax" depending on the version), and dropping it would read as "no hits".
+    if any(not isinstance(h, dict) or not _RULE_CODE.match(str(h.get("code") or "")) or h.get("code") == "E999"
+           for h in data):
+        return None
     lines = source.splitlines()
     out = []
     for h in data:
         row = int((h.get("location") or {}).get("row") or 0)
-        if h.get("code") in rule["select"] and 0 < row <= len(lines):
+        if _selected(h["code"], rule["select"]) and 0 < row <= len(lines):
             out.append(RuleHit(row, h["code"], lines[row - 1]))
     return out
+
+
+def _selected(code: str, select: list[str]) -> bool:
+    """Whether ruff's ``--select`` entries cover *code*: like ruff, an entry is a code or a prefix of
+    codes ("B9" selects B901 to B905), and "ALL" is every rule."""
+    return any(s == "ALL" or code.startswith(s) for s in select)
 
 
 _STOP_NAMES = frozenset(keyword.kwlist) | frozenset(dir(builtins)) | {"self", "cls"}
@@ -553,6 +564,10 @@ def run(output_dir: str | Path | None = None, *, session=None, mirrors_path: str
         guards = dict(gov.get("class_guard") or {})
         touched = False
         for repo, rec in guards.items():
+            bad = _bad_guard_record(rec)
+            if bad:  # one malformed record is reported and skipped, never a crash mid-run
+                proofs.append({"pack": v.id, "repo": repo, "status": "invalid", "note": bad})
+                continue
             proof = rec.get("proof") or {}
             dev_now = ""
             if mpaths.get(repo) and Mirror(mpaths[repo]).ok:
@@ -589,7 +604,7 @@ def run(output_dir: str | Path | None = None, *, session=None, mirrors_path: str
                 if verdict == "close":
                     cp.apply_status("resolved", f"class_guard ({v.id}): {why}"[:2000])
                     cp.verification["evidence"] = {"kind": "class_guard", "parent": v.id, "repo": repo,
-                                                   "guard_commit": rec["commit"], "proof": proof.get("repro", []),
+                                                   "guard_commit": rec.get("commit"), "proof": proof.get("repro", []),
                                                    "rule": rec.get("rule"), "reason": why}
                     write_pack(cp, out, preserve_status=False)
                     refresh_pack_rag(out, cp.to_dict())
@@ -607,8 +622,9 @@ def run(output_dir: str | Path | None = None, *, session=None, mirrors_path: str
             changed = True
         # A class pack with nothing open left, and a guard proven somewhere, is done.
         fresh = load_pack(out, v.id) or {}
-        kids = [load_pack(out, c) or {} for c in (fresh.get("governance") or {}).get("children") or []]
-        proven_any = any((g.get("proof") or {}).get("status") == "proven"
+        kids = [k for c in (fresh.get("governance") or {}).get("children") or []
+                if (k := _child_pack(out, c)) is not None]
+        proven_any = any(not _bad_guard_record(g) and (g.get("proof") or {}).get("status") == "proven"
                          for g in ((fresh.get("governance") or {}).get("class_guard") or {}).values())
         if fresh.get("status") in ACTIVE and proven_any and not any(k.get("status", "open") in ACTIVE for k in kids):
             pack = AgentCodingPack.from_dict(fresh, fallback_id=v.id)
@@ -622,6 +638,29 @@ def run(output_dir: str | Path | None = None, *, session=None, mirrors_path: str
     if not dry_run:
         (out / REPORT_NAME).write_text(json.dumps(rep, indent=1))
     return rep
+
+
+def _bad_guard_record(rec: Any) -> str:
+    """Why a stored guard record can't be proven or close anything, or "" when it is usable."""
+    if not isinstance(rec, dict):
+        return "the guard record is not a mapping"
+    missing = [k for k in ("commit", "proof_test") if not isinstance(rec.get(k), str) or not rec[k].strip()]
+    if missing:
+        return f"the guard record has no {' or '.join(missing)}"
+    if not isinstance(rec.get("proof") or {}, dict):
+        return "the guard record's proof is not a mapping"
+    return ""
+
+
+def _child_pack(out: Path, cid: str) -> dict[str, Any] | None:
+    """A child pack's data; None only when the child pack is gone (no file). A file that exists but
+    can't be read stays in the way as an open child: unread is never closed."""
+    from auditor.agent_pack import load_pack, pack_file_path
+
+    data = load_pack(out, cid)
+    if data is not None:
+        return data
+    return {} if pack_file_path(out, cid).exists() else None
 
 
 def _scans_by_repo(session, load_scans) -> dict[str, list[Any]]:
