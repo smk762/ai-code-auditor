@@ -78,6 +78,15 @@ COPY gpu-tenant.yaml /app/gpu-tenant.yaml
 # doesn't satisfy it (validator.test_python, #141); its interpreters live in the venv cache.
 RUN pip install --no-cache-dir . ruff uv==0.11.9
 
+# semgrep: argus-ci's suite rules run it (suite_rules.scan, and argus-ci's own tests under validate_patch, which
+# skip without it). Its own venv, so its pins can't move ours; the version is the `rules` extra's, which
+# matches argus-ci's catalogue (test_image_tools keeps the two in step).
+ARG SEMGREP_VERSION=1.180.0
+RUN uv venv --no-cache /opt/semgrep \
+    && uv pip install --no-cache --python /opt/semgrep/bin/python semgrep==${SEMGREP_VERSION} \
+    && ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep \
+    && chmod -R a+rX /opt/semgrep && semgrep --version
+
 # The structure scan parses with this one: a file using syntax newer than the parser is unreadable to it
 # (auditor/structure.py). Never below TEST_PYTHONS' newest. It runs no packages, and no patch's tests.
 ARG SCAN_PYTHON_VERSION=3.14
