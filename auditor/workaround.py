@@ -85,20 +85,43 @@ def _outside_quotes(line: str, marker: str) -> int:
     return -1
 
 
+def _c_comments(rest: str) -> tuple[list[str], bool]:
+    """The comment texts on a C-family line (after any block comment it continues), and whether a
+    ``/*`` on it is left open. A ``/*`` or ``//`` counts wherever it starts, outside quotes."""
+    texts: list[str] = []
+    while True:
+        b, ln = _outside_quotes(rest, "/*"), _outside_quotes(rest, "//")
+        if ln >= 0 and (b < 0 or ln < b):
+            texts.append(rest[ln + 2:].strip())
+            return texts, False
+        if b < 0:
+            return texts, False
+        end = rest.find("*/", b + 2)
+        if end < 0:
+            texts.append(rest[b + 2:].strip().lstrip("*").strip())
+            return texts, True
+        texts.append(rest[b + 2:end].strip().lstrip("*").strip())
+        rest = rest[end + 2:]
+
+
 def _line_comments(text: str, marker: str) -> list[tuple[int, str]]:
     out = []
     in_block = False
     for n, line in enumerate(text.splitlines(), start=1):
-        s = line.strip()
         if marker == "//":
+            texts: list[str] = []
+            rest = line
             if in_block:
-                out.append((n, s.rstrip("*/").lstrip("*").strip()))
-                in_block = "*/" not in s
-                continue
-            if s.startswith("/*"):
-                out.append((n, s.strip("/*").strip()))
-                in_block = "*/" not in s
-                continue
+                end = line.find("*/")
+                texts.append((line if end < 0 else line[:end]).strip().lstrip("*").strip())
+                rest = "" if end < 0 else line[end + 2:]
+                in_block = end < 0
+            if not in_block:
+                more, in_block = _c_comments(rest)
+                texts += more
+            if any(texts):
+                out.append((n, " ".join(t for t in texts if t)))
+            continue
         i = _outside_quotes(line, marker)
         if i >= 0 and not (marker == "#" and line[i:i + 2] == "#!"):
             out.append((n, line[i + len(marker):].strip()))
@@ -127,14 +150,21 @@ def classify(comment: str, lines: list[str], line_no: int) -> str:
     return ""
 
 
+def _scanned(rel: str | Path) -> bool:
+    """Whether a repo-relative file is one the scan reads: a source suffix, not minified or a type
+    declaration, and under no skipped or dot directory. Full walks and explicit paths agree."""
+    p = Path(rel)
+    return (p.suffix in SUFFIXES and not p.name.endswith((".min.js", ".d.ts"))
+            and not any(d in SKIP_DIRS or d.startswith(".") for d in p.parts[:-1]))
+
+
 def _files(root: Path, rel_paths: list[str] | None) -> list[Path]:
     if rel_paths is not None:
-        return [root / p for p in rel_paths if Path(p).suffix in SUFFIXES]
+        return [root / p for p in rel_paths if _scanned(p)]
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
-        out.extend(Path(dirpath) / f for f in filenames
-                   if Path(f).suffix in SUFFIXES and not f.endswith((".min.js", ".d.ts")))
+        out.extend(Path(dirpath) / f for f in filenames if _scanned(f))
     return sorted(out)
 
 
