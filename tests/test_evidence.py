@@ -692,3 +692,15 @@ def test_pack_tests_narrow_a_lone_packs_evidence(mono) -> None:
     # naming only a test that isn't the repro leaves the lone pack unverified, as for a listed one
     body = _post(patch=FIX + TWO_TESTS, pack_id=mono["pack"], pack_tests={mono["pack"]: ["svc/tests/test_x.py"]})
     assert body["pack"]["status"] == "unverified" and "pack_tests" in body["pack"]["reason"], body["pack"]
+
+
+def test_a_test_id_with_spaces_in_its_param_is_read_whole() -> None:
+    # pytest keeps a parametrize id as given: "has space" stays in the id. Read as \S+, the line never
+    # matched, so argus-survey's refusal cases with spaced ids were never counted as repros.
+    out = ("PASSED tests/t.py::test_x[plain]\n"
+           "FAILED tests/t.py::test_x[has space] - AssertionError: boom - more\n"
+           "ERROR tests/t.py::TestC::test_y[a b c]\n"
+           "SUBFAILED[msg] (i=1) tests/t.py::test_z[sub case] - x\n")
+    assert evidence.parse_pytest_outcomes(out) == {
+        "tests/t.py::test_x[plain]": "passed", "tests/t.py::test_x[has space]": "failed",
+        "tests/t.py::TestC::test_y[a b c]": "error", "tests/t.py::test_z[sub case]": "failed"}
