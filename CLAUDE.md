@@ -105,7 +105,7 @@ the same file are paired by title word overlap (`auditor/finding_match.py`). Pac
 
 **validate_patch** (`auditor/validator.py`, `validate_patch_tree`) applies the patch to a clean `git archive` of the
 `dev` tip, never the live checkout. That tree gets its own `.git` with `HEAD` at the base and the base's tags (objects borrowed through alternates), so tests that read git history run as in CI. Each changed file maps to its nearest project: for `.py`, a dir with
-`pyproject.toml`, `setup.py`, `requirements.txt` or `tests/`; for TS/JS, the nearest `package.json`
+`pyproject.toml`, `setup.py`, `requirements.txt`, or a `tests/` dir holding Python (argus-halo's shell-only `tests/` marks nothing); for TS/JS, the nearest `package.json`
 (`auditor/validate_node.py`). A `.py` file with no project marker above it (argus-ci) runs the `test_*.py` beside it from the repo top, one pytest run per directory, in a venv of what the repo's CI installs by name (`--with`, `pip install`) plus a fixed import map (#102). That project's tests or npm checks then run in a cached env built from its declared deps, on the image's Python unless the project's `requires-python` rules it out; then on the oldest version that satisfies it, which uv fetches into the venv cache (`validator.test_python`, #141).
 Failures are compared against the unpatched tree, so only failures the patch introduced count; one of those that passes on a single rerun is reported as a flake, and tests that error on both trees are reported apart from ones that fail on both. The response lists every one of those ids in `base_failures`, per project (the notes abbreviate). When nothing can run,
 the result is `lint_only` (Python) or skipped (TS/JS), with a note saying why. A hatch-vcs or setuptools-scm version

@@ -455,7 +455,7 @@ def project_root(tree: Path, rel_path: str) -> Path:
             p.resolve().relative_to(tree)
         except ValueError:
             return tree
-        if any((p / m).exists() for m in _PROJECT_MARKERS) or (p / "tests").is_dir():
+        if _has_project(p):
             return p.resolve()  # resolved, like *tree*: callers take relative_to(tree.resolve())
         if p.resolve() == tree:
             return tree
@@ -1054,7 +1054,13 @@ def _reported_failures(output: str) -> int:
 
 
 def _has_project(root: Path) -> bool:
-    return any((root / m).exists() for m in _PROJECT_MARKERS) or (root / "tests").is_dir()
+    """A project marker, or a ``tests/`` dir that holds Python. argus-halo's root ``tests/`` has only shell and
+    Terraform tests: read as a marker, it made the whole repo one project with no dependencies, so the loose
+    ``scripts/test_*.py`` ran there without the packages their imports name, and couldn't import yaml."""
+    if any((root / m).exists() for m in _PROJECT_MARKERS):
+        return True
+    tests = root / "tests"
+    return tests.is_dir() and next(tests.rglob("*.py"), None) is not None
 
 
 def validate_patch_tree(

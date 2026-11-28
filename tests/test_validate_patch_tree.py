@@ -46,6 +46,31 @@ def test_project_root_finds_the_nearest_project(tmp_path: Path) -> None:
     assert project_root(tmp_path, "loose/z.py").resolve() == tmp_path.resolve()
 
 
+def test_a_tests_dir_without_python_marks_no_project(tmp_path: Path) -> None:
+    # argus-halo: the root tests/ holds shell and Terraform tests, the Python lives in loose scripts/.
+    _write(tmp_path, {"tests/check_plan_test.sh": "", "tests/plans/a.tfplan.json": "", "tests/security.tftest.hcl": "",
+                      "scripts/check.py": "", "nested/tests/sub/test_n.py": "", "nested/m.py": ""})
+    assert not validator._has_project(tmp_path)
+    assert project_root(tmp_path, "scripts/check.py").resolve() == tmp_path.resolve()
+    assert project_root(tmp_path, "nested/m.py") == tmp_path / "nested"  # Python anywhere under tests/ counts
+
+
+def test_loose_scripts_beside_a_non_python_tests_dir_get_their_imports(tmp_path: Path, monkeypatch) -> None:
+    built: list[tuple[Path, list[str] | None]] = []
+
+    def fake(root, cache_dir, extra=None):
+        built.append((root, extra))
+        return Path(sys.executable), ""
+
+    monkeypatch.setattr(validator, "ensure_test_venv", fake)
+    _write(tmp_path, {**LOOSE_BASE, "scripts/calc.py": "def add(a, b):\n    return a + b\n",
+                      "scripts/test_calc.py": "import yaml  # noqa: F401\n" + LOOSE_BASE["scripts/test_calc.py"],
+                      "tests/check_plan_test.sh": "#!/bin/sh\n"})
+    r = validate_patch_tree(_Repo(), tmp_path, ["scripts/calc.py"])
+    assert r.passed and r.tool == "pytest" and "tests passed: scripts" in r.raw_output, r.raw_output
+    assert built == [(tmp_path.resolve(), ["pyyaml"])]  # a markerless root: its env gets what the tests import
+
+
 def test_requirement_lines_inline_includes_and_skip_self_install(tmp_path: Path) -> None:
     _write(tmp_path, {"requirements.txt": "fastapi>=0.1  # web\n-r base.txt\n-e .\n.\n-c constraints.txt\n",
                       "base.txt": "httpx\n# comment\n"})
