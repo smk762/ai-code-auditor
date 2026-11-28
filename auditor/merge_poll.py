@@ -122,13 +122,14 @@ def load_state(path: Path, *, strict: bool = False) -> dict[str, Any]:
     else:
         if not isinstance(data, dict):
             problem = f"top level is {type(data).__name__}, not an object"
+        elif data.get("repos") is not None and not isinstance(data["repos"], dict):
+            problem = f"'repos' is {type(data['repos']).__name__}, not an object"
     if problem:
         if strict:
             raise StateUnreadable(f"{path}: {problem}")
         logger.warning("merge poll state %s unreadable, shown as empty: %s", path, problem)
         return {"repos": {}, "updated_at": ""}
-    repos = data.get("repos")
-    if not isinstance(repos, dict):
+    if data.get("repos") is None:
         data["repos"] = {}
     return data
 
