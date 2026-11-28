@@ -136,7 +136,7 @@ Output when git ops succeed:
   Applied:       True
   Branch:        repair/a1b2c3d4e5f6
   Commit:        a1b2c3d4e5f6
-  Pushed to:     git@github.com:org/repo.git
+  Pushed to:     git@example.org:org/repo.git
 ```
 
 ---
