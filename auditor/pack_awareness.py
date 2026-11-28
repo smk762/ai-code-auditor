@@ -7,11 +7,18 @@ Local files only: nothing here runs git. Installs are idempotent via marker comm
   file *without* our marker is treated as user-authored and left alone unless ``force=True``.
 * ``.github/pull_request_template.md`` — a marked "Audit packs" section (#73), spliced like AGENTS.md.
 * ``.github/ISSUE_TEMPLATE/audit-finding.yml`` — managed issue form (#73), same rule as the Cursor rule.
+* ``.claude/settings.local.json`` — the write-time guard hook (``auditor.guard_hook``): a Claude Code
+  ``PostToolUse`` entry merged into the file, never replacing the user's settings. The command holds
+  this host's interpreter path, so the file must stay out of git: the install adds it to
+  ``.git/info/exclude`` unless an ignore file already names it, and refuses the hook when it can't.
 
 CLI entry point: ``scripts/install_agent_pack_awareness.py`` (wrapped by the ``.sh`` script).
 """
 from __future__ import annotations
 
+import json
+import shlex
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +36,10 @@ ISSUE_FORM_RELPATH = Path(".github") / "ISSUE_TEMPLATE" / "audit-finding.yml"
 PR_MARKER_START = "<!-- ai-audit:pr-template:start -->"
 PR_MARKER_END = "<!-- ai-audit:pr-template:end -->"
 FORM_MARKER = "# ai-audit:agent-packs managed file"
+CLAUDE_SETTINGS_RELPATH = Path(".claude") / "settings.local.json"
+HOOK_MODULE = "auditor.guard_hook"  # how our hook entry is recognised in a settings file
+HOOK_MATCHER = "Edit|Write|MultiEdit"
+HOOK_TIMEOUT_S = 60
 
 
 def _body(repo: str, api_base: str) -> str:
@@ -208,6 +219,73 @@ def _write_if_changed(path: Path, new: str, existed: bool, old: str, *, dry_run:
     return f"{label}: {'would be ' if dry_run else ''}{verb}"
 
 
+def hook_command(python: str | None = None) -> str:
+    """The hook's command line: this interpreter, isolated (``-I``) so the target repo's own cwd and
+    ``PYTHON*`` variables can't shadow the ``auditor`` package."""
+    return f"{shlex.quote(python or sys.executable)} -I -m {HOOK_MODULE}"
+
+
+def _is_ours(entry: object) -> bool:
+    return isinstance(entry, dict) and any(
+        isinstance(h, dict) and HOOK_MODULE in str(h.get("command") or "") for h in entry.get("hooks") or [])
+
+
+def merge_guard_hook(settings: dict, command: str) -> dict:
+    """*settings* with exactly one guard-hook entry under ``hooks.PostToolUse`` (ours replaced, every
+    other entry and key kept as it was)."""
+    out = dict(settings)
+    hooks = dict(out.get("hooks") or {})
+    post = [e for e in hooks.get("PostToolUse") or [] if not _is_ours(e)]
+    post.append({"matcher": HOOK_MATCHER,
+                 "hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT_S}]})
+    hooks["PostToolUse"] = post
+    out["hooks"] = hooks
+    return out
+
+
+def _ignored(root: Path, rel: str) -> bool | None:
+    """Whether an ignore file names *rel* (textually; nothing here runs git). None when the repo has
+    no ``.git`` directory to hold a local exclude (a worktree or submodule's ``.git`` is a file)."""
+    for f in (root / ".gitignore", root / ".claude" / ".gitignore", root / ".git" / "info" / "exclude"):
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        names = {ln.strip().lstrip("/") for ln in text.splitlines()}
+        if rel in names or Path(rel).name in names or ".claude/" in names or ".claude" in names:
+            return True
+    return False if (root / ".git").is_dir() else None
+
+
+def _install_guard_hook(root: Path, *, python: str | None, dry_run: bool) -> list[str]:
+    label = str(CLAUDE_SETTINGS_RELPATH)
+    rel = CLAUDE_SETTINGS_RELPATH.as_posix()
+    ignored = _ignored(root, rel)
+    if ignored is None:
+        return [f"{label}: skipped (no .git directory to exclude it from; add {rel} to .gitignore first)"]
+    actions = []
+    if not ignored:
+        exclude = root / ".git" / "info" / "exclude"
+        if not dry_run:
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            old_ex = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+            exclude.write_text(old_ex + ("" if not old_ex or old_ex.endswith("\n") else "\n") + f"/{rel}\n",
+                               encoding="utf-8")
+        actions.append(f".git/info/exclude: {'would add' if dry_run else 'added'} /{rel}")
+    path = root / CLAUDE_SETTINGS_RELPATH
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    try:
+        current = json.loads(old) if old.strip() else {}
+    except ValueError:
+        return [*actions, f"{label}: skipped (not valid JSON; fix it and re-run)"]
+    if not isinstance(current, dict):
+        return [*actions, f"{label}: skipped (not a JSON object)"]
+    new = json.dumps(merge_guard_hook(current, hook_command(python)), indent=2) + "\n"
+    if old.strip() and json.loads(old) == json.loads(new):
+        return [*actions, f"{label}: unchanged"]
+    return [*actions, _write_if_changed(path, new, path.exists(), old, dry_run=dry_run, label=label)]
+
+
 def install_into_repo(
     repo: str,
     repo_path: str | Path,
@@ -215,6 +293,8 @@ def install_into_repo(
     api_base: str = DEFAULT_API_BASE,
     dry_run: bool = False,
     force: bool = False,
+    guard_hook: bool = True,
+    python: str | None = None,
 ) -> InstallResult:
     root = Path(repo_path)
     result = InstallResult(repo=repo, path=str(root))
@@ -257,6 +337,10 @@ def install_into_repo(
     else:
         result.actions.append(_write_if_changed(form, render_issue_form(), form.exists(), old_form,
                                                 dry_run=dry_run, label=str(ISSUE_FORM_RELPATH)))
+
+    # .claude/settings.local.json — the write-time guard hook, merged into local, untracked settings.
+    if guard_hook:
+        result.actions.extend(_install_guard_hook(root, python=python, dry_run=dry_run))
     return result
 
 
@@ -267,6 +351,7 @@ def install_all(
     api_base: str = "",
     dry_run: bool = False,
     force: bool = False,
+    guard_hook: bool = True,
 ) -> list[InstallResult]:
     """Install into enabled ecosystem repos that exist on disk (or just *repo*)."""
     # Deliberately not os.getenv("AI_AUDIT_PUBLIC_BASE_URL"): that would bake the real LAN
@@ -280,6 +365,7 @@ def install_all(
             raise ValueError(f"repo {repo!r} not found among enabled repos in {ecosystem_config}")
     results: list[InstallResult] = []
     for r in repos:
-        res = install_into_repo(r.name, r.path, api_base=base, dry_run=dry_run, force=force)
+        res = install_into_repo(r.name, r.path, api_base=base, dry_run=dry_run, force=force,
+                                guard_hook=guard_hook)
         results.append(res)
     return results

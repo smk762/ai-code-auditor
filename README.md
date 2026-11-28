@@ -52,6 +52,11 @@ flowchart LR
    tests to have run. A pass without that is `unverified`. A written waiver can stand in for a test; it is recorded and
    counted.
 
+Agents in Claude Code also get a write-time check. After each edit to a Python file, a hook runs the proven
+deterministic rules (the suite's guard rules and each proven class guard's rule) on it and shows the agent any hits on
+the lines it changed. That costs no model tokens. It is advice only and never counts as evidence: the evidence still
+comes from step 4.
+
 Packs whose issue is no longer reported are closed as `obsolete`, which means "not seen any more", not "fixed". A scan
 that couldn't review a file never counts as the issue being gone.
 
@@ -252,6 +257,7 @@ Generated from `cli.py`; a test fails when they differ. `ai-audit <command> --he
 | `ai-audit revalidate` | Re-check merged fixes resolved on a waiver or left unverified; records stronger evidence, never demotes |
 | `ai-audit test-env` | Can validate_patch run each project's tests? Collects tests in the validator's own envs, per repo (no tests run); reports missing test deps |
 | `ai-audit structure` | Module cycles and private imports inside each repo's dev (report-only, no LLM) |
+| `ai-audit guard-check` | Write-time guard rules on one file (the Claude Code PostToolUse hook; advice, never evidence) |
 | `ai-audit eval` | Reliability evals (#63) |
 | `ai-audit eval trust` | Gates for the trust upgrade: what passes, fails, lacks data, or isn't built |
 | `ai-audit eval classes` | Score finding classifiers on the private gold set (#53) |

@@ -141,23 +141,29 @@ def _run(cdir: Path, args: list[str], *, timeout: int = 900) -> subprocess.Compl
 def scan(repo_name: str, repo_root: str | Path, paths: list[str] | None = None, *,
          cdir: Path | None = None) -> list[Finding]:
     """Guard-rule hits in *repo_root* (optionally only *paths*) as findings. Never raises."""
+    return scan_or_none(repo_name, repo_root, paths, cdir=cdir) or []
+
+
+def scan_or_none(repo_name: str, repo_root: str | Path, paths: list[str] | None = None, *,
+                 cdir: Path | None = None) -> list[Finding] | None:
+    """Like ``scan``, but None when the scan couldn't run, so a caller can tell that from no hits."""
     cdir = cdir or catalogue_dir()
     if cdir is None:
-        return []
+        return None
     root = Path(repo_root)
     try:
         # "--": a repo path starting with "-" is a path, never an option such as --root
         r = _run(cdir, ["scan", "--root", str(root), "--json", "--", *(paths or [])])
         if r.returncode != 0:
             logger.warning("suite rules scan of %s failed: %s", repo_name, r.stderr.strip()[-300:])
-            return []
+            return None
         data = json.loads(r.stdout or "{}")
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         logger.warning("suite rules scan of %s failed: %s", repo_name, exc)
-        return []
+        return None
     if not isinstance(data, dict):
         logger.warning("suite rules scan of %s: expected a JSON object, got %s", repo_name, type(data).__name__)
-        return []
+        return None
     meta = data.get("rules") if isinstance(data.get("rules"), dict) else {}
     hits = data.get("hits") if isinstance(data.get("hits"), list) else []
     out = []

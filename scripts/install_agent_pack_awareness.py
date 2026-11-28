@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Install agent-pack awareness (AGENTS.md section + .cursor rule) into ecosystem repos.
+"""Install agent-pack awareness (AGENTS.md section, .cursor rule, write-time guard hook) into ecosystem repos.
 
 Usage:
     python scripts/install_agent_pack_awareness.py [--dry-run] [--repo NAME] [--api-base URL] [--force]
+                                                   [--no-guard-hook]
 
-Local files only — never runs git in the target repos.
+Local files only — never runs git in the target repos. The guard hook goes into each repo's untracked
+.claude/settings.local.json and runs this interpreter (so run it from the venv with ai-audit installed).
 """
 from __future__ import annotations
 
@@ -26,12 +28,14 @@ def main(argv: list[str] | None = None) -> int:
                     help=f"Audit API base written into the files (default: literal {DEFAULT_API_BASE}, resolved by agents from their local .env)")
     ap.add_argument("--force", action="store_true",
                     help="Overwrite an existing user-authored agent-coding-packs.mdc (no marker)")
+    ap.add_argument("--no-guard-hook", action="store_true",
+                    help="Leave .claude/settings.local.json alone (no write-time guard hook)")
     args = ap.parse_args(argv)
 
     try:
         results = install_all(
             ecosystem_config=args.config, repo=args.repo, api_base=args.api_base,
-            dry_run=args.dry_run, force=args.force,
+            dry_run=args.dry_run, force=args.force, guard_hook=not args.no_guard_hook,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

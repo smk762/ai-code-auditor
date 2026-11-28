@@ -352,6 +352,11 @@ def _build_parser() -> argparse.ArgumentParser:
     st.add_argument("--json", action="store_true", help="Print the full report as JSON")
     st.add_argument("--cached", action="store_true", help="Show the last report instead of re-scanning")
 
+    gh = sub.add_parser("guard-check", help="Write-time guard rules on one file (the Claude Code PostToolUse hook; "
+                        "advice, never evidence)")
+    gh.add_argument("--file", default="", help="Check this file and print its hits (default: read the hook's JSON on stdin)")
+    gh.add_argument("--summary", action="store_true", help="Show the write-time metric from the hook history instead")
+
     ev = sub.add_parser("eval", help="Reliability evals (#63)")
     ev_sub = ev.add_subparsers(dest="eval_command", required=True)
     evt = ev_sub.add_parser("trust", help="Gates for the trust upgrade: what passes, fails, lacks data, or isn't built")
@@ -765,6 +770,24 @@ def _run_test_env(args) -> None:
                       or (f"{p['tests']} tests" if "tests" in p else ", ".join(p.get("checks") or [])))
             print(f"{name:22} {p['kind']:6} {p['project']:28} {p['status']:14} {detail[:110]}")
     print(f"\n{rep['summary']['by_status']}")
+
+
+def _run_guard_check(args) -> None:
+    from auditor import guard_hook
+
+    if args.summary:
+        m = guard_hook.write_time_metric(guard_hook.output_dir())
+        rate = f"{m['rate']:.0%}" if m["rate"] is not None else "n/a"
+        print(f"write-time guard hits, last {m['window_days']} days: {m['handled']}/{m['n']} handled by the next check ({rate})")
+        for rule, c in sorted(m["by_rule"].items()):
+            print(f"  {rule:32} {c['handled']}/{c['shown']}")
+        return
+    if args.file:
+        hits, row = guard_hook.check(args.file, os.getcwd(), record=False)
+        print(guard_hook.render(hits, row.get("file", args.file)) if hits else
+              f"no guard-rule hits on changed lines ({row.get('status', 'not checked: not a .py file')})")
+        raise SystemExit(2 if hits else 0)
+    raise SystemExit(guard_hook.main())
 
 
 def _run_structure(args) -> None:
@@ -1801,6 +1824,8 @@ def main() -> None:
         _run_test_env(args)
     elif args.command == "structure":
         _run_structure(args)
+    elif args.command == "guard-check":
+        _run_guard_check(args)
     elif args.command == "wiki":
         _run_wiki(args)
     elif args.command == "diff-audit":

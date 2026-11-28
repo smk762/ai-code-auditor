@@ -46,6 +46,9 @@ INFORMATIONAL: dict[str, str] = {
     # Variants of the seeds (#155): new, with few of them, so measured before they decide anything.
     "guards.dodge_recall": "informational until measured (#155)",
     "guards.fix_silence": "informational until measured (#155)",
+    # The write-time guard hook (auditor/guard_hook.py): advice to the agent while it edits, never
+    # evidence. Measured to see whether it changes what reaches the nightly scan before it decides anything.
+    "guards.write_time": "informational: the write-time hook is advice, never evidence",
 }
 
 
@@ -91,7 +94,8 @@ def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
                 classes: dict[str, Any] | None = None, class_lifecycle: dict[str, Any] | None = None,
                 rules_fixtures: dict[str, Any] | None = None,
                 arch_contracts: dict[str, Any] | None = None,
-                guard_seeded: dict[str, Any] | None = None) -> list[Gate]:
+                guard_seeded: dict[str, Any] | None = None,
+                guard_hook: dict[str, Any] | None = None) -> list[Gate]:
     t = trust or {}
     gates: list[Gate] = []
 
@@ -190,6 +194,13 @@ def build_gates(trust: dict[str, Any] | None, seeded: dict[str, Any] | None,
         vm = variant_metric(gs if gs_fresh else None, kind)
         gates.append(Gate(gid, "class packs", 155, desc, ">=", 1.0, 5)
                      .judge(vm["rate"], vm["n"], vm["note"] if gs_fresh else gs_note))
+    # ── write-time guard hook (informational) ──
+    gh = guard_hook or {}
+    gates.append(Gate("guards.write_time", "guard hook", 64,
+                      "Guard-rule hits shown to an agent at write time that are gone by its next check of the file",
+                      ">=", 0.8, 20)
+                 .judge(gh.get("rate"), int(gh.get("n") or 0),
+                        "" if gh.get("n") else "no write-time hook history (guard_hook_history.jsonl)"))
     return gates
 
 
@@ -296,6 +307,16 @@ def class_lifecycle_eval(out: Path) -> dict[str, Any] | None:
         return None
 
 
+def guard_hook_eval(out: Path) -> dict[str, Any] | None:
+    from auditor.guard_hook import write_time_metric
+
+    try:
+        return write_time_metric(out)
+    except (OSError, ValueError) as exc:
+        logger.warning("guard hook history unreadable: %s", exc)
+        return None
+
+
 def arch_contracts_eval(rules_path: str | Path = "config/architecture_rules.yaml") -> dict[str, Any]:
     """Every architecture rule against its seeded fixture (cheap: no scan). A rules file that fails
     to load is reported as an error with no rules, so the gate is insufficient, never passing."""
@@ -343,7 +364,7 @@ def evaluate(output_dir: str | Path | None = None, *, record: bool = True,
 
     gates = build_gates(_read_json(out / TRUST_REPORT), _read_json(out / SEEDED_NAME), classes_eval(out),
                         class_lifecycle_eval(out), rules_fixtures(out), arch_contracts_eval(),
-                        _read_json(out / GUARD_SEEDED_NAME))
+                        _read_json(out / GUARD_SEEDED_NAME), guard_hook_eval(out))
     for g in gates:
         if g.id in INFORMATIONAL:
             g.informational = True
