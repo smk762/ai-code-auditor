@@ -619,7 +619,7 @@ def test_for_pack_keeps_only_the_tests_naming_the_packs_module(tmp_path: Path) -
 def test_decide_names_tests_that_belong_to_other_packs() -> None:
     scoped = evidence.ReproResult(tool="pytest", scoped_out=["tests/test_lease.py::test_b"])
     d = evidence.decide(_pack_at("app/x.py"), tool="pytest", changed=["app/x.py", "tests/test_lease.py"], repro=scoped)
-    assert d.status == "unverified" and "belong to other packs" in d.reason
+    assert d.status == "unverified" and "none is this pack's own" in d.reason
 
 
 def _bug_pack_in(mono, rel: str, title: str) -> str:
@@ -640,12 +640,18 @@ def test_a_pack_never_resolves_on_another_packs_test(mono) -> None:
     body = _post(patch=FIX + NEW_TEST, pack_ids=[mono["pack"], other])
     by_id = {p["id"]: p for p in body["packs"]}
     assert by_id[mono["pack"]]["status"] == "resolved" and by_id[mono["pack"]]["evidence"] == "repro"
-    assert by_id[other]["status"] == "unverified" and "belong to other packs" in by_id[other]["reason"], by_id[other]
+    assert by_id[other]["status"] == "unverified" and "none is this pack's own" in by_id[other]["reason"], by_id[other]
     assert by_id[other]["evidence_record"]["repro"]["scoped_out"] == ["svc/tests/test_calc.py::test_add"]
     assert load_pack(mono["out"], other)["status"] == "unverified"
-    # a lone pack is still judged on the whole patch, as before
+    # alone, it is judged on its own tests too: a diff fixing two things can't let one fix vouch for the other
     alone = _post(patch=FIX + NEW_TEST, pack_id=other)
-    assert alone["pack"]["status"] == "resolved"
+    assert alone["pack"]["status"] == "unverified" and "none is this pack's own" in alone["pack"]["reason"]
+    # naming the test is how a pack claims one that reaches its code without naming its module
+    named = _post(patch=FIX + NEW_TEST, pack_id=other, pack_tests={other: ["svc/tests/test_calc.py"]})
+    assert named["pack"]["status"] == "resolved" and named["pack"]["evidence"] == "repro"
+    # and a pack whose module the test names is unaffected
+    own = _post(patch=FIX + NEW_TEST, pack_id=mono["pack"])
+    assert own["pack"]["status"] == "resolved" and own["pack"]["evidence"] == "repro"
 
 
 def test_pack_tests_names_a_packs_evidence_and_refuses_strangers(mono) -> None:
@@ -692,3 +698,16 @@ def test_pack_tests_narrow_a_lone_packs_evidence(mono) -> None:
     # naming only a test that isn't the repro leaves the lone pack unverified, as for a listed one
     body = _post(patch=FIX + TWO_TESTS, pack_id=mono["pack"], pack_tests={mono["pack"]: ["svc/tests/test_x.py"]})
     assert body["pack"]["status"] == "unverified" and "pack_tests" in body["pack"]["reason"], body["pack"]
+
+
+def test_a_pack_about_a_test_is_proven_by_changing_that_test(tmp_path: Path) -> None:
+    # argus-puppet: eight packs citing test files each resolved as `repro` on three code fixes' tests in the diff.
+    pack = _pack_at("/m/argus-puppet/tests/test_cli.py")
+    other = evidence.ReproResult(tool="pytest", patched={"tests/test_extract.py::t": "passed"},
+                                 base={"tests/test_extract.py::t": "failed"})
+    counts = {"passed": 5, "failed": 0}
+    changed = ["src/argus_puppet/extract.py", "tests/test_extract.py", "tests/test_cli.py"]
+    d = evidence.decide(pack, tool="pytest", changed=changed, repro=other, tests=counts)
+    assert (d.status, d.kind) == ("resolved", "test_only")
+    d = evidence.decide(pack, tool="pytest", changed=changed[:2], repro=other, tests=counts)
+    assert d.status == "unverified" and "test_cli.py" in d.reason  # someone else's repro proves nothing here

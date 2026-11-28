@@ -1833,8 +1833,8 @@ def _judge_evidence(
     """Run the evidence bar (#58) for a passing patch and set the pack resolved or unverified.
     *repro_cache* shares one repro run between the packs of a multi-pack request: the patch's
     tests on the dev tree give the same answer whichever pack asks. With *multi*, each pack is
-    judged only on the tests that are its own (``evidence.for_pack``, #127); so is a lone pack whose
-    tests ``pack_tests`` names."""
+    judged only on the tests that are its own (``evidence.for_pack``, #127), and so is a lone pack: its
+    tests are the ones whose file names its module, or the ones ``pack_tests`` names."""
     from auditor import evidence
 
     pid = request.pack_id or "" if pack_id is None else pack_id
@@ -1850,7 +1850,10 @@ def _judge_evidence(
                                                 node_cache=node_cache, timeout_s=timeout_s)
         repro = cache["repro"]
         named = request.pack_tests.get(pid)
-        if multi or named:  # a lone pack is judged on the whole patch unless pack_tests names its tests
+        # Every pack is judged on its own tests, alone or not: one diff fixing two things must not let either
+        # fix vouch for the other. A lone pack that cites no file has nothing to match tests against, so it
+        # keeps the whole run; pack_tests names a pack's tests when its test doesn't name its module.
+        if multi or named or evidence.cites_a_file(pack):
             repro = evidence.for_pack(repro, pack, tree, named=named)
     verdict = None
     if pack.get("kind") in evidence.STRUCTURE_KINDS and structure_scans is not None:

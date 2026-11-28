@@ -460,6 +460,20 @@ def _module_pattern(pack: dict[str, Any]) -> re.Pattern[str] | None:
     return re.compile(rf"\b{re.escape(stem)}\b")
 
 
+def cites_a_file(pack: dict[str, Any]) -> bool:
+    return _module_pattern(pack) is not None
+
+
+def cited_path(pack: dict[str, Any]) -> str:
+    return str((pack.get("location") or {}).get("file_path") or "").replace("\\", "/")
+
+
+def _changes_cited(pack: dict[str, Any], changed: list[str]) -> bool:
+    """Whether the patch changes the file the pack cites (its path is absolute in the scan, relative in the patch)."""
+    cited = cited_path(pack)
+    return any(cited == c or cited.endswith("/" + c.lstrip("/")) for c in changed)
+
+
 def names_test(wanted: set[str], test_id: str) -> bool:
     """Whether a ``pack_tests`` entry names *test_id*: the exact id, its file, or an id it extends.
     ``t.py::test_y`` names each parametrized case ``t.py::test_y[case1]``, and ``t.py::TestC`` each
@@ -536,6 +550,17 @@ def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproR
         return done("resolved", "waiver", "evidence waived: " + waiver.strip()[:200])
     if not ch["code"] and not ch["tests"]:
         return done("resolved", "non_code", "docs/config-only change")
+    if is_test_file(cited_path(pack)):
+        # A finding about a test is fixed by changing that test, and is proven by it running. Another pack's
+        # repro in the same diff says nothing about it (argus-puppet's eight test packs were each credited
+        # with three code fixes' tests).
+        if not _changes_cited(pack, changed):
+            return done("unverified", "none", f"the pack cites {cited_path(pack).rsplit('/', 1)[-1]}, which the "
+                        "patch doesn't change")
+        if tests_ran(tool, tests):
+            return done("resolved", "test_only", "the test the pack cites is changed, and the tests ran and passed")
+        return done("unverified", "none", "the cited test is changed, but " + (_nothing_passed(tests) or
+                                                                                 "no tests ran (lint only)"))
     if not ch["code"]:
         if tests_ran(tool, tests):
             return done("resolved", "test_only", "test-only change; the tests ran and passed")
@@ -549,9 +574,8 @@ def decide(pack: dict[str, Any], *, tool: str, changed: list[str], repro: ReproR
                         "with the fix, or pass evidence_waiver")
         if repro is not None and repro.scoped_out:
             return done("unverified", "none", f"{len(repro.scoped_out)} test(s) fail on dev and pass with the fix, "
-                        "but none is this pack's own: they belong to other packs in the request, or aren't "
-                        "among the tests pack_tests names for it. Name this pack's tests in pack_tests, or "
-                        "validate it alone")
+                        "but none is this pack's own: their test files don't name the pack's module, or they "
+                        "aren't among the tests pack_tests names for it. Name this pack's tests in pack_tests")
         if repro is None or not repro.ran:
             why = "; ".join(repro.notes) if repro and repro.notes else "the patch's tests didn't run"
             return done("unverified", "none", f"couldn't run the patch's tests on both trees: {why}")

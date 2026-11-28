@@ -42,9 +42,11 @@ Optional: `q=<keyword>` boosts matches, `status=open,claimed,in_progress` (defau
    move the helper out of the test file into code, or send a waiver that says so.
    One patch that fixes several packs: add `"pack_ids": ["<id>", ...]` (up to 25). The suite runs once, each pack
    is judged on its own evidence, and `packs` in the response lists every result. A pack's evidence is only the
-   tests whose file names its cited module; another pack's test never resolves it. If your test lives elsewhere,
+   tests whose file names its cited module, whether it is validated alone or with others: another pack's test
+   never resolves it. If your test lives elsewhere (it reaches the code through a route, a CLI or an alias),
    name it: `"pack_tests": {"<id>": ["tests/test_x.py::test_y"]}`. An id without `[case]` covers every
-   parametrized case, and a file covers its tests. With one pack, `pack_tests` narrows its evidence the same way.
+   parametrized case, and a file covers its tests. A pack that cites a test file is fixed by changing that file
+   and resolves `test_only` once the tests run; no other test's repro counts for it.
    If the fix has already merged (the patch no longer applies to `dev`), send `"base_ref": "<sha>"`, the
    `dev` commit your diff was built on. The patch and the "fails on `dev`" run then both use that commit.
    It must be an ancestor of the `dev` tip (else 400), and the pack records it.
