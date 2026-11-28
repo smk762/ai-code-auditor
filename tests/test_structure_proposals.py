@@ -113,3 +113,29 @@ def test_the_endpoint_needs_auth_and_maps_errors(out: Path, monkeypatch) -> None
     assert client.post(url, json=body, headers=auth).json()["offered"] is True
     row = client.get("/audit/architecture.json").json()["cycles"]["cycles"][0]
     assert row["proposal"]["note"] == NOTE and row["edges_key"] == edges_key(row["edges"])
+
+
+def test_the_read_endpoints_say_where_each_proposal_stands(out: Path, monkeypatch) -> None:
+    monkeypatch.setattr("auditor.audit_api._output_dir", lambda: str(out))
+    client, url = TestClient(app), f"/audit/cycles/{CID}/proposal"
+    got = client.get(url).json()  # nothing proposed yet: still what an agent needs to write one
+    assert got["proposal"] is None and got["proposal_state"] == "none"
+    assert got["edges_key"] == edges_key(got["edges"]) and got["note_min"] == sp.NOTE_MIN
+    assert client.get("/audit/cycles/cyc-nope/proposal").status_code == 404
+    assert client.get("/audit/cycles.json?proposal=none").json()["cycles"][0]["id"] == CID
+
+    sp.propose(out, CID, _proposal(out, confidence="medium"))
+    got = client.get(url).json()
+    assert got["proposal_state"] == "review" and got["proposal"]["note"] == NOTE and not got["proposal"]["offered"]
+    listed = client.get("/audit/cycles.json").json()["cycles"]
+    assert [(c["id"], c["proposal_state"], c["proposal"]["confidence"]) for c in listed] == [(CID, "review", "medium")]
+    assert "edges" not in listed[0] and "note" not in listed[0]["proposal"]
+    assert client.get("/audit/cycles.json?proposal=none").json()["cycles"] == []
+    assert client.get("/audit/cycles.json?repo=other").json()["cycles"] == []
+    assert client.get("/audit/cycles.json?proposal=maybe").status_code == 422
+
+    sp.propose(out, CID, _proposal(out))
+    assert client.get(url).json()["proposal_state"] == "offered"
+    _report(out, {**BASE, "app/a.py": BASE["app/a.py"] + "TOP = 2\n",
+                  "app/b.py": BASE["app/b.py"].replace("import LIMIT", "import LIMIT, TOP")})
+    assert client.get(url).json()["proposal_state"] == "stale"
