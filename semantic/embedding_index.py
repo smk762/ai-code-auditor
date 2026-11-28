@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+from collections.abc import Callable
 from pathlib import Path
 
 import requests
@@ -46,6 +48,26 @@ class StaleIndexError(RuntimeError):
     """The stored index can't answer this query as configured: rebuild it."""
 
 
+# Written as the embedder record while a rebuild is under way, so an interrupted rebuild leaves an index
+# that is refused as stale rather than new vectors beside old records or an old embedder record.
+_BUILDING = {"building": True}
+
+
+def _replace_atomically(path: Path, write: Callable[[str], None]) -> None:
+    """``write`` a temp file beside ``path``, then move it into place: a reader sees the old file or the new."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        write(str(tmp))
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _write_json(path: Path, value: object, **kwargs) -> None:
+    text = json.dumps(value, **kwargs)
+    _replace_atomically(path, lambda tmp: Path(tmp).write_text(text, encoding="utf-8"))
+
+
 class EmbeddingIndex:
     def __init__(self, path: str = "index/code_embeddings.faiss", provider_config: EmbedderProviderConfig | None = None):
         self.path = Path(path)
@@ -78,21 +100,31 @@ class EmbeddingIndex:
                 }
             )
 
+        # The embedder record is marked first and written for real last, so a rebuild interrupted between
+        # files is refused as stale; each file is replaced whole, and search also checks the counts agree.
+        _write_json(self.embedder_path, _BUILDING)
         if faiss is not None and np is not None and vectors:
             arr = np.array(vectors, dtype="float32")
             self._faiss_index = faiss.IndexFlatIP(self.dim)
             self._faiss_index.add(arr)
-            faiss.write_index(self._faiss_index, str(self.path))
+            _replace_atomically(self.path, lambda tmp: faiss.write_index(self._faiss_index, tmp))
             self.vectors_path.unlink(missing_ok=True)
         else:
-            self.vectors_path.write_text(json.dumps(vectors), encoding="utf-8")
+            _write_json(self.vectors_path, vectors)
             self.path.unlink(missing_ok=True)  # a stale faiss index would describe other records
 
-        self.meta_path.write_text(json.dumps(self.records, indent=2), encoding="utf-8")
-        self.embedder_path.write_text(json.dumps(self._embedder_identity()), encoding="utf-8")
+        _write_json(self.meta_path, self.records, indent=2)
+        _write_json(self.embedder_path, self._embedder_identity())
+
+    def _uses_remote(self) -> bool:
+        return self.provider_config.provider.lower() == "openai-compatible" and bool(self.provider_config.endpoint)
 
     def _embedder_identity(self) -> dict:
+        """The embedder that actually writes the vectors: an openai-compatible provider with no endpoint embeds
+        with local hashes, so it is recorded as the local hash embedder, never as the remote model."""
         cfg = self.provider_config
+        if cfg.provider.lower() == "openai-compatible" and not self._uses_remote():
+            return {"provider": "local-hash", "model": "local-hash", "dim": self.dim}
         return {"provider": cfg.provider.lower(), "model": cfg.model, "dim": self.dim}
 
     def _check_embedder(self) -> None:
@@ -103,6 +135,8 @@ class EmbeddingIndex:
             built = json.loads(self.embedder_path.read_text(encoding="utf-8"))
         except ValueError:
             built = None
+        if built == _BUILDING:
+            raise StaleIndexError(f"index {self.path} is from a rebuild that did not finish: rebuild required")
         if built != self._embedder_identity():
             raise StaleIndexError(f"index {self.path} was built by embedder {built}, but "
                                   f"{self._embedder_identity()} is configured: index stale, rebuild required")
@@ -125,6 +159,10 @@ class EmbeddingIndex:
                 if index.d != len(q_vec):
                     raise StaleIndexError(f"index {self.path} holds {index.d}-dim vectors, but queries are "
                                           f"{len(q_vec)}-dim: index stale, rebuild required")
+                ntotal = getattr(index, "ntotal", len(records))
+                if ntotal != len(records):
+                    raise StaleIndexError(f"index {self.path} holds {ntotal} vectors for {len(records)} records: "
+                                          "index stale, rebuild required")
                 q_arr = np.array([q_vec], dtype="float32")
                 _, idxs = index.search(q_arr, min(top_k, len(records)))
                 return [records[i] for i in idxs[0] if 0 <= i < len(records)]
@@ -134,6 +172,9 @@ class EmbeddingIndex:
             # records but nothing readable, e.g. a faiss index where faiss isn't installed: not "no matches"
             raise StaleIndexError(f"index {self.path} has {len(records)} records but no vectors this environment "
                                   "can read (built with faiss?): install faiss or rebuild the index")
+        if len(vectors) != len(records):
+            raise StaleIndexError(f"index {self.path} holds {len(vectors)} vectors for {len(records)} records: "
+                                  "index stale, rebuild required")
         if any(len(vec) != len(q_vec) for vec in vectors):
             raise StaleIndexError(f"index {self.path} holds vectors of another width than the {len(q_vec)}-dim "
                                   "query: index stale, rebuild required")
@@ -156,8 +197,7 @@ class EmbeddingIndex:
         return []
 
     def _embed_text(self, text: str) -> list[float]:
-        provider = self.provider_config.provider.lower()
-        if provider == "openai-compatible" and self.provider_config.endpoint:
+        if self._uses_remote():
             try:
                 remote = with_retries(lambda: self._remote_openai_embedding(text), retries=3, base_delay_s=1.0,
                                       retry_if=_transient)
@@ -203,6 +243,8 @@ class EmbeddingIndex:
         provider = self.provider_config.provider.lower()
         if provider != "openai-compatible":
             return True, "local embedder"
+        if not self.provider_config.endpoint:
+            return False, "openai-compatible embedder has no endpoint: embedding with local hashes"
         try:
             sample = self._remote_openai_embedding("health-check")
         except requests.RequestException:

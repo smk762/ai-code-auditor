@@ -217,12 +217,14 @@ def run_merge_refresh(
     after = _require_sha("after", event.after)
 
     pre_sync_error = ""
+    before_is_pre_sync_tip = False
     if sync_mirror:
         # Capture tip before fetch when webhook did not supply SHAs.
         try:
             path_pre = resolve_repo_path(repo_cfg)
             if path_pre.exists() and not before:
                 before = _git_rev(path_pre, "HEAD")
+                before_is_pre_sync_tip = bool(before)
         except Exception as exc:  # noqa: BLE001 — recorded below; the range falls back to after~1
             # Without the pre-sync tip the range falls back to after~1, which misses all but the
             # last commit of a multi-commit merge: say so rather than audit a narrower range quietly.
@@ -245,6 +247,11 @@ def run_merge_refresh(
     repo_path = resolve_repo_path(repo_cfg)
     if not after:
         after = _git_rev(repo_path, "HEAD")
+    if before_is_pre_sync_tip and before == after:
+        # The mirror already had the merge (a redelivered webhook, or an earlier sync fetched
+        # it): the pre-sync tip says nothing about where the merge started, so don't read
+        # before == after as an empty diff.
+        before = ""
     if not before or before == _ZERO_SHA:
         # Fall back to the parent of the commit being audited, not of the mirror's HEAD
         # (which may be another branch or already past *after*).

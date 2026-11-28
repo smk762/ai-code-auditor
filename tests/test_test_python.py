@@ -49,6 +49,7 @@ def test_a_project_the_image_cannot_run_builds_its_env_with_uv(tmp_path: Path, m
 
     monkeypatch.setattr(validator, "proc_run", fake_run)
     monkeypatch.setattr(validator.subprocess, "run", lambda *a, **k: pytest.fail("python -m venv used"))
+    monkeypatch.setenv("AI_AUDIT_API_TOKEN", "secret")  # set, so the allowlist assertion below can fail
     python, err = validator.ensure_test_venv(root, tmp_path / "cache")
     assert err == "" and python is not None and validator.venv_python_version(python) == "3.99.1"
     uv_cmd, kw = calls[0]
@@ -56,6 +57,7 @@ def test_a_project_the_image_cannot_run_builds_its_env_with_uv(tmp_path: Path, m
     cache = (tmp_path / "cache").resolve()
     assert kw["env"]["UV_PYTHON_INSTALL_DIR"] == str(cache / ".uv-python")  # writable, never HOME
     assert "AI_AUDIT_API_TOKEN" not in kw["env"]                             # still the child allowlist
+    assert "secret" not in kw["env"].values()
     assert calls[1][0][1:4] == ["-m", "pip", "install"]                      # the same install as ever
     # a second call reuses the env; a different interpreter would be a different env
     assert validator.ensure_test_venv(root, tmp_path / "cache")[0] == python and len(calls) == 2

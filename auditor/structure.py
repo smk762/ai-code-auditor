@@ -365,8 +365,11 @@ def scan_sources(sources: dict[str, str]) -> dict[str, Any]:
             add_edge(path, target, name or "(module)", ref, implicit=False)
         for base, name, line, scopes in src.attrs:
             target = next((bound[(s, base)] for s in (*reversed(scopes), 0) if (s, base) in bound), None)
-            if target is not None and target != path and not _has_child(mods, target, name):
-                add_private(path, *origin(target, name)[:2], line)
+            if target is None or target == path or _has_child(mods, target, name):
+                continue
+            owner, used, is_mod = origin(target, name)  # as the ref loop: a module or a public name is no finding
+            if not is_mod and _private(used):
+                add_private(path, owner, used, line)
 
     graph: dict[str, set[str]] = defaultdict(set)
     for (a, b), e in edges.items():
@@ -608,7 +611,10 @@ def read_dev(mirror_path: Path | None) -> tuple[str, dict[str, str], list[str]]:
         raise Unreadable("the mirror has no origin/dev")
 
     def git(*args: str, data: bytes | None = None) -> bytes:
-        r = subprocess.run(["git", *args], cwd=m.path, capture_output=True, timeout=120, check=False, input=data)
+        try:
+            r = subprocess.run(["git", *args], cwd=m.path, capture_output=True, timeout=120, check=False, input=data)
+        except (OSError, subprocess.SubprocessError) as exc:  # a timeout, or no git
+            raise Unreadable(f"git {args[0]}: {exc}"[:300]) from exc
         if r.returncode != 0:
             raise Unreadable(f"git {args[0]}: {r.stderr.decode(errors='replace')[:200]}")
         return r.stdout
@@ -631,11 +637,13 @@ def read_dev(mirror_path: Path | None) -> tuple[str, dict[str, str], list[str]]:
     sources: dict[str, str] = {}
     at = 0
     for path, oid in blobs:
-        end = out.index(b"\n", at)
-        head = out[at:end].split()
-        if len(head) != 3 or head[0].decode() != oid:
+        end = out.find(b"\n", at)
+        head = out[at:end].split() if end != -1 else []
+        if len(head) != 3 or head[0].decode() != oid or not head[2].isdigit():
             raise Unreadable(f"git object missing for {path}")
         n = int(head[2])
+        if end + 1 + n > len(out):  # cut short: a partial file must not be read as the whole one
+            raise Unreadable(f"git output cut short at {path}")
         sources[path] = out[end + 1:end + 1 + n].decode("utf-8-sig", errors="replace")
         at = end + 1 + n + 1
     return sha, sources, skipped

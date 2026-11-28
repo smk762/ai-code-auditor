@@ -50,17 +50,21 @@ def save_decisions(path: Path, decisions: dict[str, dict[str, Any]], key: str = 
 
 
 def close_idle(output_dir: str | Path, pid: str, status: str, note: str) -> str | None:
-    """Close an idle pack; raise DecisionConflict if someone holds it. Returns the status it had."""
-    from auditor.agent_pack import AgentCodingPack, load_pack, write_pack
+    """Close an idle pack; raise DecisionConflict if someone holds it. Returns the status it had.
 
-    data = load_pack(output_dir, pid)
-    if data is None:
-        return None
-    pack = AgentCodingPack.from_dict(data, fallback_id=pid)
-    current = pack.status or "open"
-    if current not in _IDLE:
-        raise DecisionConflict(f"{pid} is {current}: an agent is working on it. Finish or release it first.")
-    if current != status:
-        pack.apply_status(status, note)
-        write_pack(pack, output_dir, preserve_status=False)
+    The load, check and write are one step under ``pack_lock`` (re-entrant, so callers that already
+    hold it are fine): a claim landing between them would otherwise be overwritten."""
+    from auditor.agent_pack import AgentCodingPack, load_pack, pack_lock, write_pack
+
+    with pack_lock(output_dir):
+        data = load_pack(output_dir, pid)
+        if data is None:
+            return None
+        pack = AgentCodingPack.from_dict(data, fallback_id=pid)
+        current = pack.status or "open"
+        if current not in _IDLE:
+            raise DecisionConflict(f"{pid} is {current}: an agent is working on it. Finish or release it first.")
+        if current != status:
+            pack.apply_status(status, note)
+            write_pack(pack, output_dir, preserve_status=False)
     return current

@@ -40,7 +40,7 @@ def test_body_exception_wins_over_lock_loss(fake):
     with pytest.raises(ValueError):
         with locks.pipeline_lock("nightly", ttl_s=0.15) as lock:
             fake.store["ai_audit_lock:nightly"] = b"other"
-            lock.lost.wait(2.0)
+            assert lock.lost.wait(2.0), "the renewer never saw the lock taken"
             raise ValueError("body")
 
 

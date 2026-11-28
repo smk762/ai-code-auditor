@@ -229,10 +229,15 @@ def _delete_pushed_branch(repo_path: Path, remote: str, branch: str) -> None:
     sha = _git_out(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], repo_path)
     if not sha:
         return
-    r = subprocess.run(
-        ["git", "push", "--quiet", f"--force-with-lease=refs/heads/{branch}:{sha}", "--", remote,
-         f":refs/heads/{branch}"],
-        cwd=str(repo_path), capture_output=True, text=True, check=False, timeout=GH_TIMEOUT_S)
+    try:
+        r = subprocess.run(
+            ["git", "push", "--quiet", f"--force-with-lease=refs/heads/{branch}:{sha}", "--", remote,
+             f":refs/heads/{branch}"],
+            cwd=str(repo_path), capture_output=True, text=True, check=False, timeout=GH_TIMEOUT_S)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # It runs after a failed `gh pr create`: raising here would hide that error from the caller.
+        logger.warning("could not delete orphan branch %s on %s: %s", branch, remote, exc)
+        return
     if r.returncode != 0:
         logger.warning("could not delete orphan branch %s on %s: %s", branch, remote, (r.stderr or "")[:300])
 
@@ -248,18 +253,56 @@ def annotate_pr_review(draft: DraftPr, review: CodeReviewSummary) -> DraftPr:
     return draft
 
 
-def _public_finding(finding: dict[str, Any], repo_path: str = "") -> dict[str, Any]:
-    """*finding* fit for a public PR body: host paths made repo-relative, so the body names files the
-    way the repo does and says nothing about the machine that scanned it (#128)."""
-    root = repo_path.rstrip("/") + "/" if repo_path else ""
-    out: dict[str, Any] = {}
-    for k, v in finding.items():
-        if isinstance(v, str) and root and v.startswith(root):
-            v = v[len(root):]
-        elif isinstance(v, str) and v.startswith("/") and k in ("file", "file_path", "path"):
-            v = Path(v).name  # an absolute path outside the repo: keep only the file name
-        out[k] = v
-    return out
+# A host path that survived the repo-root rewrite (another mirror, a home dir): only its file name is kept.
+_HOST_PATH_RE = re.compile(r"(?<![\w/.~-])(?:/home/[^/\s]+|/Users/[^/\s]+|/root(?![\w.-]))(?:/[^\s\"'`<>()\[\]{},;]*)?")
+# Field values are cut before serialising (never the JSON itself), so the block stays whole and the body
+# under the 4000 characters `gh pr create` is given: each limit is tried until the JSON fits.
+_FIELD_CHAR_LIMITS = (600, 200, 60)
+_MAX_FINDING_JSON = 3000
+_MAX_LIST_ITEMS = 20
+
+
+def _redact(text: str, repo_path: str = "") -> str:
+    """*text* with nothing about the machine that scanned it (#128): the repo root dropped wherever it
+    appears, any other home-directory path cut to its file name, and the audit API's base URL removed."""
+    root = (repo_path or "").rstrip("/")
+    if root:
+        text = text.replace(root + "/", "")
+        text = re.sub(re.escape(root) + r"(?![\w.-])", ".", text)
+    base = os.getenv("AI_AUDIT_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if base:
+        text = text.replace(base, "<audit API>")
+    return _HOST_PATH_RE.sub(lambda m: Path(m.group(0)).name or "<home>", text)
+
+
+def _public_value(key: str, value: Any, repo_path: str, limit: int) -> Any:
+    if isinstance(value, str):
+        if value.startswith("/") and key in ("file", "file_path", "path") and not (
+            repo_path and value.startswith(repo_path.rstrip("/") + "/")
+        ):
+            value = Path(value).name  # an absolute path outside the repo: keep only the file name
+        value = _redact(value, repo_path)
+        return value if len(value) <= limit else value[:limit] + "…"
+    if isinstance(value, dict):
+        return {k: _public_value(str(k), v, repo_path, limit) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_public_value(key, v, repo_path, limit) for v in list(value)[:_MAX_LIST_ITEMS]]
+    return value
+
+
+def _public_finding(
+    finding: dict[str, Any], repo_path: str = "", limit: int = _FIELD_CHAR_LIMITS[0]
+) -> dict[str, Any]:
+    """*finding* fit for a public PR body: host paths made repo-relative wherever they appear (free text,
+    nested lists and dicts too), so the body names files the way the repo does and says nothing about the
+    machine that scanned it (#128). Long strings are cut here, before serialising."""
+    return {k: _public_value(str(k), v, repo_path, limit) for k, v in finding.items()}
+
+
+def _fence(text: str) -> str:
+    """A backtick fence longer than any backtick run in *text*, so the text can't close it early."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    return "`" * max(3, longest + 1)
 
 
 def finding_to_pr_body(
@@ -270,19 +313,24 @@ def finding_to_pr_body(
     repo_path: str = "",
 ) -> str:
     """The draft PR body. It is public: packs are named by id and never linked, because the audit
-    API's base URL is a private host (#128)."""
+    API's base URL is a private host (#128). The worker's summary is free text, so it gets the same
+    redaction as the finding."""
     pack_lines = ""
     if pack_id:
         pack_lines = (
             "\n### Agent work pack\n"
             f"- id: `{pack_id}` (look it up in the audit API's pack list)\n"
         )
-    finding = _public_finding(finding, repo_path)
+    for limit in _FIELD_CHAR_LIMITS:
+        payload = json.dumps(_public_finding(finding, repo_path, limit), indent=2)
+        if len(payload) <= _MAX_FINDING_JSON:
+            break
+    fence = _fence(payload)
     return (
         "## Night conductor remediation\n\n"
-        f"{worker_summary}\n\n"
+        f"{_redact(worker_summary or '', repo_path)}\n\n"
         "### Finding\n"
-        f"```json\n{json.dumps(finding, indent=2)[:3000]}\n```\n"
+        f"{fence}json\n{payload}\n{fence}\n"
         f"{pack_lines}\n"
         "Draft PR — do not auto-merge.\n"
     )

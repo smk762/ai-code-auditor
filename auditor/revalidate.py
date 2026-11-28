@@ -101,12 +101,13 @@ def candidates(output_dir: str | Path, *, repo: str = "") -> list[Candidate]:
         if not ((status == "resolved" and kind == "waiver") or status == "unverified"):
             continue
         path = str(_map(d.get("location")).get("file_path") or "")
-        if not path:
+        pack_id = str(d.get("work_item_id") or "")
+        if not path or not pack_id:
             continue
         history = d.get("status_history")
         hist = [str(h.get("at") or "") for h in (history if isinstance(history, list) else [])
                 if isinstance(h, dict) and h.get("at")]
-        out.append(Candidate(str(d.get("work_item_id")), name, _rel(name, path), status, kind, min(hist, default="")))
+        out.append(Candidate(pack_id, name, _rel(name, path), status, kind, min(hist, default="")))
     return out
 
 

@@ -163,6 +163,22 @@ def _lock_entries(lock: dict) -> list[tuple[str, dict]]:
     return out
 
 
+def _lock_key_in_node_modules(key: str) -> bool:
+    """Whether a lockfile ``packages`` key is only ``node_modules/<name>`` or ``node_modules/@scope/<name>``
+    pairs. npm reifies each entry at its key, so ``node_modules/../../x``, an absolute path or a
+    backslash would put a tarball outside node_modules, or outside the checkout."""
+    parts, i = key.split("/"), 0
+    while i < len(parts):
+        if parts[i] != "node_modules":
+            return False
+        width = 2 if i + 1 < len(parts) and parts[i + 1].startswith("@") else 1
+        names = parts[i + 1:i + 1 + width]
+        if len(names) != width or any(not n or n.startswith(".") or "\\" in n or n == "@" for n in names):
+            return False
+        i += 1 + width
+    return True
+
+
 def install_refusal(pkg_bytes: bytes, lock_bytes: bytes) -> str:
     """Why the audited repo's manifests must not reach ``npm ci``, or "" when they may.
 
@@ -185,7 +201,7 @@ def install_refusal(pkg_bytes: bytes, lock_bytes: bytes) -> str:
                 return f"{field_} {name!r} is not a registry version ({spec[:80]!r})"
     packages = lock.get("packages") if isinstance(lock.get("packages"), dict) else {}
     for name in packages:  # "" is the project; anything else outside node_modules is a local dir
-        if name and not (str(name).startswith("node_modules/") or "/node_modules/" in str(name)):
+        if name and not _lock_key_in_node_modules(str(name)):
             return f"lockfile package {str(name)[:80]!r} is a local path"
     allowed = allowed_registries()
     for name, meta in _lock_entries(lock):

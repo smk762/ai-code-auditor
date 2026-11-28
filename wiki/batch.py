@@ -12,10 +12,15 @@ price): useful for a quick look at one repo without waiting for a batch.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import logging
+import os
+import tempfile
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -86,10 +91,52 @@ class Result:
     stop_reason: str | None = None
     error: str | None = None
     cost: float = 0.0
+    # The ledger charge still owed for this reply ({model, usage, batch, note}), set while the
+    # reply is stored before it is charged. A process that dies in between leaves it set, and
+    # whoever next reads the result charges it (``Runner._settle``). Absent (None) = charged,
+    # which is also how a result stored before this field existed reads.
+    unpaid: dict[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
         return self.text is not None and self.error is None and self.stop_reason == "end_turn"
+
+
+_USAGE_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+
+
+def _usage_dict(usage: Any) -> dict[str, Any]:
+    """A JSON-able copy of an API usage object, enough for ``SpendLedger.record_usage``."""
+    if isinstance(usage, dict):
+        return dict(usage)
+    dump = getattr(usage, "model_dump", None)
+    if callable(dump):
+        try:
+            out = dump()
+            json.dumps(out)
+            return out
+        except (TypeError, ValueError):
+            pass
+    out = {k: int(getattr(usage, k, 0) or 0) for k in _USAGE_KEYS}
+    split = getattr(usage, "cache_creation", None)
+    if split is not None:
+        h1 = split.get("ephemeral_1h_input_tokens") if isinstance(split, dict) else getattr(split, "ephemeral_1h_input_tokens", 0)
+        out["cache_creation"] = {"ephemeral_1h_input_tokens": int(h1 or 0)}
+    return out
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write via a temp file unique to this writer, then replace: concurrent writers never share
+    (or steal) a temp path, and a reader never sees a truncated file."""
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 @dataclass
@@ -116,6 +163,7 @@ class Runner:
         self.root = Path(output_dir) / subdir
         self.results_dir = self.root / "_results"
         self.state_path = self.root / "_batches.json"
+        self.lock_path = self.root / "_batches.lock"
         self.mode, self.poll_s, self.max_wait_s, self.concurrency = mode, poll_s, max_wait_s, concurrency
         self._client = client
 
@@ -136,9 +184,26 @@ class Runner:
 
     def _save_state(self, state: dict[str, Any]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        tmp = self.state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, indent=1), encoding="utf-8")
-        tmp.replace(self.state_path)
+        _write_atomic(self.state_path, json.dumps(state, indent=1))
+
+    @contextlib.contextmanager
+    def _locked(self) -> Iterator[None]:
+        """Exclusive lock shared by every runner on this root (other processes included): each
+        read-modify-write of ``_batches.json`` holds it, so one runner never drops a batch another
+        just added (it would leave ``in_flight`` and be paid for again)."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        with open(self.lock_path, "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
+    def _update_state(self, change: Any) -> None:
+        with self._locked():
+            state = self._load_state()
+            change(state["batches"])
+            self._save_state(state)
 
     def _result_path(self, custom_id: str) -> Path:
         return self.results_dir / f"{custom_id}.json"
@@ -152,23 +217,48 @@ class Runner:
     def _store(self, r: Result) -> None:
         self.results_dir.mkdir(parents=True, exist_ok=True)
         # tmp + replace, as _save_state: a truncated file reads as missing and would be paid for again
-        path = self._result_path(r.custom_id)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(r.__dict__), encoding="utf-8")
-        tmp.replace(path)
+        _write_atomic(self._result_path(r.custom_id), json.dumps(r.__dict__))
+
+    def _charge(self, r: Result) -> bool:
+        """Record *r*'s owed charge in the ledger and store it as paid. False if the ledger failed
+        (the reply stays stored, still marked unpaid, so a later read charges it)."""
+        owed = r.unpaid or {}
+        try:
+            r.cost = get_ledger().record_usage(self.lane, owed.get("model", ""), owed.get("usage") or {},
+                                               batch=bool(owed.get("batch")), note=owed.get("note", ""))
+        except Exception:  # noqa: BLE001 — a ledger failure must not lose the stored reply or abort the stage
+            logger.exception("could not record spend for %s in the %s lane; its reply is kept", r.custom_id, self.lane)
+            return False
+        r.unpaid = None
+        self._store(r)
+        return True
 
     def _record(self, custom_id: str, msg: Any, note: str, *, batch: bool) -> Result:
-        # the response is paid for: store it before anything that can fail, so a rerun reuses it
+        # the response is paid for: store it before anything that can fail, so a rerun reuses it,
+        # marked unpaid until the ledger has the charge, so a crash in between is charged later
         text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-        r = Result(custom_id, text=text, stop_reason=msg.stop_reason)
+        r = Result(custom_id, text=text, stop_reason=msg.stop_reason,
+                   unpaid={"model": getattr(msg, "model", ""), "usage": _usage_dict(msg.usage),
+                           "batch": batch, "note": note})
         self._store(r)
-        try:
-            r.cost = get_ledger().record_usage(self.lane, getattr(msg, "model", ""), msg.usage, batch=batch, note=note)
-        except Exception:  # noqa: BLE001 — a ledger failure must not lose the stored reply or abort the stage
-            logger.exception("could not record spend for %s in the %s lane; its reply is kept", custom_id, self.lane)
-            return r
-        self._store(r)
+        self._charge(r)
         return r
+
+    def _settle(self, r: Result) -> float:
+        """Charge a stored reply whose charge never reached the ledger. Returns what was charged."""
+        if not r.unpaid:
+            return 0.0
+        with self._locked():  # two runners reading the same unpaid result charge it once
+            current = self._stored(r.custom_id)
+            if current is None or not current.unpaid:
+                if current is not None:
+                    r.cost, r.unpaid = current.cost, None
+                return 0.0
+            logger.warning("charging %s: stored before its spend reached the %s lane", r.custom_id, self.lane)
+            if self._charge(current):
+                r.cost, r.unpaid = current.cost, None
+                return r.cost
+            return 0.0
 
     def forget(self, custom_ids: list[str]) -> None:
         """Delete stored results once their output is written (keeps _results small)."""
@@ -192,16 +282,17 @@ class Runner:
             cid, res = entry.custom_id, entry.result
             prior = self._stored(cid)
             if prior is not None and prior.error is None:
-                continue  # recorded (and charged) by a harvest that was interrupted mid-stream
+                # recorded by a harvest that was interrupted mid-stream; charged unless it died
+                # between storing the reply and the ledger write
+                stats.cost_usd += self._settle(prior)
+                continue
             if res.type == "succeeded":
                 r = self._record(cid, res.message, notes.get(cid, "wiki"), batch=True)
                 stats.cost_usd += r.cost
             else:
                 err = getattr(getattr(res, "error", None), "type", None) or res.type
                 self._store(Result(cid, error=f"batch result {res.type}: {err}"))
-        state = self._load_state()
-        state["batches"].pop(batch_id, None)
-        self._save_state(state)
+        self._update_state(lambda batches: batches.pop(batch_id, None))
         return True
 
     def in_flight(self) -> set[str]:
@@ -219,9 +310,7 @@ class Runner:
                     raise  # transient: keep it, so a rerun harvests it rather than paying again
                 logger.warning("batch %s can no longer be fetched (%s); dropping it from %s",
                                batch_id, exc, self.state_path.name)
-                state = self._load_state()
-                state["batches"].pop(batch_id, None)
-                self._save_state(state)
+                self._update_state(lambda batches, batch_id=batch_id: batches.pop(batch_id, None))
                 continue
             if harvested:
                 done += 1
@@ -239,6 +328,7 @@ class Runner:
         for req in requests:
             prior = self._stored(req.custom_id)
             if prior is not None and prior.error is None:
+                stats.cost_usd += self._settle(prior)
                 results[req.custom_id] = prior
                 stats.reused += 1
             elif req.custom_id in pending:
@@ -277,10 +367,8 @@ class Runner:
                 if _usage_limited(exc):  # chunks already submitted are in _batches.json: a rerun harvests them
                     raise _usage_limit_stop(stage, exc) from exc
                 raise
-            state = self._load_state()
-            state["batches"][batch.id] = {"stage": stage, "submitted_at": time.time(),
-                                          "notes": {r.custom_id: r.note for r in chunk}}
-            self._save_state(state)
+            entry = {"stage": stage, "submitted_at": time.time(), "notes": {r.custom_id: r.note for r in chunk}}
+            self._update_state(lambda batches, bid=batch.id, entry=entry: batches.__setitem__(bid, entry))
             stats.batch_ids.append(batch.id)
             logger.info("wiki %s: submitted batch %s (%d requests)", stage, batch.id, len(chunk))
         for batch_id in stats.batch_ids:

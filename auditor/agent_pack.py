@@ -28,7 +28,7 @@ try:  # libyaml's C loader parses packs several times faster than the pure-Pytho
 except ImportError:  # pragma: no cover — PyYAML built without libyaml
     from yaml import SafeLoader as _YamlLoader
 
-from auditor import rule_fixes
+from auditor import rule_fixes, workaround
 from auditor.contracts import Finding, RuleViolation, utc_now_iso
 from auditor.fsutil import atomic_write_text
 from auditor.finding_match import reworded_score
@@ -213,7 +213,8 @@ class AgentCodingPack:
         criteria = [shown if c == stored else local(str(c)) for c in (self.narrative or {}).get("acceptance_criteria") or []]
         cmds = [local(str(c)) for c in (self.verification or {}).get("suggested_test_commands") or []]
         if not re.search(r"(^|/)(test_[^/]*|[^/]*_test)\.py$", rel):  # pytest on a source file collects nothing
-            cmds = [c for c in cmds if not c.startswith(f"pytest {shlex.quote(rel)} ")]
+            bare = f"pytest {shlex.quote(rel)}"
+            cmds = [c for c in cmds if c != bare and not c.startswith(f"{bare} ")]
         return shown, criteria, cmds
 
     def to_brief_md(self) -> str:
@@ -1058,14 +1059,10 @@ def _specialist_rank(entry: dict[str, Any], *, repo: str, q: str) -> float | Non
     return score
 
 
-# Titles auditor/workaround.py gives its findings, for packs the class step hasn't reached yet.
-_WORKAROUND_TITLES = ("Workaround comment: ", "Timer or retry papering over a race: ")
-
-
 def _consolidates(entry: dict[str, Any]) -> bool:
     """Deletion or consolidation work: an approved extraction, or a workaround to remove (#60)."""
     return (entry.get("kind") == "extraction" or entry.get("finding_class") == "workaround"
-            or str(entry.get("title") or "").startswith(_WORKAROUND_TITLES))
+            or str(entry.get("title") or "").startswith(workaround.TITLES))
 
 
 def _areas(entry: dict[str, Any]) -> set[str]:

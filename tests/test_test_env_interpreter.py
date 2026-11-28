@@ -56,8 +56,9 @@ def test_a_mismatched_interpreter_runs_the_check_in_the_api_image(monkeypatch) -
     monkeypatch.setattr(ter, "load_report", lambda _o: {"python": "2.7.18", "repos": {}, "stale_interpreter": ""})
     rep = ter.run(out, repos=["argus-echo"], workers=2)
     [(cmd, cwd)] = calls
-    assert cmd[:7] == ["docker", "compose", "run", "--rm", "--no-deps", "-T", "audit-api"]
-    assert cmd[7:] == ["ai-audit", "test-env", "--workers", "2", "--repo", "argus-echo"] and cwd == ter.REPO_ROOT
+    assert cmd[:6] == ["docker", "compose", "run", "--rm", "--no-deps", "-T"]
+    assert cmd[6] == "--name" and cmd[8] == "audit-api"
+    assert cmd[9:] == ["ai-audit", "test-env", "--workers", "2", "--repo", "argus-echo"] and cwd == ter.REPO_ROOT
     assert rep["python"] == "2.7.18"
     # the image failing, or writing a report on another interpreter, is a refusal, not a result
     monkeypatch.setattr(ter, "load_report", lambda _o: {"python": "3.13.5", "repos": {}})

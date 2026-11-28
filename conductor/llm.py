@@ -82,7 +82,7 @@ def completion(
     extra: dict[str, Any] = {}
     if temperature is not None:
         extra["temperature"] = temperature
-    if effort and chosen.startswith("anthropic/"):
+    if effort and is_anthropic:  # bare ``claude-*`` ids too, which LiteLLM routes to Anthropic
         extra["output_config"] = {"effort": effort}
     elif effort and _is_openai_reasoning(chosen):
         extra["reasoning_effort"] = _openai_effort(effort)

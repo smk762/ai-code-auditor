@@ -200,11 +200,10 @@ def decide(output_dir: str | Path, cid: str, status: str, *, note: str = "", pub
         if status == "approved" and not row["reported"]:
             raise ValueError("the latest scan doesn't report this cycle, so there is nothing to approve")
         prev = decisions.get(cid) or {}
-        keep = row["decision"] is not None  # a decided cycle keeps the members it was decided on
+        keep = row["decision"] is not None  # a decided cycle keeps what it was decided on, even an empty list
+        kept = {k: prev.get(k) if keep else None for k in ("members", "edges", "cuts")}
         d = {"status": status, "repo": row["repo"], "note": note, "decided_at": utc_now_iso(),
-             "members": prev["members"] if keep else row["members"],
-             "edges": (prev.get("edges") if keep else None) or row["edges"],
-             "cuts": (prev.get("cuts") if keep else None) or row["cuts"]}
+             **{k: row[k] if v is None else v for k, v in kept.items()}}  # an older record may lack a field
         offer = view(_proposals().get(cid), row["edges"])
         if status == "approved" and offer and offer["offered"]:
             d["proposal"] = {"used": "as_written" if note == offer["note"] else "edited",
@@ -292,7 +291,7 @@ def ui_data(output_dir: str | Path, path: str | Path | None = None) -> dict[str,
     except (OSError, ValueError) as exc:
         decisions, error = {}, str(exc)[:300]
     report = load_report(output_dir)
-    if report is None and not decisions:
+    if report is None and not decisions and not error:  # an unreadable decisions file is reported, not "no data"
         return None
     out = rows(report, decisions, _resolved(output_dir, decisions))
     proposals = _proposals()

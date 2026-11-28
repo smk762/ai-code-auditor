@@ -232,24 +232,48 @@ def stale_interpreter(report: dict[str, Any]) -> str:
     return f"built on Python {had}, but validate_patch runs on {want}" if want and had and had != want else ""
 
 
-def _in_api_image(out: Path, repos: list[str] | None, workers: int) -> dict[str, Any]:
+def _in_api_image(out: Path, repos: list[str] | None, workers: int,
+                  timeout_s: int = COLLECT_TIMEOUT_S) -> dict[str, Any]:
     """Run the check in the API's image, where validate_patch runs, and return the report it wrote."""
     mounted = REPO_ROOT / "reports"  # docker-compose.yml mounts ./reports at the image's output dir
     if out.resolve() != mounted.resolve():
         raise InterpreterMismatch(f"the API image writes its report to {mounted}, not {out}: run it there by hand")
-    cmd = ["docker", "compose", "run", "--rm", "--no-deps", "-T", "audit-api", "ai-audit", "test-env",
+    # A known name, so a timeout can remove the container: killing the compose client leaves it running.
+    name = f"ai-audit-test-env-{os.getpid()}-{int(time.time())}"
+    cmd = ["docker", "compose", "run", "--rm", "--no-deps", "-T", "--name", name, "audit-api", "ai-audit", "test-env",
            "--workers", str(workers)]
     for r in repos or []:
         cmd += ["--repo", r]
+    if timeout_s != COLLECT_TIMEOUT_S:  # only when set, so an image without the flag still runs the default
+        cmd += ["--timeout", str(timeout_s)]
     logger.info("test env: Python %s here, %s in the API image: running the check there", this_python(),
                 validator_python())
-    proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=CONTAINER_TIMEOUT_S,
-                          check=False)
+    try:
+        proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=CONTAINER_TIMEOUT_S,
+                              check=False)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            subprocess.run(["docker", "rm", "-f", name], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60,
+                           check=False)
+        except (OSError, subprocess.TimeoutExpired) as rm_exc:
+            logger.warning("test env: could not remove container %s: %s", name, rm_exc)
+        raise InterpreterMismatch(f"the check in the API image timed out after {CONTAINER_TIMEOUT_S}s") from exc
     report = load_report(out)
     if proc.returncode != 0 or report is None or stale_interpreter(report):
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
         raise InterpreterMismatch(f"the check in the API image failed (exit {proc.returncode}): {' | '.join(tail)}"[:600])
     return report
+
+
+def _output_dir(output_dir: str | Path | None, cfg: Any = None) -> Path:
+    """Where the report goes: the argument, ``AI_AUDIT_OUTPUT_DIR``, the ecosystem config's, or ``reports``."""
+    if output_dir or os.getenv("AI_AUDIT_OUTPUT_DIR"):
+        return Path(output_dir or os.environ["AI_AUDIT_OUTPUT_DIR"])
+    if cfg is None:
+        from auditor.config import load_ecosystem_config
+
+        cfg = load_ecosystem_config()
+    return Path(cfg.output_dir or "reports")
 
 
 def run(output_dir: str | Path | None = None, *, repos: list[str] | None = None, workers: int = 3,
@@ -258,10 +282,10 @@ def run(output_dir: str | Path | None = None, *, repos: list[str] | None = None,
     interpreter other than the validator's, run in the API image instead, or refuse (#136)."""
     want = validator_python()
     if want and want != this_python():
-        out = Path(output_dir or os.getenv("AI_AUDIT_OUTPUT_DIR") or "reports")
+        out = _output_dir(output_dir)
         if write and shutil.which("docker") and os.getenv("AI_AUDIT_TEST_ENV_IN_IMAGE", "1").strip().lower() not in (
                 "0", "false", "no", "off"):
-            return _in_api_image(out, repos, workers)
+            return _in_api_image(out, repos, workers, timeout_s)
         raise InterpreterMismatch(f"Python {this_python()} here, but validate_patch runs on {want}: the report would "
                                   "describe the wrong interpreter. Run it in the API image "
                                   "(docker compose run --rm --no-deps audit-api ai-audit test-env)")
@@ -269,7 +293,7 @@ def run(output_dir: str | Path | None = None, *, repos: list[str] | None = None,
     from auditor.repo_resolver import resolve_repo_path
 
     cfg = load_ecosystem_config()
-    out = Path(output_dir or os.getenv("AI_AUDIT_OUTPUT_DIR") or cfg.output_dir or "reports")
+    out = _output_dir(output_dir, cfg)
     venv_cache = Path(os.getenv("AI_AUDIT_VALIDATE_VENV_DIR") or out / "_validate_venvs")
     node_cache = Path(os.getenv("AI_AUDIT_VALIDATE_NODE_DIR") or out / "_validate_node")
     wanted = [r for r in cfg.repos if r.enabled and (not repos or r.name in repos)]
@@ -312,8 +336,9 @@ def load_report(output_dir: str | Path) -> dict[str, Any] | None:
         report = json.loads((Path(output_dir) / REPORT_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if isinstance(report, dict):
-        report["stale_interpreter"] = stale_interpreter(report)
+    if not isinstance(report, dict):  # a list or scalar is no usable report
+        return None
+    report["stale_interpreter"] = stale_interpreter(report)
     return report
 
 

@@ -142,7 +142,8 @@ function renderExtraction() {
   const tbody = document.querySelector("#extraction tbody");
   document.getElementById("x-repos").innerHTML = (data.repos || []).map((r) => `<option value="${esc(r)}">`).join("");
   if (!x) { document.getElementById("x-chips").innerHTML = ""; tbody.innerHTML = `<tr><td colspan="5" class="empty">No extraction report yet.</td></tr>`; return; }
-  if (x.decisions_error) document.getElementById("x-flash").innerHTML = `<span class="err">Decisions file unreadable: ${esc(x.decisions_error)}</span>`;
+  const xErr = [x.decisions_error && `Decisions file unreadable: ${x.decisions_error}`, x.candidates_error && `Candidates report: ${x.candidates_error}`].filter(Boolean);
+  if (xErr.length) document.getElementById("x-flash").innerHTML = xErr.map((m) => `<span class="err">${esc(m)}</span>`).join(" ");
   const counts = Object.fromEntries(Object.keys(VIEWS).map((k) => [k, x.candidates.filter((c) => viewOf(c) === k).length]));
   document.getElementById("x-chips").innerHTML = Object.entries(VIEWS)
     .map(([k, label]) => `<button data-view="${k}" aria-pressed="${k === view}">${label} ${int(counts[k])}</button>`).join("");

@@ -87,8 +87,16 @@ def _candidates(output_dir: Path, decisions_path: str | Path) -> dict[str, Any] 
         decisions_error = ""
     except (OSError, ValueError) as exc:
         decisions, decisions_error = {}, str(exc)[:300]
-    data = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.is_file() else {}
-    if not path.is_file() and not decisions:
+    data: Any = {}
+    candidates_error = ""
+    if path.is_file():
+        try:  # a half-written report is shown as an error, not a crash that hides the decisions too
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            candidates_error = f"{path.name} unreadable: {exc}"[:300]
+        if not isinstance(data, dict):
+            data, candidates_error = {}, f"{path.name} is not a mapping"
+    elif not decisions and not decisions_error:  # an unreadable decisions file is reported, not "no data"
         return None
 
     def pack_of(cid: str) -> dict[str, Any] | None:
@@ -120,7 +128,7 @@ def _candidates(output_dir: Path, decisions_path: str | Path) -> dict[str, Any] 
     seen = {r["id"] for r in rows}
     rows += [row(cid, {}, d, False) for cid, d in decisions.items() if cid not in seen]
     return {"generated_at": data.get("generated_at"), "candidates": rows, "decisions_path": str(decisions_path),
-            "decisions_error": decisions_error}
+            "decisions_error": decisions_error, "candidates_error": candidates_error}
 
 
 def architecture_data(output_dir: str | Path, repo_names: list[str],

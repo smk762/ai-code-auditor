@@ -18,6 +18,7 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 
@@ -102,16 +103,46 @@ def build_payload(status: dict[str, Any] | None, artifact_url: str | None = None
     }
 
 
+def redact_url(url: str) -> str:
+    """*url* safe to log or return: scheme and host only. Slack, Discord, Teams and ntfy webhooks carry their
+    credential in the path or query, and a ``user:pass@`` part is dropped too."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    if not parts.scheme or not host:
+        return "<webhook url>"
+    tail = "/…" if (parts.path not in ("", "/") or parts.query or parts.fragment) else ""
+    return f"{parts.scheme}://{host}{tail}"
+
+
+def _redact_text(text: str, url: str) -> str:
+    """*text* (an exception message) with *url*, and its path and query, masked: requests and urllib3
+    quote either the whole URL or ``url: /path?query``."""
+    parts = urlsplit(url)
+    path_query = parts.path + (f"?{parts.query}" if parts.query else "")
+    text = text.replace(url, redact_url(url))
+    for secret, mask in ((path_query, "/…"), (parts.path, "/…"), (parts.query, "…")):
+        if secret not in ("", "/"):
+            text = text.replace(secret, mask)
+    if parts.username or parts.password:
+        text = text.replace(parts.netloc, parts.hostname or "")
+    return text
+
+
 def _post(url: str, payload: dict[str, Any], *, headers: dict[str, str] | None, timeout_s: float) -> dict[str, Any]:
+    shown = redact_url(url)
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=timeout_s)
         ok = 200 <= resp.status_code < 300
         if not ok:
-            logger.warning("status webhook %s HTTP %s: %s", url, resp.status_code, (resp.text or "")[:500])
-        return {"sent": ok, "skipped": False, "status_code": resp.status_code, "url": url}
+            logger.warning("status webhook %s HTTP %s: %s", shown, resp.status_code,
+                           _redact_text((resp.text or "")[:500], url))
+        return {"sent": ok, "skipped": False, "status_code": resp.status_code, "url": shown}
     except requests.RequestException as exc:
-        logger.warning("status webhook %s failed: %s", url, exc)
-        return {"sent": False, "skipped": False, "error": str(exc), "url": url}
+        error = _redact_text(str(exc), url)
+        logger.warning("status webhook %s failed: %s", shown, error)
+        return {"sent": False, "skipped": False, "error": error, "url": shown}
 
 
 def notify_mithrandir(
@@ -160,7 +191,7 @@ def notify_extra_targets(
             if not token:
                 logger.warning("status webhook %s skipped: %s is unset", target.name, target.token_env)
                 results.append(
-                    {"name": target.name, "sent": False, "skipped": True, "reason": "token_unset", "url": target.url}
+                    {"name": target.name, "sent": False, "skipped": True, "reason": "token_unset", "url": redact_url(target.url)}
                 )
                 continue
             headers = {"Authorization": f"Bearer {token}"}

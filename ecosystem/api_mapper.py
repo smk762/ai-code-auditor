@@ -5,7 +5,8 @@ from pathlib import Path
 
 
 API_PATTERN = re.compile(r"(GET|POST|PUT|DELETE|PATCH)\s+(/[\w/\-{}:.]+)", re.IGNORECASE)
-ROUTE_CALL_PATTERN = re.compile(r"@(app|router)\.(get|post|put|delete|patch)\(['\"]([^'\"]+)['\"]")
+# any receiver (app, router, api, audit_router...), black's line break after "(", and path="..."
+ROUTE_CALL_PATTERN = re.compile(r"@\w+\.(get|post|put|delete|patch)\(\s*(?:path\s*=\s*)?['\"]([^'\"]+)['\"]")
 # A route parameter is "{name}" or a Starlette converter "{name:path}"; anything else in braces
 # ("{i:04d}", "{0}") is a format template from an f-string, not a real endpoint.
 _BRACES = re.compile(r"\{([^{}]*)\}")
@@ -35,7 +36,7 @@ def discover_api_endpoints(file_path: Path) -> list[str]:
     for method, route in API_PATTERN.findall(text):
         if cleaned := _clean_route(route):
             endpoints.add(f"{method.upper()} {cleaned}")
-    for _, method, route in ROUTE_CALL_PATTERN.findall(text):
+    for method, route in ROUTE_CALL_PATTERN.findall(text):
         if cleaned := _clean_route(route):
             endpoints.add(f"{method.upper()} {cleaned}")
     return sorted(endpoints)

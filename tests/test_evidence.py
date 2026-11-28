@@ -606,9 +606,14 @@ def test_for_pack_keeps_only_the_tests_naming_the_packs_module(tmp_path: Path) -
     # the caller can name a pack's tests, by id or file, and that's all it gets
     named = evidence.for_pack(repro, _pack_at("app/repair/multi_model.py"), tmp_path, named=["tests/test_lease.py"])
     assert named.repro == ["tests/test_lease.py::test_b"] and "tests/test_multi.py::test_a" in named.scoped_out
-    # a test id pointing outside the tree is never read
-    out = evidence.ReproResult(patched={"../../etc/passwd::t": "passed"}, base={"../../etc/passwd::t": "failed"})
-    assert evidence.for_pack(out, _pack_at("app/passwd.py"), tmp_path).repro == []
+    # a test id pointing outside the tree is never read, even when the file there names the module
+    _write(tmp_path, {"outside/test_x.py": "from app import passwd\n\ndef t():\n    pass\n"})
+    (tree := tmp_path / "tree").mkdir()
+    escaping = "../outside/test_x.py::t"
+    out = evidence.ReproResult(patched={escaping: "passed"}, base={escaping: "failed"})
+    assert evidence.for_pack(out, _pack_at("app/passwd.py"), tree).repro == []
+    inside = evidence.ReproResult(patched={"outside/test_x.py::t": "passed"}, base={"outside/test_x.py::t": "failed"})
+    assert evidence.for_pack(inside, _pack_at("app/passwd.py"), tmp_path).repro == ["outside/test_x.py::t"]
 
 
 def test_decide_names_tests_that_belong_to_other_packs() -> None:
