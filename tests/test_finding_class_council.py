@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from auditor import finding_class as fc
+from auditor import finding_class_review as review
 from auditor import finding_class_council as council
 from wiki.batch import Result, StageStats
 
@@ -76,7 +77,7 @@ def test_run_records_outcomes_and_gold_follows(tmp_path: Path) -> None:
     out = council.run(gold, tmp_path, tmp_path, runner_factory=lambda: FakeRunner(verdict), directory=tmp_path)
     assert out["n"] == 2 and out["outcomes"] == {"relabelled": 1, "confirmed": 1} and out["fidelity"] == 0.5
     assert out["cost_usd"] == pytest.approx(0.03)                      # one request per member
-    rows = {r["id"]: r for r in fc.load_gold(tmp_path)}
+    rows = {r["id"]: r for r in review.load_gold(tmp_path)}
     assert rows["a"]["label"] == "unhandled_error" and rows["a"]["label_first"] == "logic_error"
     assert rows["b"]["label"] == "ssrf" and rows["d"]["label"] == "ssrf"
     assert (tmp_path / council.SUMMARY_NAME).exists()

@@ -80,6 +80,17 @@ def apply_reviews(rows: list[dict[str, Any]], reviews: dict[str, dict[str, Any]]
     return out
 
 
+def load_gold(directory: Path | None = None, *, reviewed: bool = True) -> list[dict[str, Any]]:
+    """Gold rows. With *reviewed*, a label a second labeller adjudicated replaces the first."""
+    directory = directory or eval_dir()
+    rows: list[dict[str, Any]] = []
+    for p in sorted(directory.glob("finding_classes_*.jsonl")):
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+    return apply_reviews(rows, load_reviews(directory)) if reviewed else rows
+
+
 def _append(directory: Path | None, entry: dict[str, Any]) -> None:
     p = review_path(directory)
     p.parent.mkdir(parents=True, exist_ok=True)
