@@ -643,7 +643,7 @@ def _requirement_lines(path: Path, depth: int = 0, root: Path | None = None,
         return out
     for ln in _logical_lines(text):
         s = _HASH_OPT_RE.sub("", ln.split(" #", 1)[0]).strip()
-        if not s or s.startswith("#") or s in (".", "-e .", "-e.") or s.startswith(("-c ", "--constraint")):
+        if not s or s.startswith("#") or _SELF_INSTALL_RE.match(s) or _CONSTRAINT_RE.match(s):
             continue
         m = re.match(r"^(?:-r|--requirement)[ =]?\s*(\S+)$", s)
         if m:
@@ -660,6 +660,10 @@ def _requirement_lines(path: Path, depth: int = 0, root: Path | None = None,
 
 
 _HASH_OPT_RE = re.compile(r"(?:^|\s)--hash[= ]\S+")
+# The project itself in any spelling pip accepts: ``.``, ``./``, ``.[dev]``, ``-e .``, ``--editable=./``.
+_SELF_INSTALL_RE = re.compile(r"^(?:(?:-e|--editable)(?:\s*=\s*|\s*))?\./?(?:\[[^\]]*\])?$")
+# A constraint option with or without a space or ``=`` (``-c x``, ``-cx``, ``--constraint=x``).
+_CONSTRAINT_RE = re.compile(r"^(?:-c|--constraint\b)")
 
 
 def _logical_lines(text: str) -> list[str]:
@@ -712,8 +716,12 @@ def test_python(root: Path, here: str = "") -> tuple[str, str]:
     except InvalidSpecifier:
         return here, ""  # an unreadable spec: keep the old behaviour rather than refuse
 
+    # Patch releases a spec may name (``==3.11.4``, ``>=3.10.2,<3.10.8``), not just X.Y.0 and X.Y.99.
+    named = {s.version for s in spec if "*" not in s.version}
+
     def fits(minor: str) -> bool:
-        return any(spec.contains(f"{minor}.{patch}") for patch in (0, 99))
+        probes = {f"{minor}.{patch}" for patch in range(100)} | {v for v in named if v.startswith(f"{minor}.")}
+        return any(spec.contains(v) for v in probes)
 
     if fits(here):
         return here, ""
@@ -735,7 +743,7 @@ def venv_python_version(python: Path) -> str:
         text = (python.parent.parent / "pyvenv.cfg").read_text(encoding="utf-8")
     except OSError:
         return ""
-    m = re.search(r"^version(?:_info)?\s*=\s*([0-9][0-9.]*)", text, re.M)
+    m = re.search(r"^version(?:_info)?\s*=\s*(\d+\.\d+(?:\.\d+)?)", text, re.M)
     return m.group(1) if m else ""
 
 
@@ -1000,6 +1008,7 @@ def validate_patch_tree(
     ran: list[tuple[str, ValidationResult]] = []
     tools: list[str] = []
     duration = 0
+    skip_reasons: list[str] = []
     if py_projects:
         if py:
             lint = _lint_files(tree, py, timeout_s)
@@ -1008,7 +1017,13 @@ def validate_patch_tree(
             duration += lint.duration_ms
         py_ran = _test_python_projects(tree, py_projects, cache, base_tree, timeout_s, notes)
         ran += py_ran
-        tools.append("pytest" if py_ran else "lint_only")
+        if py_ran:
+            tools.append("pytest")
+        elif py:
+            tools.append("lint_only")
+        else:  # every changed .py was deleted: nothing to lint, and no tests ran either
+            skip_reasons.append("Python not validated: the patch only deletes or renames .py files "
+                                f"({', '.join(py_projects[:5])}) and no tests could run")
     unvalidated: list[str] = []
     if js:
         node = validate_node.validate_node_projects(
@@ -1040,11 +1055,13 @@ def validate_patch_tree(
     if js_ran := [f"{lbl} ({r.raw_output})" if r.tool == validate_node.TOOL else lbl
                   for lbl, r in ran if r.tool != "pytest"]:
         parts.append("npm checks passed: " + ", ".join(js_ran))
-    head = "; ".join(parts) or "lint passed; no tests ran"
+    head = "; ".join(parts) or ("lint passed; no tests ran" if py else "no checks ran")
     if notes and ran:
         head += " (see notes)"
     if unvalidated:
-        reason = "TypeScript/JavaScript not validated: " + "; ".join(unvalidated)
+        skip_reasons.append("TypeScript/JavaScript not validated: " + "; ".join(unvalidated))
+    if skip_reasons:
+        reason = "; ".join(skip_reasons)
         return ValidationResult(passed=False, tool="skipped", duration_ms=duration, errors=[],
                                 raw_output="\n".join(x for x in (reason, head, note) if x)[-_OUTPUT_LIMIT:],
                                 skipped_reason=reason[:1000], tests=tests)
