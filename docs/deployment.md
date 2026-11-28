@@ -39,7 +39,7 @@ Each entry under `repos` in `config/ecosystem.yaml` needs a `name` and a `path`.
 repos:
   # A clone on disk: the checked-out commit is scanned and `branch` is not applied.
   - name: my-service
-    path: /srv/mirrors/my-service
+    path: /repos/my-service
     provider: local
     subpath: ""
 

@@ -279,6 +279,14 @@ Generated from `cli.py`; a test fails when they differ. `ai-audit <command> --he
 - Read-only API pages have no authentication. Don't expose the port.
 - The metrics above come from one set of repos, with one person judging. Nobody has reproduced them.
 
+## Docs
+
+| Guide | What it covers |
+|---|---|
+| [docs/deployment.md](docs/deployment.md) | Patch validation, nightly timers, Docker, several repos |
+| [docs/repair-quickstart.md](docs/repair-quickstart.md) | Generating, applying and pushing a repair patch |
+| [docs/spec.md](docs/spec.md) | The product spec: what each part does today |
+
 ## Development
 
 ```bash
