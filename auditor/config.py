@@ -96,17 +96,23 @@ def _yaml_bool(value: Any, key: str, default: bool) -> bool:
     raise ValueError(f"config: {key} must be a boolean, got {value!r}")
 
 
+def _opt(raw: dict[str, Any], key: str, default: Any) -> Any:
+    """``raw[key]``, or *default* when it is missing or a bare ``key:`` (which YAML reads as None)."""
+    v = raw.get(key)
+    return default if v is None else v
+
+
 def load_ecosystem_config(path: str | Path = "config/ecosystem.yaml") -> EcosystemConfig:
     raw = _read_yaml(path)
     repos = [
         RepoConfig(
             name=item["name"],
             path=host_path(item["path"]),
-            branch=item.get("branch", ""),
+            branch=_opt(item, "branch", ""),
             enabled=_yaml_bool(item.get("enabled"), f"repos[{item.get('name')}].enabled", True),
-            access_token_env=item.get("access_token_env", ""),
-            provider=item.get("provider", "local"),
-            local_cache_path=item.get("local_cache_path", ""),
+            access_token_env=_opt(item, "access_token_env", ""),
+            provider=_opt(item, "provider", "local"),
+            local_cache_path=_opt(item, "local_cache_path", ""),
             subpath=str(item.get("subpath", "") or ""),
         )
         for item in raw.get("repos") or []  # a bare `repos:` is None
@@ -116,21 +122,21 @@ def load_ecosystem_config(path: str | Path = "config/ecosystem.yaml") -> Ecosyst
         raise ValueError("config/ecosystem.yaml must define at least one enabled repository in repos[].")
     return EcosystemConfig(
         repos=enabled,
-        output_dir=os.getenv("AI_AUDIT_OUTPUT_DIR", raw.get("output_dir", "reports")),
-        graph_db_path=os.getenv("AI_AUDIT_GRAPH_DB_PATH", raw.get("graph_db_path", "graph/ecosystem_graph.db")),
-        embedding_index_path=os.getenv("AI_AUDIT_EMBEDDING_INDEX_PATH", raw.get("embedding_index_path", "index/code_embeddings.faiss")),
+        output_dir=os.getenv("AI_AUDIT_OUTPUT_DIR", _opt(raw, "output_dir", "reports")),
+        graph_db_path=os.getenv("AI_AUDIT_GRAPH_DB_PATH", _opt(raw, "graph_db_path", "graph/ecosystem_graph.db")),
+        embedding_index_path=os.getenv("AI_AUDIT_EMBEDDING_INDEX_PATH", _opt(raw, "embedding_index_path", "index/code_embeddings.faiss")),
         architecture_memory_path=os.getenv(
             "AI_AUDIT_ARCH_MEMORY_PATH",
-            raw.get("architecture_memory_path", "memory/architecture_memory.md"),
+            _opt(raw, "architecture_memory_path", "memory/architecture_memory.md"),
         ),
         # Off unless configured, by design: the API's mutating endpoints are gated by
         # AI_AUDIT_API_TOKEN (``_require_mutating_auth``) and the CLI/timers run locally on the host.
         auth_mode=_bool_env("AI_AUDIT_AUTH_MODE", _yaml_bool(raw.get("auth_mode"), "auth_mode", False)),
-        auth_code_env=os.getenv("AI_AUDIT_AUTH_CODE_ENV", raw.get("auth_code_env", "AI_AUDIT_AUTH_CODE")),
-        log_level=str(os.getenv("AI_AUDIT_LOG_LEVEL", raw.get("log_level", "INFO"))).upper(),
-        log_file_path=str(os.getenv("AI_AUDIT_LOG_FILE_PATH", raw.get("log_file_path", ""))),
-        rag_collection=str(os.getenv("AI_AUDIT_RAG_COLLECTION", raw.get("rag_collection", "audit_docs"))),
-        rag_ingest_url=str(os.getenv("AI_AUDIT_RAG_INGEST_URL", raw.get("rag_ingest_url", "http://127.0.0.1:9050/ingest"))),
+        auth_code_env=os.getenv("AI_AUDIT_AUTH_CODE_ENV", _opt(raw, "auth_code_env", "AI_AUDIT_AUTH_CODE")),
+        log_level=str(os.getenv("AI_AUDIT_LOG_LEVEL", _opt(raw, "log_level", "INFO"))).upper(),
+        log_file_path=str(os.getenv("AI_AUDIT_LOG_FILE_PATH", _opt(raw, "log_file_path", ""))),
+        rag_collection=str(os.getenv("AI_AUDIT_RAG_COLLECTION", _opt(raw, "rag_collection", "audit_docs"))),
+        rag_ingest_url=str(os.getenv("AI_AUDIT_RAG_INGEST_URL", _opt(raw, "rag_ingest_url", "http://127.0.0.1:9050/ingest"))),
     )
 
 
