@@ -6,7 +6,8 @@ and sometimes ``.<entry>.txt``.
 ``.ready``'s mtime is the entry's last use (``touch`` on every reuse). After a build,
 ``evict`` removes entries unused for ``max_age_days``, then the least recently used until the
 cache is under ``max_bytes``. It never removes an entry used in the last hour or one whose lock
-another process holds, and it runs at most once an hour per cache."""
+another process holds, and it runs at most once an hour per cache. An entry loses its ``.ready``
+before anything else is deleted, so an interrupted removal is never reused as a built env."""
 from __future__ import annotations
 
 import fcntl
@@ -74,6 +75,10 @@ def _remove(cache_dir: Path, entry: Path) -> bool:
                 fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 return False  # being built or used right now
+            # The marker goes first. A removal that stops part way (a daemon thread killed when its CLI
+            # exits, a file it can't delete) then leaves an unfinished build, which the next use
+            # rebuilds, rather than a ready-marked env missing half its packages, which it would reuse.
+            (entry / ".ready").unlink(missing_ok=True)
             shutil.rmtree(entry, ignore_errors=True)
             (cache_dir / f".{entry.name}.txt").unlink(missing_ok=True)
         # The lock file stays: another process may already have it open, waiting to lock it. Unlinked,
