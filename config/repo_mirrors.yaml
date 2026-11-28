@@ -26,7 +26,7 @@ mirrors:
     path: ~/mirrors/argus-cortex
   - name: argus-cull
     url: https://github.com/smk762/argus-cull.git
-    path: ~/argus-cull
+    path: ~/mirrors/argus-cull
   - name: argus-curator
     url: https://github.com/smk762/argus-curator.git
     path: ~/mirrors/argus-curator
@@ -53,7 +53,7 @@ mirrors:
     path: ~/mirrors/argus-iris
   - name: argus-lens
     url: https://github.com/smk762/argus-lens.git
-    path: ~/argus-lens
+    path: ~/mirrors/argus-lens
   - name: argus-lightbox
     url: https://github.com/smk762/argus-lightbox.git
     path: ~/mirrors/argus-lightbox
@@ -98,7 +98,7 @@ mirrors:
     path: ~/mirrors/argus-survey
   - name: agent-composer
     url: https://github.com/smk762/agent-composer.git
-    path: ~/agent-composer
+    path: ~/mirrors/agent-composer
   - name: voluptas
     url: https://github.com/smk762/voluptas.git
     path: ~/mirrors/voluptas
