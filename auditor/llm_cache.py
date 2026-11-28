@@ -172,10 +172,15 @@ class ReviewCache:
                 new_ttl, old_ttl = self.ttl_for(key), self.ttl_for(old)
                 if new_ttl is not None and old_ttl is not None:
                     created += old_ttl - new_ttl
+                # An expired row under ``key`` is replaced (else the copy never lands and every
+                # read repeats the legacy lookup); a newer row written meanwhile by put() is kept.
                 with self._lock:
                     self._conn.execute(
-                        "INSERT OR IGNORE INTO reviews (key, model, response, created_at) "
-                        "VALUES (?, ?, ?, ?)", (key, hit[1], hit[0], created),
+                        "INSERT INTO reviews (key, model, response, created_at) VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET model = excluded.model, "
+                        "response = excluded.response, created_at = excluded.created_at "
+                        "WHERE reviews.created_at < excluded.created_at",
+                        (key, hit[1], hit[0], created),
                     )
                     self._conn.commit()
                 return hit[0]
