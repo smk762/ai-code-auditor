@@ -213,7 +213,17 @@ function cycleForm(c) {
       ${c.reported ? `<button class="primary" name="do" value="approved">${d.status === "approved" ? "Update approval" : "Approve"}</button>` : ""}
       ${d.status === "dismissed" ? "" : `<button class="secondary" name="do" value="dismissed" formnovalidate>Dismiss</button>`}
       <button class="secondary" type="button" data-cancel>Cancel</button>
+      ${agentPick(c.proposal)}
     </div></form></td></tr>`;
+}
+// Beside the buttons: how sure the agent was, and a way to start from its note. The box is only filled
+// by itself for a fresh high-confidence fix; below that a person chooses to use it, and still edits it.
+function agentPick(p) {
+  if (!p) return "";
+  const what = p.stale ? "out of date" : p.verdict === "leave" ? "suggests leaving it" : `${esc(p.confidence)} confidence`;
+  const usable = !p.stale && p.verdict === "fix" && p.note;
+  return `<span class="agent-pick"><span class="conf conf-${p.stale ? "stale" : esc(p.confidence)}" title="${esc(p.author)}">Agent suggestion · ${what}</span>
+    ${usable ? `<button class="secondary" type="button" data-use-proposal>Use agent's suggestion</button>` : ""}</span>`;
 }
 
 function renderCycles() {
@@ -325,6 +335,11 @@ document.getElementById("cycles").addEventListener("click", async (e) => {
   if (!b) return;
   if (b.dataset.review) { creviewing = creviewing === b.dataset.review ? "" : b.dataset.review; renderCycles(); return; }
   if (b.hasAttribute("data-cancel")) { creviewing = ""; renderCycles(); return; }
+  if (b.hasAttribute("data-use-proposal")) {
+    const f = b.closest("form"), p = data.cycles.cycles.find((c) => c.id === f.dataset.id)?.proposal;
+    if (p?.note) { f.note.value = p.note; f.note.focus(); }
+    return;
+  }
   if (!b.dataset.withdraw) return;
   b.disabled = true;
   try {
@@ -338,7 +353,7 @@ document.getElementById("cycles").addEventListener("submit", async (e) => {
   const f = e.target, status = e.submitter?.value || "approved";
   const offered = data.cycles.cycles.find((c) => c.id === f.dataset.id)?.proposal;
   let note = f.note.value.trim();
-  if (status === "dismissed" && offered?.offered && note === offered.note) note = "";  // the proposal is not a reason to dismiss
+  if (status === "dismissed" && offered?.note && note === offered.note) note = "";  // the proposal is not a reason to dismiss
   if (status === "approved" && note.length < data.cycles.note_min) { cflash(`<span class="err">Say what to move (${int(data.cycles.note_min)} characters or more).</span>`); return; }
   f.querySelectorAll("button").forEach((x) => { x.disabled = true; });
   try {

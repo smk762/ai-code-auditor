@@ -34,6 +34,8 @@ DELETE /audit/extraction/{id}/decision  Withdraw that decision (auth)
 POST /audit/cycles/{id}/decision      Approve (with a note on what to move) or dismiss a module cycle (auth)
 DELETE /audit/cycles/{id}/decision    Withdraw that decision (auth)
 POST /audit/cycles/{id}/proposal      Store an agent's proposed fix for a cycle; decides nothing (auth)
+GET  /audit/cycles/{id}/proposal      One cycle's imports, edges_key, decision and stored proposal
+GET  /audit/cycles.json               Cycles and where each one's agent proposal stands (?repo=, ?proposal=)
 GET  /audit/runs.json                 All pipelines' runs + facets (pipeline, status filters)
 GET  /audit/runs/{run_id}/summary.json  Run summary with findings delta vs the previous run
 GET  /audit/findings.json             Filtered findings + severity × repo matrix for a run
@@ -1148,6 +1150,34 @@ def post_cycle_proposal(cycle_id: str, request: _CycleProposal) -> JSONResponse:
 
     return _decision_call(lambda: propose(_output_dir(), cycle_id, request.model_dump(by_alias=True)),
                           cycle_id, "cycle proposal", proposals_path())
+
+
+@app.get("/audit/cycles/{cycle_id}/proposal")
+def get_cycle_proposal(cycle_id: str) -> JSONResponse:
+    """One cycle with its imports and ``edges_key`` (what a proposal must be written for), its decision,
+    and the stored proposal with ``stale``/``offered``; ``proposal`` is null when none was written."""
+    from auditor.structure_packs import one
+
+    out = one(_output_dir(), cycle_id)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No cycle {cycle_id!r} is reported or decided.")
+    return JSONResponse(out)
+
+
+@app.get("/audit/cycles.json")
+def get_cycles_json(
+    repo: str = Query(default=""),
+    proposal: str = Query(default="", description="none | offered | review | leave | stale"),
+) -> JSONResponse:
+    """Every module cycle with its decision and ``proposal_state``: ``none`` (no agent wrote one),
+    ``offered`` (fills the note box), ``review`` (a fix below high confidence), ``leave`` or ``stale``."""
+    from auditor.structure_packs import listing
+
+    try:
+        out = listing(_output_dir(), repo=repo.strip(), proposal=proposal.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(out or {"at": None, "cycles": [], "decisions_error": ""})
 
 
 @app.get("/ui/pack-savings", response_class=HTMLResponse)

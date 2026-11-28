@@ -282,6 +282,56 @@ def sync_packs(output_dir: str | Path, *, public_base_url: str = "", run_id: str
     return out
 
 
+PROPOSAL_STATES = ("none", "offered", "review", "leave", "stale")
+
+
+def proposal_state(p: dict[str, Any] | None) -> str:
+    """none | offered (fills the note box) | review (a fix below high confidence) | leave | stale."""
+    if not p:
+        return "none"
+    if p.get("stale"):
+        return "stale"
+    if p.get("verdict") == "leave":
+        return "leave"
+    return "offered" if p.get("offered") else "review"
+
+
+def listing(output_dir: str | Path, *, repo: str = "", proposal: str = "") -> dict[str, Any] | None:
+    """Every cycle with its decision and where its agent proposal stands, without the imports.
+    ValueError for a *proposal* filter that isn't one of PROPOSAL_STATES."""
+    if proposal and proposal not in PROPOSAL_STATES:
+        raise ValueError(f"proposal must be one of {PROPOSAL_STATES}")
+    data = ui_data(output_dir)
+    if data is None:
+        return None
+    out = []
+    for r in data["cycles"]:
+        p, state = r["proposal"], proposal_state(r["proposal"])
+        if (repo and r["repo"] != repo) or (proposal and state != proposal):
+            continue
+        out.append({"id": r["id"], "repo": r["repo"], "members": r["members"], "reported": r["reported"],
+                    "decision": (r["decision"] or {}).get("status"), "pack": r["pack"], "proposal_state": state,
+                    "proposal": {k: p.get(k) for k in ("author", "verdict", "confidence", "at")} if p else None})
+    return {"at": data["at"], "cycles": out, "decisions_error": data["decisions_error"]}
+
+
+def one(output_dir: str | Path, cid: str) -> dict[str, Any] | None:
+    """One cycle as an agent needs it to write or read a proposal: its imports and their ``edges_key``,
+    its decision, and the stored proposal (None when there is none). None when the cycle is unknown."""
+    try:
+        decisions = load_decisions(decisions_path())
+    except (OSError, ValueError):
+        decisions = {}
+    row = next((r for r in rows(load_report(output_dir), decisions, _resolved(output_dir, decisions))
+                if r["id"] == cid), None)
+    if row is None:
+        return None
+    p = view(_proposals().get(cid), row["edges"]) if row["reported"] else None
+    return {"id": cid, "repo": row["repo"], "members": row["members"], "reported": row["reported"],
+            "edges": row["edges"], "edges_key": edges_key(row["edges"]), "decision": row["decision"],
+            "proposal_state": proposal_state(p), "proposal": p, "note_min": NOTE_MIN}
+
+
 def ui_data(output_dir: str | Path, path: str | Path | None = None) -> dict[str, Any] | None:
     from auditor.agent_pack import load_pack
 

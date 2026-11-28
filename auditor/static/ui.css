@@ -195,6 +195,10 @@ select, input[type="search"], input[type="text"], input[type="password"], textar
 :where(.page-architecture) tr.x-form label.note { display: flex; align-items: flex-start; margin: 0 0 10px; }
 :where(.page-architecture) tr.x-form input[name="target_module"] { min-width: 280px; }
 :where(.page-architecture) tr.x-form textarea { flex: 1; font: inherit; font-size: 12px; }
+:where(.page-architecture) tr.x-form .agent-pick { margin-left: auto; display: inline-flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+:where(.page-architecture) tr.x-form .agent-pick .conf { font-size: 12px; color: var(--text-secondary); }
+:where(.page-architecture) tr.x-form .agent-pick .conf-high { color: var(--ok, var(--text-secondary)); }
+:where(.page-architecture) tr.x-form .agent-pick .conf-low, :where(.page-architecture) tr.x-form .agent-pick .conf-stale { color: var(--warn, var(--text-muted)); }
 :where(.page-architecture) #x-prompt textarea { width: 100%; min-height: 200px; box-sizing: border-box; font: 12px/1.45 var(--font-mono, ui-monospace, monospace); background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--grid); border-radius: 6px; padding: 8px; }
 :where(.page-architecture) #x-flash { display: block; margin-bottom: 8px; }
 /* ── findings.html (body.page-findings) ── */
