@@ -11,7 +11,7 @@ here and in code. Don't add a rule to remember.
 
 | Never | Enforced by |
 |---|---|
-| Write to a repo mirror or a configured scan path (validation, scans and the API only read them; draft PRs are built in a throwaway clone) | `:ro` mounts in `docker-compose.yml`; `test_validate_base::test_fetches_code_merged_after_the_nightly_sync_without_touching_the_mirror`; `git_ops.refuse_scan_source` in every branch/commit/push helper (`test_draft_pr_packs::test_git_writes_refuse_a_scan_source`, `::test_every_configured_mirror_and_repo_path_is_a_scan_source`, `::test_draft_pr_never_writes_the_source_checkout`); `test_guard_seeded::test_the_mirror_is_never_written` |
+| Write to a repo mirror or a configured scan path (validation, scans and the API only read them; draft PRs are built in a throwaway clone) | `:ro` mounts in `docker-compose.yml`; `test_validate_base::test_fetches_code_merged_after_the_nightly_sync_without_touching_the_mirror`; `git_ops.refuse_scan_source` in every branch/commit/push helper (`test_draft_pr_packs::test_git_writes_refuse_a_scan_source`, `::test_every_configured_mirror_and_repo_path_is_a_scan_source`, `::test_draft_pr_never_writes_the_source_checkout`); `test_guard_seeded::test_the_mirror_is_never_written`; `test_pack_awareness::test_a_scan_mirror_is_never_written` (the agent-awareness install) |
 | Mirror sync discarding a unique local commit | `test_mirror_sync::test_unique_local_commit_is_never_reset` |
 | Resolve a pack without evidence (lint-only, or a bug/security fix with no test that fails on `dev` and passes patched, or tests that were all skipped) | `test_evidence::test_decide`, `test_evidence_skips::test_a_run_where_nothing_passed_is_unverified`; the seeded-defect eval's control gate (`auditor/eval_seeded.py`) |
 | A pack resolved on another pack's test in a `validate_patch`, alone or with others, or a pack citing a test file resolved on anything but a change to that file | `test_evidence::test_a_pack_never_resolves_on_another_packs_test`, `::test_for_pack_keeps_only_the_tests_naming_the_packs_module`, `::test_a_pack_about_a_test_is_proven_by_changing_that_test` |
@@ -158,9 +158,9 @@ static rule closes no children, and semantic fixes go through `validate_patch` (
 on the edited `.py` file, and shows the agent the hits on lines in its `git diff -U0 HEAD` (all lines for a new file), so
 baselined debt stays quiet. About 2–3 s per edit, no tokens unless it finds something. It is advice: exit 2 puts the hits
 in front of the agent, anything going wrong exits 0, and nothing that resolves or closes packs reads it.
-`install_agent_pack_awareness.sh` merges it into each repo's untracked `.claude/settings.local.json`, running this venv's
-interpreter with `-I` (so a target repo's own `auditor` package can't shadow ours), and adds that file to
-`.git/info/exclude`; `--no-guard-hook` skips it. Each run appends whole-file hit counts to
+`install_agent_pack_awareness.sh` merges it into each working checkout's untracked `.claude/settings.local.json`, running
+this venv's interpreter with `-I` (so a target repo's own `auditor` package can't shadow ours), and adds that file to
+`.git/info/exclude`; `--hook-only` installs nothing else, `--no-guard-hook` skips it. Each run appends whole-file hit counts to
 `reports/guard_hook_history.jsonl`; the informational `guards.write_time` gate is the share of shown hits gone by the next
 check of the same file, comparing whole-file counts so a commit (which empties the diff) or a reworded line isn't a fix.
 
@@ -244,8 +244,8 @@ finding packs and their status alone. Extraction candidates are proposals: only 
 `validate_patch` moves it to `in_progress` and the nightly sync resolves it once every copy is gone from `dev`
 (`auditor/extraction.py`). Candidate ids follow their units across runs, not their rank. Each candidate carries a `copy_risk` (non-test copies,
 churn, agent PRs touching the copies), which orders "To decide". In a bundle, a consolidation pack (an approved
-extraction, or a `workaround` finding from `auditor/workaround.py`) goes ahead of fixes in the same directory (#60). `bash scripts/install_agent_pack_awareness.sh` writes the flow into every ecosystem repo on disk
-(local files only, never git). Re-run it after changing the API base or the flow text.
+extraction, or a `workaround` finding from `auditor/workaround.py`) goes ahead of fixes in the same directory (#60). `bash scripts/install_agent_pack_awareness.sh` writes the flow into the working checkout at `~/<name>` of
+each scanned repo, or each `--path`, never a scan mirror (local files only, never git). Re-run it after changing the API base or the flow text.
 
 ## Branches
 

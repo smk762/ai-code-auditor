@@ -1,6 +1,7 @@
 """Idempotent install of agent-pack awareness files into target repos."""
 from __future__ import annotations
 
+import json
 import textwrap
 
 import pytest
@@ -63,22 +64,70 @@ def test_missing_path_is_skipped(tmp_path):
     assert res.skipped
 
 
-def test_install_all_filters_repo_and_skips_missing(tmp_path):
-    a, b = tmp_path / "a", tmp_path / "b"
-    a.mkdir()
-    cfg = tmp_path / "eco.yaml"
-    cfg.write_text(textwrap.dedent(f"""
+def _configs(tmp_path):
+    """Two scanned repos with mirrors under tmp/mirrors, and a home where repo-a is checked out."""
+    mirrors, home = tmp_path / "mirrors", tmp_path / "home"
+    for d in (mirrors / "repo-a", mirrors / "repo-b", home / "repo-a" / ".git"):
+        d.mkdir(parents=True)
+    eco = tmp_path / "eco.yaml"
+    eco.write_text(textwrap.dedent(f"""
         repos:
-          - {{name: repo-a, path: {a}, enabled: true}}
-          - {{name: repo-b, path: {b}, enabled: true}}
-          - {{name: repo-off, path: {a}, enabled: false}}
+          - {{name: repo-a, path: {mirrors}/repo-a, enabled: true}}
+          - {{name: repo-b, path: {mirrors}/repo-b, enabled: true}}
+          - {{name: repo-off, path: {mirrors}/repo-a, enabled: false}}
     """))
-    all_res = pa.install_all(ecosystem_config=cfg)
-    assert [r.repo for r in all_res] == ["repo-a", "repo-b"]
-    assert all_res[1].skipped
-    assert "repo=repo-a" in (a / "AGENTS.md").read_text()
+    mir = tmp_path / "mirrors.yaml"
+    mir.write_text(textwrap.dedent(f"""
+        mirror_root: {mirrors}
+        mirrors:
+          - {{name: repo-a, url: https://x/repo-a.git, path: {mirrors}/repo-a}}
+          - {{name: repo-b, url: https://x/repo-b.git, path: {mirrors}/repo-b}}
+    """))
+    return {"ecosystem_config": eco, "mirrors_config": mir}, mirrors, home
 
-    one = pa.install_all(ecosystem_config=cfg, repo="repo-a", dry_run=True)
+
+def test_install_all_targets_home_checkouts_filters_repo_and_skips_missing(tmp_path):
+    cfg, mirrors, home = _configs(tmp_path)
+    all_res = pa.install_all(home=home, **cfg)
+    assert [r.repo for r in all_res] == ["repo-a", "repo-b"]
+    assert all_res[1].skipped  # not checked out in home
+    assert "repo=repo-a" in (home / "repo-a" / "AGENTS.md").read_text()
+    assert not any((mirrors / "repo-a").iterdir())
+
+    one = pa.install_all(home=home, repo="repo-a", dry_run=True, **cfg)
     assert [r.repo for r in one] == ["repo-a"]
     with pytest.raises(ValueError):
-        pa.install_all(ecosystem_config=cfg, repo="repo-off")
+        pa.install_all(home=home, repo="repo-off", **cfg)
+
+
+def test_a_scan_mirror_is_never_written(tmp_path):
+    cfg, mirrors, home = _configs(tmp_path)
+    (home / "repo-b").symlink_to(mirrors / "repo-b")  # like ~/argus-core -> mirrors/argus-cortex
+    (mirrors / "other" / ".git").mkdir(parents=True)  # under mirror_root, though not configured
+    res = pa.install_all(home=home, **cfg)
+    assert res[1].skipped == "a scan mirror, never written"
+    res = pa.install_all(paths=[mirrors / "repo-a", mirrors / "other", home / "repo-b"], **cfg)
+    assert [r.skipped for r in res] == ["a scan mirror, never written"] * 3
+    assert not list((mirrors / "repo-a").iterdir()) and not list((mirrors / "repo-b").iterdir())
+    assert [p.name for p in (mirrors / "other").iterdir()] == [".git"]
+
+
+def test_paths_install_into_named_checkouts_and_skip_non_checkouts(tmp_path):
+    cfg, _, _ = _configs(tmp_path)
+    work, plain = tmp_path / "work" / "my-app", tmp_path / "plain"
+    (work / ".git").mkdir(parents=True)
+    plain.mkdir()
+    res = pa.install_all(paths=[work, plain], **cfg)
+    assert [(r.repo, r.skipped) for r in res] == [("my-app", ""), ("plain", "not a git checkout")]
+    assert (work / "AGENTS.md").exists() and not (plain / "AGENTS.md").exists()
+
+
+def test_hook_only_writes_only_the_hook(tmp_path):
+    cfg, _, home = _configs(tmp_path)
+    res = pa.install_all(home=home, repo="repo-a", hook_only=True, **cfg)
+    root = home / "repo-a"
+    assert sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()) == \
+        [".claude/settings.local.json", ".git/info/exclude"]
+    assert all("AGENTS.md" not in a for a in res[0].actions)
+    hook = json.loads((root / pa.CLAUDE_SETTINGS_RELPATH).read_text())["hooks"]["PostToolUse"][0]
+    assert pa.HOOK_MODULE in hook["hooks"][0]["command"]

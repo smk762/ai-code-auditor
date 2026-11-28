@@ -67,8 +67,10 @@ curl -X POST "$B/audit/validate_patch" -H 'Content-Type: application/json' \
 
 Give up on a pack with `status: wontfix` (+ `note`). Other repos get this flow via
 `bash scripts/install_agent_pack_awareness.sh` (idempotent `AGENTS.md` section +
-`.cursor/rules/agent-coding-packs.mdc` + the write-time guard hook in the untracked `.claude/settings.local.json`;
-`--dry-run`, `--repo NAME`, `--no-guard-hook`; local files only, no git).
+`.cursor/rules/agent-coding-packs.mdc` + the write-time guard hook in the untracked `.claude/settings.local.json`).
+It writes into the working checkouts at `~/<name>` of the scanned repos, or the `--path DIR` you give, and never into
+a scan mirror under `~/mirrors`. Flags: `--dry-run`, `--repo NAME`, `--hook-only` (just the hook), `--no-guard-hook`.
+Local files only, no git.
 
 **Write-time guard hook.** In Claude Code, after each edit to a `.py` file the hook runs the suite's proven
 deterministic rules on it and reports hits on the lines you changed ("Guard rules flagged …"). Fix the line, or add a

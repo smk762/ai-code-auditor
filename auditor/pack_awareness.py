@@ -1,4 +1,9 @@
-"""Install agent-pack awareness (AGENTS.md section + Cursor rule) into target repos.
+"""Install agent-pack awareness (AGENTS.md section + Cursor rule + guard hook) into working checkouts.
+
+Targets are where people work: ``~/<name>`` for each scanned repo that is checked out there, or the
+paths given. Never a scan mirror: anything resolving into ``mirror_root`` or onto a configured repo
+or mirror path is skipped, since scans and validation only ever read those. ``hook_only`` installs
+just the guard hook and leaves the tracked files alone.
 
 Local files only: nothing here runs git. Installs are idempotent via marker comments:
 
@@ -295,11 +300,15 @@ def install_into_repo(
     force: bool = False,
     guard_hook: bool = True,
     python: str | None = None,
+    hook_only: bool = False,
 ) -> InstallResult:
     root = Path(repo_path)
     result = InstallResult(repo=repo, path=str(root))
     if not root.is_dir():
         result.skipped = "path does not exist"
+        return result
+    if hook_only:
+        result.actions.extend(_install_guard_hook(root, python=python, dry_run=dry_run))
         return result
 
     # AGENTS.md — append / replace marked section.
@@ -344,28 +353,65 @@ def install_into_repo(
     return result
 
 
+def scan_sources(ecosystem_config: str | Path = "config/ecosystem.yaml",
+                 mirrors_config: str | Path = "config/repo_mirrors.yaml") -> tuple[set[Path], list[Path]]:
+    """Resolved scan-source directories (every configured repo path and mirror) and the mirror roots.
+    The installer never writes into one: scans and validation only read them (CLAUDE.md)."""
+    from conductor.mirrors import load_mirrors_config
+
+    mcfg = load_mirrors_config(mirrors_config)
+    dirs = {Path(str(m["path"])).resolve() for m in mcfg.get("mirrors") or [] if m.get("path")}
+    dirs |= {Path(r.path).resolve() for r in load_ecosystem_config(ecosystem_config).repos if r.path}
+    roots = [Path(str(mcfg["mirror_root"])).resolve()] if mcfg.get("mirror_root") else []
+    return dirs, roots
+
+
+def _scan_source(path: Path, dirs: set[Path], roots: list[Path]) -> bool:
+    p = path.resolve()  # through symlinks: ~/argus-core is the cortex mirror
+    return p in dirs or any(p == r or p.is_relative_to(r) for r in roots)
+
+
 def install_all(
     *,
     ecosystem_config: str | Path = "config/ecosystem.yaml",
+    mirrors_config: str | Path = "config/repo_mirrors.yaml",
     repo: str = "",
+    paths: list[str | Path] | None = None,
+    home: str | Path | None = None,
     api_base: str = "",
     dry_run: bool = False,
     force: bool = False,
     guard_hook: bool = True,
+    hook_only: bool = False,
 ) -> list[InstallResult]:
-    """Install into enabled ecosystem repos that exist on disk (or just *repo*)."""
+    """Install into the working checkouts of the scanned repos: ``<home>/<name>`` for each enabled
+    repo (or just *repo*), or the given *paths* instead. Never into a scan source: every configured
+    repo path is a mirror (``test_repo_sets``), and anything that resolves into one is skipped."""
+    from auditor.fsutil import host_path
+
     # Deliberately not os.getenv("AI_AUDIT_PUBLIC_BASE_URL"): that would bake the real LAN
     # address into public repos. Pass --api-base explicitly to override.
     base = (api_base or DEFAULT_API_BASE).rstrip("/")
     cfg = load_ecosystem_config(ecosystem_config)
-    repos = cfg.repos
-    if repo:
-        repos = [r for r in repos if r.name == repo]
-        if not repos:
-            raise ValueError(f"repo {repo!r} not found among enabled repos in {ecosystem_config}")
+    dirs, roots = scan_sources(ecosystem_config, mirrors_config)
+    if paths:
+        targets = [(Path(p).expanduser().name, Path(p).expanduser()) for p in paths]
+    else:
+        repos = cfg.repos
+        if repo:
+            repos = [r for r in repos if r.name == repo]
+            if not repos:
+                raise ValueError(f"repo {repo!r} not found among enabled repos in {ecosystem_config}")
+        root = Path(home) if home is not None else Path(host_path("~"))
+        targets = [(r.name, root / r.name) for r in repos]
     results: list[InstallResult] = []
-    for r in repos:
-        res = install_into_repo(r.name, r.path, api_base=base, dry_run=dry_run, force=force,
-                                guard_hook=guard_hook)
-        results.append(res)
+    for name, path in targets:
+        if _scan_source(path, dirs, roots):
+            results.append(InstallResult(repo=name, path=str(path), skipped="a scan mirror, never written"))
+            continue
+        if path.is_dir() and not (path / ".git").exists():
+            results.append(InstallResult(repo=name, path=str(path), skipped="not a git checkout"))
+            continue
+        results.append(install_into_repo(name, path, api_base=base, dry_run=dry_run, force=force,
+                                         guard_hook=guard_hook or hook_only, hook_only=hook_only))
     return results
