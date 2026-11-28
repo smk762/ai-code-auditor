@@ -17,13 +17,10 @@ x-auditor-base: &auditor-base
     - ./:/repos/ai-code-auditor
     # Match repo `path:` entries in config/ecosystem.yaml (host paths → same path in container),
     # read-only. The wiki viewer, "Ask this repo" citations, repo cards and the topology scan all
-    # read these mirrors; without them citations fail as "missing". Most repos are git mirrors
-    # under ~/mirrors (synced by scripts/sync_repo_mirrors.sh); three are checkouts in ~.
-    # Add a line here when a repo's path in ecosystem.yaml is outside these.
+    # read these mirrors; without them citations fail as "missing". Every repo is a git mirror
+    # under ~/mirrors (synced by scripts/sync_repo_mirrors.sh), never a working checkout.
+    # Add a line here when a repo's path in ecosystem.yaml is outside it.
     - ${HOME}/mirrors:${HOME}/mirrors:ro
-    - ${HOME}/agent-composer:${HOME}/agent-composer:ro
-    - ${HOME}/argus-cull:${HOME}/argus-cull:ro
-    - ${HOME}/argus-lens:${HOME}/argus-lens:ro
   environment:
     # Match the host clock so ledger/dashboard hours line up with the systemd timers.
     - TZ=${TZ:-Australia/Perth}

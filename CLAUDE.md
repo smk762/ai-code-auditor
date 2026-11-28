@@ -12,6 +12,7 @@ here and in code. Don't add a rule to remember.
 | Never | Enforced by |
 |---|---|
 | Write to a repo mirror or a configured scan path (validation, scans and the API only read them; draft PRs are built in a throwaway clone) | `:ro` mounts in `docker-compose.yml`; `test_validate_base::test_fetches_code_merged_after_the_nightly_sync_without_touching_the_mirror`; `git_ops.refuse_scan_source` in every branch/commit/push helper (`test_draft_pr_packs::test_git_writes_refuse_a_scan_source`, `::test_every_configured_mirror_and_repo_path_is_a_scan_source`, `::test_draft_pr_never_writes_the_source_checkout`); `test_guard_seeded::test_the_mirror_is_never_written`; `test_pack_awareness::test_a_scan_mirror_is_never_written` (the agent-awareness install) |
+| Scan a working checkout (a repo whose scan path isn't `~/mirrors/<name>`) | `test_repo_sets::test_every_repo_is_scanned_from_its_mirror_never_a_working_checkout`; one `~/mirrors:ro` mount in `docker-compose.yml` |
 | Mirror sync discarding a unique local commit | `test_mirror_sync::test_unique_local_commit_is_never_reset` |
 | Resolve a pack without evidence (lint-only, or a bug/security fix with no test that fails on `dev` and passes patched, or tests that were all skipped) | `test_evidence::test_decide`, `test_evidence_skips::test_a_run_where_nothing_passed_is_unverified`; the seeded-defect eval's control gate (`auditor/eval_seeded.py`) |
 | A pack resolved on another pack's test in a `validate_patch`, alone or with others, or a pack citing a test file resolved on anything but a change to that file | `test_evidence::test_a_pack_never_resolves_on_another_packs_test`, `::test_for_pack_keeps_only_the_tests_naming_the_packs_module`, `::test_a_pack_about_a_test_is_proven_by_changing_that_test` |
@@ -85,8 +86,8 @@ Config lives in `config/*.yaml`. Every key in `auditor/config.py` can be overrid
 ## Facts the code doesn't make obvious
 
 **Mirrors.** The scan set is every `smk762/argus-*` except `argus-docs` (generated output), plus `agent-composer`,
-`voluptas` and this repo (from its own mirror, never the working checkout), under `~/<name>` or
-`~/mirrors/<name>` (`config/repo_mirrors.yaml`). `ai-audit rest-run` syncs them to `dev` first, and
+`voluptas` and this repo, each from its mirror at `~/mirrors/<name>` (`config/repo_mirrors.yaml`), never a working
+checkout under `~`. `ai-audit rest-run` syncs them to `dev` first, and
 `scripts/sync_repo_mirrors.sh` does it by hand. A mirror is fast-forwarded, or reset with a backup branch after an
 upstream rewrite, and a mirror with a unique local commit is never touched (`conductor/mirrors.py`). Mirrors only sync nightly, so `validate_patch` fetches `dev` itself (`auditor/validate_base.py`); the container has no git credential helper, so private repos (argus-iris, voluptas) fetch with `GITHUB_TOKEN`, offered only to `https://github.com`. SSHFS mounts
 are deprecated. `../argus-core` is a symlink alias for the cortex mirror: suite repos import `@../argus-core/SUITE.md`

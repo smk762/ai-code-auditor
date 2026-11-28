@@ -35,6 +35,16 @@ def test_this_repo_is_scanned_from_a_mirror_not_the_working_checkout() -> None:
     assert _names("config/ecosystem.yaml", "repos")["ai-code-auditor"] == "~/mirrors/ai-code-auditor"
 
 
+def test_every_repo_is_scanned_from_its_mirror_never_a_working_checkout() -> None:
+    """A checkout in ~ is where someone works: scanning it reads their branch and uncommitted edits, the
+    nightly sync stops on their local commits, and the agent-awareness install would write into a mirror."""
+    root = yaml.safe_load((ROOT / "config/repo_mirrors.yaml").read_text(encoding="utf-8"))["mirror_root"]
+    for path in ("config/ecosystem.yaml", "config/repo_mirrors.yaml"):
+        key = "repos" if "ecosystem" in path else "mirrors"
+        outside = {n: p for n, p in _names(path, key).items() if p != f"{root}/{n}"}
+        assert not outside, f"{path}: not under {root}: {outside}"
+
+
 def test_generated_docs_bundle_is_not_scanned() -> None:
     assert "argus-docs" not in _names("config/ecosystem.yaml", "repos")
 
