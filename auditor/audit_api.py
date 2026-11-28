@@ -65,6 +65,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -72,6 +73,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Literal
 
 from dataclasses import asdict
@@ -1646,6 +1648,27 @@ def _export_clean_tree(repo_path: Path, dest: Path, base: Any = None) -> str:
     return base.ref
 
 
+def _lazy_clean_tree(repo_path: Path, dest: Path, base: Any, *, what: str, repo: str) -> Callable[[], Path | None]:
+    """A callable exporting *base* to *dest* on its first call and returning *dest* (None if it failed).
+
+    A failed export is remembered and its partial directory removed, so a later call never mistakes
+    a half-written tree for the clean dev tree."""
+    state: dict[str, Path | None] = {}
+
+    def tree() -> Path | None:
+        if "tree" not in state:
+            try:
+                _export_clean_tree(repo_path, dest, base)
+                state["tree"] = dest
+            except Exception as exc:  # noqa: BLE001 — no tree: the caller goes without one
+                logger.warning("validate_patch: no %s tree for %s: %s", what, repo, exc)
+                shutil.rmtree(dest, ignore_errors=True)
+                state["tree"] = None
+        return state["tree"]
+
+    return tree
+
+
 def _base_fields(base: Any, repo: str, output_dir: str | Path) -> dict[str, Any]:
     """Response fields naming the commit a patch was validated on and whether it is current."""
     from auditor.merge_poll import merge_poll_state_path
@@ -1974,17 +1997,9 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
         patch_applied = True
         changed = _patch_paths(patch_file, repo_copy)
 
-        base_dir = tmp_root / "base"
-
-        def _base_tree() -> Path | None:
-            """The same tree without the patch, exported once when a test failure needs comparing."""
-            if not base_dir.exists():
-                try:
-                    _export_clean_tree(Path(repo_path), base_dir, base)
-                except Exception as exc:  # noqa: BLE001 — without a base, failures simply count
-                    logger.warning("validate_patch: no base tree for %s: %s", request.repo, exc)
-                    return None
-            return base_dir
+        # The same tree without the patch, exported once when a test failure needs comparing.
+        # Without a base, failures simply count.
+        _base_tree = _lazy_clean_tree(Path(repo_path), tmp_root / "base", base, what="base", repo=request.repo)
 
         venv_cache = Path(os.getenv("AI_AUDIT_VALIDATE_VENV_DIR") or Path(cfg.output_dir) / "_validate_venvs")
         node_cache = Path(os.getenv("AI_AUDIT_VALIDATE_NODE_DIR") or Path(cfg.output_dir) / "_validate_node")
@@ -1993,17 +2008,10 @@ def validate_patch_endpoint(request: _ValidatePatchRequest) -> JSONResponse:
             cache_dir=venv_cache, base_tree=_base_tree, node_cache_dir=node_cache,
         )
 
-        repro_dir = tmp_root / "repro_base"
-
-        def _fresh_base() -> Path | None:
-            """A second clean dev tree that the patch's tests are copied onto (never the shared base)."""
-            if not repro_dir.exists():
-                try:
-                    _export_clean_tree(Path(repo_path), repro_dir, base)
-                except Exception as exc:  # noqa: BLE001 — no dev tree, no repro evidence
-                    logger.warning("validate_patch: no repro tree for %s: %s", request.repo, exc)
-                    return None
-            return repro_dir
+        # A second clean dev tree that the patch's tests are copied onto (never the shared base).
+        # No dev tree, no repro evidence.
+        _fresh_base = _lazy_clean_tree(Path(repo_path), tmp_root / "repro_base", base, what="repro",
+                                       repo=request.repo)
 
         def _structure_scans() -> tuple[dict[str, Any], dict[str, Any]]:
             """The structure scan of dev and of dev plus the patch (#58), on exports no test has run in:
