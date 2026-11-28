@@ -51,6 +51,10 @@ _REMOVED = re.compile(r"\bwork[- ]?arounds?\b.{0,30}\b(is|was|are|were|got)\s+(g
                       r"\bno (longer )?(need|needs|needed)\b.{0,20}\bwork[- ]?around", re.IGNORECASE)
 _RACE_WORDS = re.compile(r"\b(race|racy|flak\w*|timing|in time|give \w+ (a moment|time)|let \w+ (finish|catch up)|"
                          r"eventually consistent|not ready yet|before it'?s ready|give (\w+ ){1,3}(a moment|time))\b", re.IGNORECASE)
+# Every finding's title opens with one of these; packs the class step hasn't reached are told apart by it.
+TITLE_MARKER = "Workaround comment: "
+TITLE_RACE_TIMER = "Timer or retry papering over a race: "
+TITLES = (TITLE_MARKER, TITLE_RACE_TIMER)
 _TIMER_CALL = re.compile(r"\b(time\.sleep|asyncio\.sleep|sleep|setTimeout|wait_for|retry|backoff)\s*\(", re.IGNORECASE)
 
 
@@ -163,7 +167,7 @@ def scan(repo_name: str, repo_path: str | Path, rel_paths: list[str] | None = No
                 repo=repo_name,
                 file_path=str(path),
                 line=line_no,
-                title=("Timer or retry papering over a race: " if kind == "race_timer" else "Workaround comment: ")
+                title=(TITLE_RACE_TIMER if kind == "race_timer" else TITLE_MARKER)
                       + short,
                 description=("A comment justifies a sleep, delay or retry by a race or timing problem. The race is "
                              "still there; the timer only makes it rarer, and agents copy the pattern."
