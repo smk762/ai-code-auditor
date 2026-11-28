@@ -246,13 +246,15 @@ def test_ci_extras_from_install_steps_and_all_extras(tmp_path: Path) -> None:
                  'dev = ["pytest>=8.0"]\n')
     step = tmp_path / "step"
     _write(step, {"pyproject.toml": pyproject,
-                  ".github/workflows/ci.yml": "steps:\n  - run: uv venv && uv pip install -e \".[server,dev]\"\n"})
+                  ".github/workflows/ci.yml": ("steps:\n  - run: uv venv && uv pip install -e \".[server,dev]\"\n"
+                                                             "  - run: make test\n")})
     assert validator.ci_test_extras(step) == ["server", "dev"]
     assert validator._declared_deps(step)[1] == ["pydantic>=2.7", "pytest>=8.0", "fastapi>=0.110",
                                                  "typer>=0.12", "pillow>=11.0"]
     sync = tmp_path / "sync"
     _write(sync, {"pyproject.toml": pyproject,
-                  ".github/workflows/ci.yml": "steps:\n  - run: uv sync --locked --all-extras --python 3.12\n"})
+                  ".github/workflows/ci.yml": ("steps:\n  - run: uv sync --locked --all-extras --python 3.12\n"
+                                                             "  - run: uv run --no-sync pytest -q\n")})
     assert validator.ci_test_extras(sync) == [validator.ALL_EXTRAS]
     assert set(validator._declared_deps(sync)[1]) == {"pydantic>=2.7", "pytest>=8.0", "fastapi>=0.110",
                                                       "typer>=0.12", "pillow>=11.0"}
@@ -452,3 +454,46 @@ def test_loose_test_deps_come_from_ci_and_known_imports(tmp_path: Path) -> None:
     # yaml is already covered by CI's pyyaml; requests comes from the fixed import map
     assert validator.loose_test_deps(tmp_path, ["scripts/test_a.py"]) == ["pyyaml", "ruff==0.5.0", "requests"]
     assert validator.loose_tests(tmp_path, ["scripts/a.py", "nowhere/b.py"]) == {"scripts": ["scripts/test_a.py"]}
+
+
+def test_only_extras_a_job_that_runs_tests_installs_count(tmp_path: Path) -> None:
+    # argus-proof: score-imports installs ".[score]" (torch, transformers) only to import it. With it in
+    # the venv, the scorers thought they could run and downloaded models: 24 tests failed only here.
+    _write(tmp_path, {
+        "pyproject.toml": ('[project]\nname = "argus-proof"\n[project.optional-dependencies]\n'
+                           'score = ["torch"]\nserver = ["fastapi"]\ndev = ["pytest"]\n'),
+        ".github/workflows/ci.yml": (
+            "name: CI\non:\n  push:\njobs:\n"
+            "  ci:\n    uses: smk762/argus-ci/.github/workflows/python-ci.yml@v1\n"
+            "    with:\n      test-extras: \"dev,server\"\n\n"
+            "  score-imports:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - run: uv pip install --torch-backend cpu \".[score]\"\n"
+            "      - run: uv run --no-sync python scripts/check_scorers.py\n"
+            "  test:\n    steps:\n      - run: uv sync --all-extras\n      # pytest is in the comment only\n"
+            "  lint:\n    steps:\n      - run: uv sync --all-extras && make lint\n"),
+    })
+    assert validator.ci_test_extras(tmp_path) == ["dev", "server", validator.ALL_EXTRAS]
+    _write(tmp_path, {".github/workflows/ci.yml": "jobs:\n  lint:\n    steps:\n      - run: uv sync --all-extras\n"})
+    assert validator.ci_test_extras(tmp_path) == []
+
+
+def test_the_project_gets_installed_metadata(tmp_path: Path) -> None:
+    # argus-cortex's health body reads its own installed version: CI installs the project, the venv doesn't.
+    import importlib.metadata as md
+
+    _write(tmp_path, {"pyproject.toml": ('[project]\nname = "argus-stub.thing"\ndynamic = ["version"]\n'
+                                         '[project.scripts]\nthing = "pkg.cli:app"\n'
+                                         '[project.entry-points."thing.plugins"]\nfile = "pkg.file:Plugin"\n')})
+    assert validator.stub_version_files(tmp_path) == ["argus_stub_thing-0.0.0+validate.dist-info"]
+    dist = next(md.distributions(path=[str(tmp_path)]))
+    assert dist.metadata["Name"] == "argus-stub.thing" and dist.version == "0.0.0+validate"
+    assert {(e.group, e.name, e.value) for e in dist.entry_points} == {
+        ("console_scripts", "thing", "pkg.cli:app"), ("thing.plugins", "file", "pkg.file:Plugin")}
+    assert validator.stub_version_files(tmp_path) == []  # once only
+
+    pinned = tmp_path / "pinned"
+    _write(pinned, {"pyproject.toml": '[project]\nname = "p"\nversion = "1.2.3"\n'})
+    assert validator.stub_version_files(pinned) == ["p-1.2.3.dist-info"]
+    odd = tmp_path / "odd"
+    _write(odd, {"pyproject.toml": '[project]\nname = "../escape"\n'})
+    assert validator.stub_version_files(odd) == []
