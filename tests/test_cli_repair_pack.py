@@ -168,7 +168,7 @@ def test_write_run_without_jwt_still_works_with_auth_off(monkeypatch) -> None:
     seen = _capture(monkeypatch)
     monkeypatch.delenv("AI_AUDIT_AUTH_TOKEN", raising=False)
     monkeypatch.setattr(cli, "load_ecosystem_config",
-                        lambda: SimpleNamespace(auth_mode=False, auth_code_env="X"))
+                        lambda: SimpleNamespace(auth_mode=False, auth_code_env="X", output_dir="/nonexistent"))
     cli._run_repair(repo_name="r", repair_api_url="http://rag.test", pack_id="ext-1",
                     apply=True, rag_chat_api_key="k")
     assert seen["payload"]["pack_id"] == "ext-1"
