@@ -2,7 +2,7 @@
 # (the generated docs bundle this tool writes), plus shared deps the suite consumes
 # (agent-composer, voluptas) and this repo. mithrandir is omitted (HTTP status handoff only).
 # Keep in step with config/repo_mirrors.yaml (tests/test_repo_sets.py).
-# Prefer local checkouts under ~/<name>; otherwise ~/mirrors/<name>
+# Every repo is scanned from its mirror under ~/mirrors/<name>, never a working checkout under ~
 # (see config/repo_mirrors.yaml + scripts/sync_repo_mirrors.sh). Scan branch: dev.
 repos:
   - name: argus-assay
@@ -34,7 +34,7 @@ repos:
     subpath: ""
 
   - name: argus-cull
-    path: ~/argus-cull
+    path: ~/mirrors/argus-cull
     branch: dev
     enabled: true
     provider: local
@@ -97,7 +97,7 @@ repos:
     subpath: ""
 
   - name: argus-lens
-    path: ~/argus-lens
+    path: ~/mirrors/argus-lens
     branch: dev
     enabled: true
     provider: local
@@ -203,7 +203,7 @@ repos:
 
   # Shared deps Argus consumes
   - name: agent-composer
-    path: ~/agent-composer
+    path: ~/mirrors/agent-composer
     branch: dev
     enabled: true
     provider: local
