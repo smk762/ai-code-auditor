@@ -1127,14 +1127,23 @@ def _run_repair(
             "Read-only runs (--mode review / suggest without --apply) need no key."
         )
 
-    if push and pack_id:
-        # Trust-gated autonomy (#61): a pushed repair branch is a step towards a PR.
+    pk: dict = {}
+    if pack_id:
         from auditor.agent_pack import load_pack
-        from auditor.autonomy import decide
 
         pk = load_pack(cfg.output_dir, pack_id) or {}
+        pack_repo = str((pk.get("repo") or {}).get("name") or "")
+        if repo_name and pack_repo and repo_name != pack_repo:
+            # the autonomy gate and the repair run must judge the pack's own repo
+            raise SystemExit(f"--repo {repo_name} does not match {pack_id}'s repo ({pack_repo}).")
+        repo_name = repo_name or pack_repo
+
+    if push and pack_id:
+        # Trust-gated autonomy (#61): a pushed repair branch is a step towards a PR.
+        from auditor.autonomy import decide
+
         cls = ((pk.get("governance") or {}).get("finding_class") or {})
-        gate = decide(repo_name or str((pk.get("repo") or {}).get("name") or ""),
+        gate = decide(repo_name,
                       str(cls.get("id") or "") if isinstance(cls, dict) else "",
                       paths=[str((pk.get("location") or {}).get("file_path") or "")],
                       title=str((pk.get("narrative") or {}).get("title") or ""), output_dir=cfg.output_dir)
@@ -1191,7 +1200,9 @@ def _run_repair(
             json=payload,
             headers=headers,
             stream=True,
-            timeout=600,
+            # connect timeout only: a repair iteration (fix, critique, adversarial, tests) can go
+            # silent on the stream for longer than any fixed read timeout
+            timeout=(30, None),
         ) as resp:
             if resp.status_code in (401, 403):
                 detail = ""
@@ -1272,8 +1283,11 @@ def _run_repair(
                             print(f"  Error: {data['message']}")
                     except json.JSONDecodeError:
                         print(line)
-    except _req.exceptions.ConnectionError:
-        raise SystemExit(f"Could not connect to repair API at {base_url}. Is rag-chat running?")
+    except _req.exceptions.ConnectionError as exc:
+        raise SystemExit(f"Could not connect to repair API at {base_url}. Is rag-chat running?") from exc
+    except _req.exceptions.RequestException as exc:
+        raise SystemExit(f"The repair stream from {base_url} broke off ({type(exc).__name__}: {exc}). "
+                         "The remote run may still be in progress: check rag-chat before retrying.") from exc
 
 
 def _run_diff_audit(
@@ -1396,7 +1410,10 @@ def main() -> None:
     provided_auth = getattr(args, "auth_code", "") or os.getenv("AI_AUDIT_AUTH_CODE_INPUT", "")
     require_auth(cfg.auth_mode, cfg.auth_code_env, provided_code=provided_auth)
     token = getattr(args, "auth_token", "") or os.getenv("AI_AUDIT_AUTH_TOKEN", "")
-    if args.command in {"repo-run", "ecosystem-run", "rest-run"}:
+    # merge-refresh / merge-poll sync mirrors, move dev-tip baselines and force re-audits, and
+    # `autonomy --refresh` rewrites the autonomy state: the same admin gate as the runs
+    if args.command in {"repo-run", "ecosystem-run", "rest-run", "merge-refresh", "merge-poll"} or (
+            args.command == "autonomy" and getattr(args, "refresh", False)):
         _enforce_cli_role(cfg, token, "admin", f"cli:{args.command}")
     if args.command == "budget":
         _budget(args)

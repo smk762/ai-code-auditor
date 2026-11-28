@@ -485,8 +485,12 @@ def apply_labels(
         ledger = {}
     except (OSError, ValueError) as exc:
         ledger = exc
-    if not isinstance(ledger, dict):
-        why = str(ledger)[:200] if isinstance(ledger, Exception) else f"not a JSON object ({type(ledger).__name__})"
+    bad_field = next((k for k in ("applied", "stale") if isinstance(ledger, dict)
+                      and ledger.get(k) is not None and not isinstance(ledger[k], dict)), "")
+    if not isinstance(ledger, dict) or bad_field:
+        why = (str(ledger)[:200] if isinstance(ledger, Exception)
+               else f"'{bad_field}' is not a JSON object ({type(ledger[bad_field]).__name__})" if bad_field
+               else f"not a JSON object ({type(ledger).__name__})")
         logger.warning("linchpin label ledger %s is unreadable, labels left alone: %s", path, why)
         out["errors"].append({"ref": "*", "error": f"label ledger {path} unreadable, nothing changed: {why}"})
         return out

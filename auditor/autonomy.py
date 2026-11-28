@@ -75,6 +75,8 @@ def load_config(path: str | Path | None = None) -> Config:
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     except FileNotFoundError:
         return Config()
+    except (yaml.YAMLError, OSError) as exc:  # broken YAML, a directory, unreadable: a bad config
+        raise ValueError(f"{path}: {exc}") from exc
     if not isinstance(raw, dict):
         raise ValueError(f"{path}: expected a mapping")  # noqa: TRY004 — bad config data, not a bad call
     errors: list[str] = []
@@ -90,13 +92,20 @@ def load_config(path: str | Path | None = None) -> Config:
     floor = level("floor", "draft_pr")
     if not _rank(floor) <= _rank(default) <= _rank(ceiling):
         errors.append(f"need floor <= default <= ceiling, got {floor!r}, {default!r}, {ceiling!r}")
-    th = {**Config().thresholds, **(raw.get("thresholds") or {})}
+    raw_th = raw.get("thresholds") or {}
+    if not isinstance(raw_th, dict):
+        errors.append("thresholds: must be a mapping")
+        raw_th = {}
+    th = {**Config().thresholds, **raw_th}
     for k, v in th.items():
         if k not in THRESHOLDS:
             errors.append(f"thresholds: unknown {k!r} (known: {THRESHOLDS})")
         elif not isinstance(v, (int, float)) or not 0 <= v <= 1:
             errors.append(f"thresholds.{k}: must be a rate between 0 and 1")
     irr = raw.get("irreversible") or {}
+    if not isinstance(irr, dict):
+        errors.append("irreversible: must be a mapping")
+        irr = {}
     titles = []
     for pat in irr.get("title_patterns") or []:
         try:
@@ -107,6 +116,9 @@ def load_config(path: str | Path | None = None) -> Config:
     for i, o in enumerate(raw.get("overrides") or []):
         if not isinstance(o, dict) or not o.get("repo") or o.get("level") not in LEVELS or not o.get("reason"):
             errors.append(f"overrides[{i}]: needs repo, level (one of {LEVELS}) and a reason")
+            continue
+        if _rank(o["level"]) > _rank(ceiling):  # below the floor is allowed: that is how a scope gets `report`
+            errors.append(f"overrides[{i}]: level {o['level']!r} is above the ceiling {ceiling!r}")
             continue
         overrides.append({"repo": str(o["repo"]), "class": str(o.get("class") or "*"),
                           "level": str(o["level"]), "reason": str(o["reason"])})

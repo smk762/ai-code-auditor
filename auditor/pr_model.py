@@ -24,7 +24,7 @@ _REF = (
 # A bare "after" is not a dependency ("regression introduced after #120"): only "merge/land after".
 _DEP_RE = re.compile(
     r"(?<![\w-])(?P<verb>stacked on(?: top of)?|depends on|blocked (?:by|on)|requires|waiting (?:for|on)"
-    r"|(?:merge|land)s? after)\s+(?:PR\s+|pull request\s+|issue\s+)?[\[`(]*" + _REF,
+    r"|(?:merge|land)s? after)(?:\s*[:\-–—]\s*|\s+)(?:PR\s+|pull request\s+|issue\s+)?[\[`(]*" + _REF,
     re.I,
 )
 
@@ -46,7 +46,8 @@ def parse_dependencies(body: str, *, owner: str, repo: str) -> list[dict[str, An
 
 # The reverse direction: "Blocks argus-lens#96" means argus-lens#96 waits on this one.
 _DEPENDANT_RE = re.compile(
-    r"(?<![\w-])(?P<verb>blocks|blocking|unblocks|required by|needed by|prerequisite (?:of|for))\s+"
+    r"(?<![\w-])(?P<verb>blocks|blocking|unblocks|required by|needed by|prerequisite (?:of|for))"
+    r"(?:\s*[:\-–—]\s*|\s+)"
     r"(?:PR\s+|pull request\s+|issue\s+)?[\[`(]*" + _REF,
     re.I,
 )
