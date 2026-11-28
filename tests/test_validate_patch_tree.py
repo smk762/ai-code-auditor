@@ -497,3 +497,14 @@ def test_the_project_gets_installed_metadata(tmp_path: Path) -> None:
     odd = tmp_path / "odd"
     _write(odd, {"pyproject.toml": '[project]\nname = "../escape"\n'})
     assert validator.stub_version_files(odd) == []
+
+
+def test_loose_test_deps_follow_the_modules_beside_the_test(tmp_path: Path) -> None:
+    # argus-cull: the test imports make_fixture (beside it), which imports PIL. Pillow was never installed.
+    _write(tmp_path, {
+        ".git/HEAD": "",
+        "scripts/test_make.py": "import sys\nimport make_fixture\n",
+        "scripts/make_fixture.py": "from PIL import Image\nimport helper\n",
+        "scripts/helper.py": "import numpy as np\nimport make_fixture\n",  # a loop is read once
+    })
+    assert validator.loose_test_deps(tmp_path, ["scripts/test_make.py"]) == ["pillow", "numpy"]

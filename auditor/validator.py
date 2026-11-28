@@ -530,7 +530,7 @@ _PLAIN_REQ_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,-]+\])?
 # Third-party modules loose tests commonly import whose distribution name differs or is obvious.
 # A fixed list, never the import name itself: a patch's imports must not pick what pip installs.
 _IMPORT_DISTS = {"yaml": "pyyaml", "toml": "toml", "tomli": "tomli", "requests": "requests",
-                 "jsonschema": "jsonschema", "httpx": "httpx"}
+                 "jsonschema": "jsonschema", "httpx": "httpx", "PIL": "pillow", "numpy": "numpy"}
 _IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
 
 
@@ -592,12 +592,23 @@ def loose_test_deps(root: Path, tests: list[str]) -> list[str]:
     distributions of known third-party modules the test files import (:data:`_IMPORT_DISTS`)."""
     deps = ci_tool_deps(root)
     have = {_dist_name(d) for d in deps}
-    for t in tests:
+    # The tests, and the modules beside them they import: argus-cull's test_make_fixture imports
+    # make_fixture, which imports PIL, so reading the test file alone missed Pillow (6 tests skipped).
+    files = [Path(t) for t in tests]
+    seen: set[Path] = set()
+    while files:
+        rel = files.pop()
+        if rel in seen:
+            continue
+        seen.add(rel)
         try:
-            text = (root / t).read_text(encoding="utf-8", errors="replace")
+            text = (root / rel).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         for mod in _IMPORT_RE.findall(text):
+            if (root / rel.parent / f"{mod}.py").is_file():
+                files.append(rel.parent / f"{mod}.py")
+                continue
             dist = _IMPORT_DISTS.get(mod)
             if dist and dist not in have:  # a CI pin of the same package wins
                 have.add(dist)
