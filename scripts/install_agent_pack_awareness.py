@@ -2,8 +2,10 @@
 """Install agent-pack awareness (AGENTS.md section, .cursor rule, write-time guard hook) into ecosystem repos.
 
 Usage:
-    python scripts/install_agent_pack_awareness.py [--dry-run] [--repo NAME] [--api-base URL] [--force]
-                                                   [--no-guard-hook]
+    python scripts/install_agent_pack_awareness.py [--dry-run] [--repo NAME | --path DIR ...] [--api-base URL]
+                                                   [--force] [--no-guard-hook | --hook-only]
+
+Targets the working checkouts at ~/<name> of the scanned repos (or --path), never a scan mirror.
 
 Local files only — never runs git in the target repos. The guard hook goes into each repo's untracked
 .claude/settings.local.json and runs this interpreter (so run it from the venv with ai-audit installed).
@@ -28,14 +30,22 @@ def main(argv: list[str] | None = None) -> int:
                     help=f"Audit API base written into the files (default: literal {DEFAULT_API_BASE}, resolved by agents from their local .env)")
     ap.add_argument("--force", action="store_true",
                     help="Overwrite an existing user-authored agent-coding-packs.mdc (no marker)")
-    ap.add_argument("--no-guard-hook", action="store_true",
-                    help="Leave .claude/settings.local.json alone (no write-time guard hook)")
+    ap.add_argument("--path", action="append", default=[], metavar="DIR",
+                    help="Install into this checkout instead of ~/<name> per scanned repo (repeatable)")
+    hook = ap.add_mutually_exclusive_group()
+    hook.add_argument("--no-guard-hook", action="store_true",
+                      help="Leave .claude/settings.local.json alone (no write-time guard hook)")
+    hook.add_argument("--hook-only", action="store_true",
+                      help="Install only the write-time guard hook; leave AGENTS.md, rules and templates alone")
     args = ap.parse_args(argv)
+    if args.path and args.repo:
+        ap.error("--repo and --path are alternatives")
 
     try:
         results = install_all(
             ecosystem_config=args.config, repo=args.repo, api_base=args.api_base,
             dry_run=args.dry_run, force=args.force, guard_hook=not args.no_guard_hook,
+            hook_only=args.hook_only, paths=args.path,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
