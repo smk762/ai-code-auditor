@@ -343,6 +343,7 @@ def _build_parser() -> argparse.ArgumentParser:
                           "validator's own envs, per repo (no tests run); reports missing test deps")
     tenv.add_argument("--repo", action="append", default=[], help="Only this repo (repeatable); others keep their last result")
     tenv.add_argument("--workers", type=int, default=3, help="Repos checked in parallel")
+    tenv.add_argument("--timeout", type=int, default=None, help="Seconds each project's test collection may take")
     tenv.add_argument("--json", action="store_true", help="Print the full report as JSON")
     tenv.add_argument("--cached", action="store_true", help="Show the last report instead of re-checking")
 
@@ -748,7 +749,8 @@ def _run_test_env(args) -> None:
     from auditor import test_env_readiness as ter
 
     out = _output_dir_default()
-    rep = ter.load_report(out) if args.cached else ter.run(out, repos=args.repo or None, workers=args.workers)
+    kw = {"timeout_s": args.timeout} if args.timeout else {}
+    rep = ter.load_report(out) if args.cached else ter.run(out, repos=args.repo or None, workers=args.workers, **kw)
     if rep is None:
         raise SystemExit("No test-env report yet; run `ai-audit test-env` first.")
     if args.json:
