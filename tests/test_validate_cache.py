@@ -54,3 +54,19 @@ def test_runs_at_most_once_an_hour(tmp_path: Path) -> None:
     (tmp_path / validate_cache.STAMP).touch()
     assert validate_cache.evict(tmp_path, now=now, age_days=7)["removed"] == []
     assert validate_cache.evict(tmp_path, now=now + 3700, age_days=7)["removed"] == ["old"]
+
+
+def test_an_interrupted_removal_never_leaves_a_ready_entry(tmp_path: Path, monkeypatch) -> None:
+    """The removal runs on a daemon thread, which dies with its process: whatever it leaves behind
+    must read as an unfinished build (rebuilt on next use), never as a ready env with packages gone."""
+    now = time.time()
+    e = _entry(tmp_path, "repo-old", used_days_ago=30, now=now)
+
+    def killed_part_way(path, ignore_errors=False):
+        (Path(path) / "lib" / "blob").unlink()  # some of the env is gone, then the thread dies
+
+    monkeypatch.setattr(validate_cache.shutil, "rmtree", killed_part_way)
+    r = validate_cache.evict(tmp_path, now=now, force=True, age_days=7, limit_bytes=10 ** 9)
+
+    assert r["removed"] == []  # not counted as removed: the entry is still there
+    assert e.exists() and not (e / ".ready").exists()
