@@ -69,8 +69,10 @@ def test_failed_git_archive_reports_git_error_and_reaps_the_process(mirror: Path
     monkeypatch.setattr(validate_base.subprocess, "Popen", spy)
     git_dir = Path(_git(mirror, "rev-parse", "--absolute-git-dir"))
     bad = BaseRef(git_dir=git_dir, ref="origin/dev", sha="0" * 40)
+    procs.clear()  # only what export_tree starts: the rev-parse above went through the spy too
     with pytest.raises(RuntimeError, match="git archive origin/dev failed"):
         export_tree(bad, mirror, tmp_path / "tree")
+    assert any("archive" in p.args for p in procs)
     assert procs and all(p.returncode is not None for p in procs)  # waited on, no zombie
     assert all(p.stdout is None or p.stdout.closed for p in procs)
 
