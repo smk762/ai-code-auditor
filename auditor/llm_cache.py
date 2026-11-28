@@ -41,6 +41,13 @@ DEFAULT_PATH = "index/llm_review_cache.db"
 
 _WS = re.compile(r"\s+")
 _PY_SKIP = {tokenize.NL, tokenize.ENDMARKER, tokenize.ENCODING}
+# Layout tokens become markers, comments lose trailing space; every other token is its text.
+_PY_TOKEN_TEXT = {
+    tokenize.INDENT: lambda tok: "<indent>",
+    tokenize.DEDENT: lambda tok: "<dedent>",
+    tokenize.NEWLINE: lambda tok: "<nl>",
+    tokenize.COMMENT: lambda tok: tok.string.rstrip(),
+}
 
 
 def _normalise_lines(text: str) -> str:
@@ -55,16 +62,8 @@ def _normalise_python(text: str) -> str | None:
         for tok in tokenize.generate_tokens(io.StringIO(textwrap.dedent(text)).readline):
             if tok.type in _PY_SKIP:
                 continue
-            if tok.type == tokenize.INDENT:
-                out.append("<indent>")
-            elif tok.type == tokenize.DEDENT:
-                out.append("<dedent>")
-            elif tok.type == tokenize.NEWLINE:
-                out.append("<nl>")
-            elif tok.type == tokenize.COMMENT:
-                out.append(tok.string.rstrip())
-            else:
-                out.append(tok.string)
+            text = _PY_TOKEN_TEXT.get(tok.type)
+            out.append(text(tok) if text else tok.string)
     except (tokenize.TokenError, IndentationError, SyntaxError):
         return None
     return " ".join(out)
