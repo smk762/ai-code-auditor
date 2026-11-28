@@ -64,12 +64,15 @@ _NON_CODE_RE = re.compile(
     r"|(^|/)(LICENSE|NOTICE|CODEOWNERS|Dockerfile|\.gitignore|\.dockerignore|\.editorconfig)[^/]*$)",
     re.IGNORECASE,
 )
-_PYTEST_OUTCOME_RE = re.compile(r"^(PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED)\s+(\S+?)(?:\s+-\s+.*)?$", re.MULTILINE)
+# A test id: no spaces, except inside its closing [param id], which may hold any (pytest keeps "has space" as is).
+# `\S+` dropped such a test outright: its line never matched, so a repro case with a spaced id was never seen.
+TEST_ID = r"[^\s\[]+(?:\[[^\]\n]*\])?"
+_PYTEST_OUTCOME_RE = re.compile(rf"^(PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED)\s+({TEST_ID})(?:\s+-\s+.*)?$", re.MULTILINE)
 # A failing subtest (pytest >= 9 built in, or pytest-subtests) gets its own summary line, with the
 # subtest's message and params before the test id: ``SUBFAILED[msg] (i=1) tests/t.py::T::test_a - ...``.
 # pytest 9 still lists a unittest-style test whose subtests failed as ``PASSED``, so this line is the
 # only sign it failed.
-_PYTEST_SUBFAIL_RE = re.compile(r"^SUBFAIL(?:ED)?\b.*?\s(\S+?\.py::\S+)", re.MULTILINE)
+_PYTEST_SUBFAIL_RE = re.compile(r"^SUBFAIL(?:ED)?\b.*?\s([^\s\[]+?\.py::" + TEST_ID + ")", re.MULTILINE)
 
 
 def enabled() -> bool:

@@ -440,8 +440,10 @@ _ENV_GAP_RE = re.compile(r"\b(ModuleNotFoundError|ImportError)\b")
 _RESULT_COUNTS_RE = re.compile(r"\b\d+ (passed|failed)\b")
 # A failing subtest's line puts its message and params before the id (``SUBFAILED[msg] (i=1) t.py::T::a``);
 # pytest 9 lists a unittest test whose subtests failed only there, the test itself shows as passed.
-_FAILED_ID_RE = re.compile(r"^(?:(?:FAILED|ERROR) (\S+)|SUBFAIL(?:ED)?\b.*?\s(\S+?\.py::\S+))", re.M)
-_ERRORED_ID_RE = re.compile(r"^ERROR (\S+)", re.MULTILINE)
+# A test id may hold spaces inside its [param id] (evidence.TEST_ID): cut at the first space, it named no test.
+_TEST_ID = r"[^\s\[]+(?:\[[^\]\n]*\])?"
+_FAILED_ID_RE = re.compile(rf"^(?:(?:FAILED|ERROR) ({_TEST_ID})|SUBFAIL(?:ED)?\b.*?\s([^\s\[]+?\.py::{_TEST_ID}))", re.M)
+_ERRORED_ID_RE = re.compile(rf"^ERROR ({_TEST_ID})", re.MULTILINE)
 
 
 def project_root(tree: Path, rel_path: str) -> Path:

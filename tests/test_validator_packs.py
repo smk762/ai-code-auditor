@@ -267,3 +267,8 @@ def test_every_base_failure_is_listed_whole(tmp_path: Path, monkeypatch) -> None
     assert res.base_failures == {"svc": {"failed": sorted(ids), "errored": ["tests/test_env.py::test_setup"]}}
     note = next(n for n in notes if "fail on the base branch too" in n)
     assert "24 test(s)" in note and "all listed in base_failures" in note and len(note) < 600
+
+
+def test_failed_ids_keep_spaces_inside_the_param_id() -> None:
+    out = "FAILED tests/t.py::test_x[has space] - boom\nERROR tests/t.py::test_y[a b]\n"
+    assert set(validator._failed_ids(out)) == {"tests/t.py::test_x[has space]", "tests/t.py::test_y[a b]"}
