@@ -30,11 +30,10 @@ def test_every_file_a_detector_goes_blind_on_is_listed(tmp_path: Path, tail: str
     f.write_text(CALL + PROVIDERS)
     assert _detect(files, roots) == [True, True, True] and unread_files(files, roots) == {}
     f.write_text(CALL + PROVIDERS + tail)
-    try:
+    with pytest.raises((SyntaxError, ValueError)):  # a tail that parses would check nothing
         ast.parse(f.read_text())
-    except (SyntaxError, ValueError):
-        assert _detect(files, roots) == [False, False, False]  # blind, so it must say so
-        assert unread_files(files, roots) == {"a": ["src/a.py"]}
+    assert _detect(files, roots) == [False, False, False]  # blind, so it must say so
+    assert unread_files(files, roots) == {"a": ["src/a.py"]}
 
 
 def test_a_file_that_is_gone_or_not_python(tmp_path: Path) -> None:
@@ -47,5 +46,5 @@ def test_the_ecosystem_run_passes_what_it_could_not_read_to_the_gc() -> None:
     src = (Path(__file__).resolve().parents[1] / "pipelines/ecosystem_audit.py").read_text()
     calls = [n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call)
              and ast.unparse(n.func) == "close_unreported_architecture"]
-    assert calls and all("unread" in {k.arg: ast.unparse(k.value) for k in c.keywords}.values() for c in calls)
+    assert calls and all({k.arg: ast.unparse(k.value) for k in c.keywords}.get("unread") == "unread" for c in calls)
     assert "unread = unread_files(repo_files, repo_roots)" in src
